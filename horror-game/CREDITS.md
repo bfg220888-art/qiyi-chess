@@ -37,6 +37,7 @@
 | `rain`、`thunder_near`、`thunder_far` | speakwithanimals、loganzsound、Emulius（Freesound），經由 jeffdafoe/llm-memory-plugin-salem-1692 | CC0 |
 | `woosh` | EcoDTR（Freesound），Sonic Pi 的 `ambi_dark_woosh` | CC0 |
 | `buzz` | 日光燈嗡嗡聲 — [Freesound #777053](https://freesound.org/s/777053/)，經由 yerdaulet-damir/liminal | CC0 |
+| `breath` | 呼吸聲 — [Freesound #574208](https://freesound.org/s/574208/)，經由 yerdaulet-damir/liminal | CC0 |
 
 哼歌、低語、呼吸、追逐配樂、雨中的風聲、收音機雜訊、音樂盒等其餘聲音都是即時合成的；任何音檔載入失敗時也會自動改用合成版本。
 

@@ -13,7 +13,7 @@ const SFX_FILES = [
   'door_open0', 'door_open1', 'door_close0', 'door_close1', 'creak0', 'creak1', 'creak2', 'door_creak', 'door_slam',
   'latch', 'click', 'locker', 'scream0', 'scream1', 'heart_lub', 'heart_dub', 'rain', 'thunder_near', 'thunder_far',
   'glass', 'glass_hit0', 'glass_hit1', 'glass_hit2', 'shutter', 'paper0', 'paper1', 'pills', 'squeak',
-  'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh', 'buzz',
+  'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh', 'buzz', 'breath',
 ];
 
 // 原創搖籃曲旋律（MIDI 音高，-1 = 休止）
@@ -877,7 +877,14 @@ export class AudioEngine {
     }
   }
   s_breathBehind(o, t) {
-    const out = this.out({ ...o, hrtf: true, ref: 0.6 }, 3, 0.15);
+    const out = this.out({ ...o, hrtf: true, ref: 0.6 }, 4, 0.15);
+    if (this.buf.breath) {
+      // 真人的呼吸聲，就在你背後
+      const lp = this.filt('lowpass', 5200, 0.6);
+      lp.connect(out);
+      this.sample(lp, this.buf.breath, t, { rate: rnd(0.88, 0.96), gain: 0.55 });
+      return;
+    }
     for (let k = 0; k < 2; k++) {
       const tt = t + k * 1.3;
       this.burst(out, tt, { f: 900, q: 0.8, a: 0.5, d: 0.25, peak: 0.25 });

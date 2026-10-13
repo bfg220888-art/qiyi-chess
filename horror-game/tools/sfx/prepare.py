@@ -42,6 +42,7 @@ JOBS = {
     'phone': ('berklee/old_phone1.mp3', 0.2, 3.6, -2, 0.3),
     'woosh': ('sonicpi/samples__ambi_dark_woosh.flac', 0, None, -1, 0.5),
     'buzz': ('liminal/audio__hum.mp3', 0, None, -3, 0),
+    'breath': ('liminal/audio__breathing.mp3', 16.8, 20.2, -2, 0.3),
 }
 
 def peak_db(path, ss, to):
@@ -54,6 +55,7 @@ for name, (src, ss, to, target, fade) in JOBS.items():
     gain = target - peak_db(path, ss, to)
     dur = (to - ss) if to else float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path], capture_output=True, text=True).stdout) - ss
     af = [f'volume={gain:.2f}dB']
+    if name.startswith('breath'): af.insert(0, 'highpass=f=140')  # 去掉麥克風的低頻轟聲
     if fade > 0: af.append(f'afade=t=out:st={max(0, dur - fade):.3f}:d={fade}')
     args = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(ss)] + (['-to', str(to)] if to else []) + ['-i', path,
             '-af', ','.join(af), '-ac', '1', '-ar', '44100', '-c:a', 'libmp3lame', '-q:a', '5' if name != 'rain' else '7', os.path.join(OUT, name + '.mp3')]

@@ -293,7 +293,11 @@ export class RealGhostModel {
     if (state === 'chase') { this.play('run', 0.25); ts = clamp(speed / 3.3, 0.6, 1.5); }
     else if (state === 'kill') { ts = 0.15; }
     else if (state === 'stunned') { this.play('roll', 0.15); ts = 0.05; }
-    else if (speed > 0.25) { this.play(state === 'search' || state === 'investigate' ? 'walk2' : 'walk', 0.4); ts = clamp(speed / 0.95, 0.45, 1.9); }
+    else if (speed > 0.25) {
+      // 閒晃：受傷跛行；搜尋：瘀傷步態；循聲過去查看：踉踉蹌蹌
+      this.play(state === 'investigate' ? 'drunk' : state === 'search' ? 'walk2' : 'walk', 0.4);
+      ts = clamp(speed / 0.95, 0.45, 1.9);
+    }
     else {
       this.idleSwitch -= dt;
       if (this.idleSwitch <= 0) { this.idleName = this.idleName === 'look' ? 'roll' : 'look'; this.idleSwitch = 6 + Math.random() * 5; }
