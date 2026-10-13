@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#050506">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="靜默病棟 SILENT WARD：在廢棄醫院裡找到三個保險絲、恢復電力並逃出大門。第一人稱網頁恐怖遊戲，手機與電腦皆可遊玩。">
+<title>靜默病棟</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Noto+Serif+TC:wght@700;900&display=swap">
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="遊戲畫面"></canvas>
+
+<!-- 主選單 -->
+<section id="menu" class="screen">
+  <div class="menu-inner">
+    <p class="eyebrow">聖羅莎紀念醫院・七樓・1999 年封院</p>
+    <h1 class="title" data-text="靜默病棟">靜默病棟</h1>
+    <p class="subtitle">SILENT WARD</p>
+    <p class="pitch">直播訊號在你踏進大廳的那一刻中斷，身後的大門也鎖上了。<br>找到三個保險絲、恢復電力，從大門逃出去。<br>她一直在哼歌。歌聲停下來的時候，快跑。</p>
+    <div class="menu-actions">
+      <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
+      <div class="seg" role="radiogroup" aria-label="難度" id="diffSeg">
+        <button type="button" role="radio" data-diff="easy">簡單</button>
+        <button type="button" role="radio" data-diff="normal" aria-checked="true">普通</button>
+        <button type="button" role="radio" data-diff="nightmare">惡夢</button>
+      </div>
+      <p id="diffDesc" class="diff-desc"></p>
+      <div class="menu-row">
+        <button id="btnHelp" class="btn ghost" type="button">操作說明</button>
+        <button id="btnSettings" class="btn ghost" type="button">設定</button>
+      </div>
+      <p id="bestTime" class="best"></p>
+    </div>
+    <p class="phones">建議戴耳機遊玩・聲音會告訴你她在哪裡</p>
+  </div>
+</section>
+
+<!-- 載入 -->
+<section id="loading" class="screen" hidden>
+  <div class="load-inner">
+    <p class="load-title">正在生成醫院……</p>
+    <div class="bar"><span id="loadBar"></span></div>
+    <p id="loadTip" class="load-tip"></p>
+  </div>
+</section>
+
+<!-- 開場文字 -->
+<section id="intro" class="screen" hidden>
+  <div class="intro-text" id="introText"></div>
+  <p class="intro-skip">點一下或按任意鍵繼續</p>
+</section>
+
+<!-- HUD -->
+<div id="hud" hidden>
+  <div class="frame tl"></div><div class="frame tr"></div><div class="frame bl"></div><div class="frame br"></div>
+  <div class="hud-tl">
+    <div class="rec"><span class="dot"></span>REC <span id="timecode">00:00:00</span></div>
+    <div id="objective" class="objective"></div>
+  </div>
+  <div class="hud-tr">
+    <div class="stat" title="手電筒電量">
+      <svg viewBox="0 0 32 16" class="ico"><rect x="1" y="2" width="26" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="28" y="5.5" width="3" height="5" fill="currentColor"/><rect id="batFill" x="3" y="4" width="22" height="8" fill="currentColor"/></svg>
+    </div>
+    <div class="stat" title="底片">
+      <svg viewBox="0 0 24 18" class="ico"><rect x="1" y="4" width="22" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="10.5" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="5" y="1" width="6" height="3" fill="currentColor"/></svg>
+      <span id="filmCount">0</span>
+    </div>
+    <div class="stat" title="玻璃瓶" id="bottleStat" hidden>
+      <svg viewBox="0 0 12 24" class="ico"><path d="M4.5 1h3v5l2.5 3.5V23H2V9.5L4.5 6z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      <span id="bottleCount">0</span>
+    </div>
+    <div class="stat" title="保險絲">
+      <svg viewBox="0 0 24 14" class="ico"><rect x="5" y="3" width="14" height="8" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1" y="4" width="4" height="6" fill="currentColor"/><rect x="19" y="4" width="4" height="6" fill="currentColor"/></svg>
+      <span id="fuseCount">0/3</span>
+    </div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="stamina"><span></span></div>
+  <div id="subtitle" class="subtitle-line"></div>
+  <div id="prompt" class="prompt"></div>
+  <div id="hint" class="hint"></div>
+</div>
+
+<!-- 躲藏時的櫃門縫 -->
+<div id="hideOverlay" hidden></div>
+<div id="damage"></div>
+<div id="fade"></div>
+
+<!-- 觸控控制 -->
+<div id="touch" hidden>
+  <div id="joyHome"><span>移動</span></div>
+  <div id="joy"><div id="joyKnob"></div></div>
+  <div class="tbtns">
+    <button class="tb big" data-action="interact" id="tInteract" type="button" aria-label="互動"><b>互動</b><small id="tInteractLabel"></small></button>
+    <button class="tb" data-action="flashlight" type="button" aria-label="手電筒">燈</button>
+    <button class="tb" data-action="camera" type="button" aria-label="相機閃光">閃</button>
+    <button class="tb" data-action="crouch" type="button" aria-label="蹲下" id="tCrouch">蹲</button>
+    <button class="tb" data-action="sprint" type="button" aria-label="奔跑（按住）">跑</button>
+    <button class="tb" data-action="throw" type="button" aria-label="丟玻璃瓶" id="tThrow" hidden>丟</button>
+    <button class="tb" data-action="breath" type="button" aria-label="屏住呼吸（按住）" id="tBreath" hidden>屏息</button>
+  </div>
+  <div class="ttop">
+    <button class="tb small" data-action="map" type="button" aria-label="地圖">圖</button>
+    <button class="tb small" data-action="pause" type="button" aria-label="暫停">❚❚</button>
+  </div>
+</div>
+
+<!-- 筆記 -->
+<section id="note" class="overlay" hidden>
+  <article class="paper">
+    <h2 id="noteTitle"></h2>
+    <div id="noteBody"></div>
+    <p class="paper-foot">閱讀時她不會停下來。按 E 或點一下關閉。</p>
+  </article>
+</section>
+
+<!-- 地圖 -->
+<section id="mapView" class="overlay" hidden>
+  <div class="map-card">
+    <canvas id="mapCanvas" width="900" height="760"></canvas>
+    <p class="map-foot">只會記錄你走過的地方・按 M 或點一下關閉</p>
+  </div>
+</section>
+
+<!-- 暫停 -->
+<section id="pause" class="overlay" hidden>
+  <div class="panel">
+    <h2>暫停</h2>
+    <button id="btnResume" class="btn primary" type="button">繼續</button>
+    <button id="btnPauseSettings" class="btn ghost" type="button">設定</button>
+    <button id="btnPauseHelp" class="btn ghost" type="button">操作說明</button>
+    <button id="btnQuit" class="btn ghost" type="button">回主選單</button>
+  </div>
+</section>
+
+<!-- 設定 -->
+<section id="settings" class="overlay" hidden>
+  <div class="panel wide">
+    <h2>設定</h2>
+    <label class="row">畫質
+      <span class="seg small" id="qualitySeg">
+        <button type="button" data-q="low">低</button><button type="button" data-q="medium">中</button><button type="button" data-q="high">高</button>
+      </span>
+    </label>
+    <p class="note-small" id="qualityNote">變更畫質會在下一局生效。</p>
+    <label class="row" for="sBright">亮度 <input id="sBright" type="range" min="0.6" max="2" step="0.05"></label>
+    <label class="row" for="sVolume">音量 <input id="sVolume" type="range" min="0" max="1" step="0.05"></label>
+    <label class="row" for="sMouse">滑鼠靈敏度 <input id="sMouse" type="range" min="0.2" max="3" step="0.05"></label>
+    <label class="row" for="sTouch">觸控靈敏度 <input id="sTouch" type="range" min="0.2" max="3" step="0.05"></label>
+    <label class="row" for="sInvert">上下反轉 <input id="sInvert" type="checkbox"></label>
+    <label class="row" for="sFps">顯示 FPS <input id="sFps" type="checkbox"></label>
+    <button id="btnSettingsBack" class="btn primary" type="button">完成</button>
+  </div>
+</section>
+
+<!-- 說明 -->
+<section id="help" class="overlay" hidden>
+  <div class="panel wide">
+    <h2>操作說明</h2>
+    <div class="help-cols">
+      <div>
+        <h3>電腦</h3>
+        <dl>
+          <dt>WASD / 方向鍵</dt><dd>移動</dd>
+          <dt>滑鼠</dt><dd>看四周（點畫面鎖定游標）</dd>
+          <dt>Shift</dt><dd>奔跑（會發出很大的聲音）</dd>
+          <dt>C / 按住 Ctrl</dt><dd>蹲下（安靜、不容易被看到）</dd>
+          <dt>E / 左鍵</dt><dd>開門、撿東西、躲進鐵櫃</dd>
+          <dt>F</dt><dd>手電筒</dd>
+          <dt>Q / 右鍵</dt><dd>相機閃光（能定住她幾秒）</dd>
+          <dt>G / 中鍵</dt><dd>丟玻璃瓶（摔破的聲音能引開她）</dd>
+          <dt>按住空白鍵</dt><dd>躲在櫃子裡時屏住呼吸</dd>
+          <dt>M / Tab</dt><dd>地圖</dd>
+          <dt>Esc</dt><dd>暫停</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>手機</h3>
+        <dl>
+          <dt>左半邊</dt><dd>拖曳搖桿移動，推到底就是奔跑</dd>
+          <dt>右半邊</dt><dd>滑動看四周，輕點 = 互動</dd>
+          <dt>按鈕</dt><dd>燈 = 手電筒、閃 = 相機、蹲 = 蹲下、跑 = 按住奔跑、丟 = 丟玻璃瓶、屏息 = 躲藏時按住</dd>
+        </dl>
+        <h3>求生守則</h3>
+        <ul>
+          <li>聽哼歌聲判斷她的方向。歌聲停了就是她發現你了。</li>
+          <li>躲進鐵櫃前，確定她沒有看到你。她在櫃子外面停下來時，屏住呼吸。</li>
+          <li>把玻璃瓶丟到遠處，摔破的聲音會把她引過去。</li>
+          <li>手電筒會讓你更顯眼；待在黑暗太久，理智會崩潰。</li>
+          <li>有燈的地方能讓你冷靜下來。鎮定劑也可以。</li>
+        </ul>
+      </div>
+    </div>
+    <button id="btnHelpBack" class="btn primary" type="button">知道了</button>
+  </div>
+</section>
+
+<!-- 結束 -->
+<section id="end" class="overlay" hidden>
+  <div class="panel end">
+    <h2 id="endTitle"></h2>
+    <p id="endText" class="end-text"></p>
+    <dl id="endStats" class="stats"></dl>
+    <button id="btnRetry" class="btn primary" type="button">再試一次</button>
+    <button id="btnNew" class="btn ghost" type="button">換一棟醫院</button>
+    <button id="btnMenu" class="btn ghost" type="button">主選單</button>
+  </div>
+</section>
+
+<!-- 直立提醒 -->
+<section id="rotate" class="overlay" hidden>
+  <div class="panel">
+    <p class="rotate-ico" aria-hidden="true">⟲</p>
+    <h2>請把手機橫放</h2>
+    <p>橫向畫面比較好操作，也比較看得清楚。</p>
+    <button id="btnRotateOk" class="btn ghost" type="button">直接玩</button>
+  </div>
+</section>
+
+<div id="fps" hidden></div>
+<noscript><p class="noscript">這個遊戲需要啟用 JavaScript。</p></noscript>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
