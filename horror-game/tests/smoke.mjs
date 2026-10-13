@@ -75,8 +75,8 @@ const sim = (page, seconds, input = {}) => page.evaluate(([seconds, input]) => {
   const n = Math.round(seconds / 0.05);
   const t0 = performance.now();
   for (let i = 0; i < n && !g.over; i++) {
-    const near = Math.hypot(g.ghost.pos.x - g.player.pos.x, g.ghost.pos.z - g.player.pos.z) < 4.3 && g.ghost.state !== 'dormant';
-    const holdBreath = input.breath === 'smart' ? near : !!input.breath;
+    const near = Math.hypot(g.ghost.pos.x - g.player.pos.x, g.ghost.pos.z - g.player.pos.z) < 2.5 && g.ghost.state !== 'dormant';
+    const holdBreath = input.breath === 'smart' ? (g.ghost.listening || near) : !!input.breath;
     g.update(0.05, { mx: input.mx || 0, my: input.my || 0, sprint: !!input.sprint, crouchHold: !!input.crouch, holdBreath, look: { x: input.lookX || 0, y: 0 }, actions: i === 0 ? (input.actions || []) : [] });
     const p = g.player.pos;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(g.ghost.pos.x)) throw new Error('NaN position at step ' + i);
@@ -103,8 +103,8 @@ const faceThing = (page, kind, idx = 0) => page.evaluate(([kind, idx]) => {
   else if (kind === 'fusebox') { const p = g.world.fusebox.userData.sockets[0].getWorldPosition(new (P.pos.constructor)()); tx = p.x; ty = p.y; tz = p.z; }
   else if (kind === 'locker') { const l = lv.lockers[idx]; tx = l.x + Math.sin(l.rot) * 0.3; ty = 1.2; tz = l.z + Math.cos(l.rot) * 0.3; }
   else if (kind === 'door') { const d = lv.doors[idx]; tx = d.cx; ty = 1.2; tz = d.cz; }
-  // 找一個站得到的位置
-  let best = null;
+  // 找一個站得到的位置（鐵櫃就站在櫃門正前方）
+  let best = kind === 'locker' ? { x: lv.lockers[idx].exitX, z: lv.lockers[idx].exitZ } : null;
   for (let r = 0.7; r <= 1.5 && !best; r += 0.1) {
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
       const x = tx + Math.cos(a) * r, z = tz + Math.sin(a) * r;
@@ -282,10 +282,10 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   const heldInfo = await page.evaluate(() => ({ listening: window.__SW.game.ghost.listening, knows: !!window.__SW.game.ghost.knowsLocker, breath: window.__SW.game.player.breath }));
   log('holding breath', JSON.stringify(heldInfo));
   assert(!held.dying && !heldInfo.knows, 'holding breath should keep you hidden');
+  await page.evaluate(() => { const g = window.__SW.game; g.ghost.state = 'dormant'; g.ghost.model.root.visible = false; g.ghost.dormantUntil = g.time + 999; g.ghost.stopHum(); });
   await sim(page, 0.05, { actions: ['interact'] });
   await sim(page, 1);
   assert(await page.evaluate(() => !window.__SW.game.player.hiding), 'player left locker');
-  await page.evaluate(() => { const g = window.__SW.game; g.ghost.state = 'dormant'; g.ghost.model.root.visible = false; g.ghost.dormantUntil = g.time + 999; g.ghost.stopHum(); });
   // 丟瓶子：她會去查看
   const thrown = await page.evaluate(() => {
     const g = window.__SW.game, P = g.player;
@@ -300,7 +300,7 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   });
   assert(thrown === 1, 'bottle in flight');
   await sim(page, 2);
-  const after = await page.evaluate(() => ({ n: window.__SW.game.projectiles.length, state: window.__SW.game.ghost.state, bottles: window.__SW.game.player.bottles }));
+  const after = await page.evaluate(() => { const g = window.__SW.game, p = g.projectiles[0]; return { n: g.projectiles.length, state: g.ghost.state, bottles: g.player.bottles, over: g.over, dying: !!g.dying, time: g.time, p: p && [p.pos.x, p.pos.y, p.pos.z, p.vel.y, p.life] }; });
   log('after throw', JSON.stringify(after));
   assert(after.n === 0 && after.bottles === 1, 'bottle shattered');
   assert(after.state === 'investigate' || after.state === 'search', 'ghost should investigate the noise, got ' + after.state);
@@ -353,6 +353,10 @@ await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, has
   assert(acts.includes('flashlight'), 'flashlight button');
   const w0 = await sim(page, 0.05);
   const w1 = await sim(page, 2, { my: 1 });
+  if (Math.hypot(w1.x - w0.x, w1.z - w0.z) <= 2) {
+    const dbg = await page.evaluate(() => { const g = window.__SW.game, P = g.player; return { pos: [P.pos.x, P.pos.z], yaw: P.yaw, locked: P.locked, hiding: !!P.hiding, near: g.lv.furniture.filter((f) => Math.hypot(f.x - P.pos.x, f.z - P.pos.z) < 3).map((f) => f.kind + '@' + f.x.toFixed(1) + ',' + f.z.toFixed(1)) }; });
+    log('walk debug', JSON.stringify(dbg), JSON.stringify(w0), JSON.stringify(w1));
+  }
   assert(Math.hypot(w1.x - w0.x, w1.z - w0.z) > 2, 'mobile walk');
   await render(page);
   await shot(page, 'm2-walk');

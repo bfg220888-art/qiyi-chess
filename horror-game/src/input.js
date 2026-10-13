@@ -193,7 +193,11 @@ export class Input {
     let holdBreath = k.has('Space') || !!this.breathTouch;
     if (this.joy) { mx = this.move.x; my = this.move.y; }
     // 遊戲手把
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    // 在沒有手把權限的 iframe 裡 getGamepads() 會丟例外
+    let pads = [];
+    if (!this.noPads) {
+      try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (e) { this.noPads = true; }
+    }
     for (const pad of pads) {
       if (!pad || !pad.connected) continue;
       const dz = (v) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);

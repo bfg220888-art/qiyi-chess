@@ -636,6 +636,8 @@ function doorClearance(lv) {
   const ox = (c[1] + 0.5) * CELL;
   lv.blockers.push({ minX: ox - 1.6, maxX: ox + 1.6, minZ: (r[2] + 1) * CELL - 1.6, maxZ: (r[2] + 1) * CELL + 1.6, clearance: true });
   lv.blockers.push({ minX: ox - 1.9, maxX: ox + 1.9, minZ: lv.H * CELL - 2.4, maxZ: lv.H * CELL, clearance: true });
+  // 大廳中央通道保持淨空（最後逃跑的路線）
+  lv.blockers.push({ minX: ox - 1.0, maxX: ox + 1.0, minZ: (r[2] + 1) * CELL, maxZ: lv.H * CELL, clearance: true });
   // 路障
   for (const b of lv.barricades) lv.blockers.push({ ...cellBounds(b.x, b.y), clearance: true });
 }

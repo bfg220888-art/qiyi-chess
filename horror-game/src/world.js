@@ -770,18 +770,59 @@ export class World {
     this.chain.userData.kind = 'gate';
     lv.gate.getBox = () => (lv.gate.open ? null : { minX: gx - GATE_W / 2, maxX: gx + GATE_W / 2, minZ: gz - 0.08, maxZ: gz + 0.08 });
     lv.gate.angle = 0;
-    // 大門外：濕柏油地與遠方樹林
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(14, 12), new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.25, metalness: 0 }));
+    // 大門外：濕柏油地、遠方樹林、路燈與雨
+    const grime = this.tf.grime();
+    const asphalt = new THREE.MeshStandardMaterial({ map: grime.map, color: 0x2b2e31, roughness: 0.16, metalness: 0 });
+    asphalt.map = grime.map.clone();
+    asphalt.map.repeat.set(6, 5);
+    asphalt.map.needsUpdate = true;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(16, 14), asphalt);
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(gx, -0.01, gz + 6);
+    ground.position.set(gx, -0.01, gz + 7);
     ground.receiveShadow = true;
     this.root.add(ground);
-    const back = new THREE.Mesh(new THREE.PlaneGeometry(40, 14), new THREE.MeshBasicMaterial({ map: this.tf.windowTex().map, color: 0x6a7a8a }));
-    back.position.set(gx, 5, gz + 14);
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(44, 16), new THREE.MeshBasicMaterial({ map: this.tf.windowTex().map, color: 0xa0b0c0, fog: false }));
+    back.position.set(gx, 5, gz + 15);
     back.rotation.y = Math.PI;
     this.root.add(back);
+    // 路燈（大門打開時亮起）
+    const pole = new THREE.Group();
+    P.box(pole, M.paint, 0.12, 4.6, 0.12, gx + 3.2, 2.3, gz + 8.5);
+    P.box(pole, M.paint, 0.9, 0.08, 0.1, gx + 2.8, 4.6, gz + 8.5);
+    this.bakeGroup(pole);
+    this.streetLamp = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), new THREE.MeshBasicMaterial({ color: 0x110800, fog: false }));
+    this.streetLamp.position.set(gx + 2.45, 4.5, gz + 8.5);
+    this.root.add(this.streetLamp);
+    this.streetLight = new THREE.PointLight(0xffa860, 0, 18, 1.6);
+    this.streetLight.position.set(gx + 2.45, 4.3, gz + 8.5);
+    this.scene.add(this.streetLight);
+    // 雨絲
+    const n = 700, pos = new Float32Array(n * 6), off = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const x = gx + (Math.random() - 0.5) * 16, z = gz + 0.6 + Math.random() * 13, o = Math.random() * 7;
+      pos.set([x, 0, z, x - 0.02, 0.35, z], i * 6);
+      off[i * 2] = off[i * 2 + 1] = o;
+    }
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    rg.setAttribute('off', new THREE.BufferAttribute(off, 1));
+    this.rainUniforms = { uTime: { value: 0 }, uLit: { value: 0.15 } };
+    this.rain = new THREE.LineSegments(rg, new THREE.ShaderMaterial({
+      uniforms: this.rainUniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: `uniform float uTime; attribute float off;
+        void main() { vec3 p = position; p.y += mod(off - uTime * 9.0, 7.0);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
+      fragmentShader: `uniform float uLit; void main() { gl_FragColor = vec4(vec3(0.7, 0.8, 0.9) * uLit, uLit); }`,
+    }));
+    this.rain.frustumCulled = false;
+    this.root.add(this.rain);
   }
   openGate() {
+    if (this.streetLight) {
+      this.streetLight.intensity = 30;
+      this.streetLamp.material.color.setRGB(3, 1.9, 1.0);
+      this.rainUniforms.uLit.value = 0.35;
+    }
     this.lv.gate.open = true;
     this.lv.gate.target = 1.35;
     this.root.remove(this.chain);
@@ -1057,6 +1098,7 @@ export class World {
       this.M.window.emissiveIntensity = 0.35 + flash * 6;
       this.hemi.intensity = 0.04 + flash * 0.9 * (this.lightningStrength ?? 1);
     }
+    if (this.rain) this.rainUniforms.uTime.value = t;
     // 道具閃光
     this.glintMat.opacity = 0.25 + 0.25 * Math.sin(t * 2.7);
     // 電視雜訊

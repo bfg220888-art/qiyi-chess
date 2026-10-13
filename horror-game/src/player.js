@@ -84,7 +84,7 @@ export class Player {
     this.gaspCooldown = Math.max(0, this.gaspCooldown - dt);
     this.holdingBreath = !!(this.hiding && inp.holdBreath && this.breath > 0 && this.gaspCooldown <= 0);
     if (this.holdingBreath) {
-      this.breath = Math.max(0, this.breath - dt / 9);
+      this.breath = Math.max(0, this.breath - dt / 12);
       if (this.breath <= 0) {
         // 憋不住了，大口喘氣
         this.holdingBreath = false;
@@ -93,7 +93,7 @@ export class Player {
         g.makeNoise(this.pos.x, this.pos.z, 9);
         if (g.ghost.state !== 'dormant' && Math.hypot(g.ghost.pos.x - this.pos.x, g.ghost.pos.z - this.pos.z) < 8 && this.hiding) g.ghost.heardHiding(this.hiding);
       }
-    } else this.breath = Math.min(1, this.breath + dt / (this.hiding ? 5 : 2.5));
+    } else this.breath = Math.min(1, this.breath + dt / (this.hiding ? 3.5 : 2));
 
     // --- 移動
     let speed = 0;
@@ -229,7 +229,8 @@ export class Player {
     let near = rayWallDistance(g.lv, c.position.x, c.position.z, this.aim.x, this.aim.z, 20) / Math.max(0.05, hz);
     if (this.aim.y < -0.05) near = Math.min(near, c.position.y / -this.aim.y);
     if (this.aim.y > 0.05) near = Math.min(near, (3 - c.position.y) / this.aim.y);
-    const expo = Math.min(1, Math.max(0.3, Math.pow(near / 2.6, 1.3)));
+    // 光照 ∝ I / d²：讓 I ∝ d² 就能在近距離保持差不多的亮度
+    const expo = Math.min(1, Math.max(0.07, (near / 2.6) ** 2));
     this.expo = (this.expo ?? 1) + (expo - (this.expo ?? 1)) * Math.min(1, dt * 6);
     const strength = on ? (0.35 + Math.min(1, bat * 4) * 0.65) * this.flicker : 0;
     L.intensity = strength * 120 * this.expo;

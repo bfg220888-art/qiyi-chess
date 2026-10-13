@@ -206,8 +206,8 @@ export class Game {
     }
 
     // 躲藏時她靠近：提示屏住呼吸
-    if (P.hiding && gh.state !== 'dormant' && this.ghostDist < 6 && !gh.knowsLocker) {
-      if (!this.breathHinted || this.time - this.breathHinted > 12) {
+    if (P.hiding && gh.listening && !gh.knowsLocker) {
+      if (!this.breathHinted || this.time - this.breathHinted > 10) {
         this.breathHinted = this.time;
         this.ui.hint(this.input.touchMode ? '她就在外面……按住「屏息」不要出聲。' : '她就在外面……按住 空白鍵 屏住呼吸。', 3.5);
       }

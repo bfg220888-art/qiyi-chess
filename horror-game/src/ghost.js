@@ -406,12 +406,12 @@ export class Ghost {
     } else {
       this.suspicion = Math.max(0, this.suspicion - dt * 0.25);
     }
-    // 玩家躲在櫃子裡：她靠近時會停下來聽
+    // 玩家躲在櫃子裡：她在附近停下腳步時會側耳傾聽
     this.listening = false;
-    if (P.hiding && !this.knowsLocker && (this.state === 'search' || this.state === 'investigate' || this.state === 'wander') && dist < 3.8) {
+    if (P.hiding && !this.knowsLocker && (this.state === 'search' || this.state === 'investigate' || this.state === 'wander') && dist < 3.4 && this.speed < 0.35) {
       this.listening = true;
       if (!P.holdingBreath) {
-        this.hearT = (this.hearT || 0) + dt * (1 - dist / 3.8) * 1.5 * this.diff.hearing;
+        this.hearT = (this.hearT || 0) + dt * (1.15 - dist / 3.4) * 0.9 * this.diff.hearing;
         if (this.hearT > 1) { this.hearT = 0; this.heardHiding(P.hiding); }
       } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.5);
     } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.3);
