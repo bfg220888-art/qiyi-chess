@@ -259,7 +259,16 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
     P.hiding = null;
     const fwdX = -Math.sin(P.yaw), fwdZ = -Math.cos(P.yaw);
     let gx = P.pos.x + fwdX * 1.5, gz = P.pos.z + fwdZ * 1.5;
-    if (!g.ghostNav.isFree(gx, gz)) { const s = g.ghost.findSpot(1, 3, false); gx = s.x; gz = s.z; }
+    if (!g.ghostNav.isFree(gx, gz)) {
+      // 隨機關卡偶爾在正前方放不下：在玩家附近找一個能走的點
+      let s = g.ghost.findSpot(1, 3, false);
+      for (let k = 0; k < 4000 && !s; k++) {
+        const a = Math.random() * Math.PI * 2, d = 0.8 + Math.random() * 3;
+        const x = P.pos.x + Math.sin(a) * d, z = P.pos.z + Math.cos(a) * d;
+        if (g.ghostNav.isFree(x, z)) s = { x, z };
+      }
+      gx = s.x; gz = s.z;
+    }
     g.ghost.spawnAt(gx, gz, 'chase');
     g.ghost.lastKnown = { x: P.pos.x, z: P.pos.z };
     g.ghost.enraged = true;
@@ -288,7 +297,7 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   assert(await page.evaluate(() => !!window.__SW.game.player.hiding), 'player hiding');
   await render(page);
   await shot(page, 'g4-hiding');
-  await page.evaluate(() => { const g = window.__SW.game; const s = g.ghost.findSpot(5, 9, false) || g.ghost.findSpot(3, 15, false); g.ghost.spawnAt(s.x, s.z, 'search'); g.ghost.lastKnown = { x: g.player.pos.x, z: g.player.pos.z }; });
+  await page.evaluate(() => { const g = window.__SW.game; let s = g.ghost.findSpot(5, 9, false) || g.ghost.findSpot(3, 15, false) || g.ghost.findSpot(2, 25, false); for (let k = 0; k < 4000 && !s; k++) { const x = g.player.pos.x + (Math.random() - 0.5) * 30, z = g.player.pos.z + (Math.random() - 0.5) * 30; if (g.ghostNav.isFree(x, z) && Math.hypot(x - g.player.pos.x, z - g.player.pos.z) > 3) s = { x, z }; } g.ghost.spawnAt(s.x, s.z, 'search'); g.ghost.lastKnown = { x: g.player.pos.x, z: g.player.pos.z }; });
   const hid = await sim(page, 15, { breath: 'smart' });
   log('while hiding ghost', hid.ghost, 'dying', hid.dying);
   assert(!hid.dying && !hid.over, 'unseen hiding player should survive');
