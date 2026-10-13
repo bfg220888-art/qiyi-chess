@@ -136,7 +136,7 @@ function wrapDraw(w, fn) {
 // 照片素材：{ 名稱: { c: 顏色, n: 法線, arm: AO/粗糙/金屬 } }
 const PHOTO_FILES = {
   paint: ['c', 'n', 'arm'], tiles: ['c', 'n', 'arm'], lino: ['c', 'n', 'arm'], metal: ['c', 'n', 'arm'],
-  wood: ['c', 'n', 'r'], fabric: ['c'],
+  wood: ['c', 'n', 'r'], fabric: ['c'], leak: ['c', 'o', 'n'], smear: ['o'],
 };
 const photoImg = new Map();
 function getPhoto(url) {
@@ -179,6 +179,24 @@ export class TextureFactory {
     this.photos = photos;
   }
   ph(name) { return this.photos && this.photos[name]; }
+  // 照片貼花：直接用圖片當貼圖（不經過畫布）
+  photoDecal(name) {
+    const P = this.ph(name);
+    if (!P) return null;
+    return this.get('decal_' + name, () => {
+      const t = (img, srgb) => {
+        if (!img) return null;
+        const x = new THREE.Texture(img);
+        x.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        x.anisotropy = Math.min(this.maxAniso, this.q.aniso);
+        x.needsUpdate = true;
+        return x;
+      };
+      const out = { map: t(P.c, true), alphaMap: t(P.o, false), normalMap: t(P.n, false) };
+      for (const k of Object.keys(out)) if (!out[k]) delete out[k];
+      this.cache.set('decal_' + name, out);
+    });
+  }
   // 把照片平鋪進畫布的一個區域；fromBottom 讓磁磚列對齊區域底邊
   tilePhoto(g, img, x, y, w, h, pw, phh = pw, fromBottom = false) {
     g.save();

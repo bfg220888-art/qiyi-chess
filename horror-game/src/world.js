@@ -606,7 +606,8 @@ export class World {
   // ---------------------------------------------------------------------
   buildDecals() {
     const lv = this.lv, M = this.M, P = this.props;
-    const sets = { blood: [], drag: [], paper: [], writing: [], hand: [], signs: [] };
+    const sets = { blood: [], drag: [], paper: [], writing: [], hand: [], signs: [], leak: [], smear: [] };
+    const leakTex = this.tf.photoDecal('leak'), smearTex = this.tf.photoDecal('smear');
     const plane = (w, h, u0, v0, u1, v1) => {
       const g = new THREE.PlaneGeometry(w, h);
       const uv = g.attributes.uv;
@@ -642,6 +643,12 @@ export class World {
       } else if (d.kind === 'hand') {
         const u0 = (d.variant % 2) * 0.5;
         sets.hand.push(wallDecal(plane(d.size, d.size, u0, 0, u0 + 0.5, 1), d));
+      } else if (d.kind === 'leak') {
+        if (leakTex) sets.leak.push(wallDecal(plane(d.w, d.h, d.flip ? 1 : 0, 0, d.flip ? 0 : 1, 1), d));
+      } else if (d.kind === 'smear') {
+        // 抹痕貼圖裡只有幾條橫帶有痕跡，挑那幾段來用
+        const [v0, v1] = [[0.625, 0.75], [0.25, 0.375], [0.375, 0.5], [0.75, 0.875]][d.band % 4];
+        if (smearTex) sets.smear.push(wallDecal(plane(d.w, d.h, 0, v0, 1, v1), d));
       } else if (d.kind === 'curtain') {
         const g = P.curtain(d.len);
         g.position.set(d.x, 0, d.z);
@@ -693,6 +700,14 @@ export class World {
     add(sets.writing, M.writing);
     add(sets.hand, M.hand);
     add(sets.signs, M.sign);
+    if (sets.leak.length) {
+      M.leak = new THREE.MeshStandardMaterial({ ...leakTex, color: 0x5a4630, roughness: 0.7, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6), ...M.decalBase });
+      add(sets.leak, M.leak);
+    }
+    if (sets.smear.length) {
+      M.smear = new THREE.MeshStandardMaterial({ ...smearTex, color: 0x4a0806, roughness: 0.45, metalness: 0, ...M.decalBase });
+      add(sets.smear, M.smear);
+    }
     // 出口標示
     for (const e of lv.exitSigns) {
       const g = new THREE.Group();

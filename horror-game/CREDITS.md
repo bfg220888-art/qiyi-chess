@@ -20,6 +20,7 @@
 | `metal_*` | Poly Haven — Rusty Metal Sheet | je55pr/zombonz |
 | `wood_*` | Poly Haven — [Wood Floor Worn](https://polyhaven.com/a/wood_floor_worn) | [npmiaman/game-forge](https://github.com/npmiaman/game-forge)（縮成 512 px） |
 | `fabric_c` | ambientCG — Fabric066 | [PhotonPower/Gothar7](https://github.com/PhotonPower/Gothar7) |
+| `leak_*`、`smear_o` | ambientCG — Leaking006、Smear005（牆面水痕與抹痕貼花，不透明度經過加強） | je55pr/zombonz |
 
 ## 音效（`assets/sfx/`）
 

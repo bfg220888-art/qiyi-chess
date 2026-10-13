@@ -986,6 +986,25 @@ function placeDecals(lv, rng) {
     lv.decals.push({ kind: 'hand', ...wallDecalPose(s, along, rng.range(0.9, 1.6)), size: rng.range(0.22, 0.28), rotZ: rng.range(-0.6, 0.6), variant: rng.int(0, 1) });
     hp++;
   }
+  // 天花板滲水流下的水痕、牆上抹開的血（照片貼花；沒有照片素材時不畫）。
+  // 用另一個亂數來源，不影響後面關卡生成的結果
+  const r2 = new RNG((lv.seed ^ 0x1eaf5) >>> 0);
+  let leaks = 0, smears = 0;
+  for (const s of r2.shuffle(wallSlotsClean.slice())) {
+    if (leaks >= 18 && smears >= 7) break;
+    const leak = leaks < 18 && (smears >= 7 || r2.chance(0.72));
+    const w = leak ? r2.range(0.45, 0.8) : r2.range(0.8, 1.3);
+    const along = s.a0 + r2.range(w / 2 + 0.15, CELL - w / 2 - 0.15);
+    if (leak) {
+      const h = Math.min(2.6, w * 4);
+      lv.decals.push({ kind: 'leak', ...wallDecalPose(s, along, WALL_H - h / 2 - 0.02), w, h, flip: r2.chance(0.5) });
+      leaks++;
+    } else {
+      if (!wallDecalFree(lv, s, along, w)) continue;
+      lv.decals.push({ kind: 'smear', ...wallDecalPose(s, along, r2.range(0.7, 1.45)), w, h: w * 0.2, rotZ: r2.range(-0.2, 0.2), band: r2.int(0, 3) });
+      smears++;
+    }
+  }
   // 房門上方的門牌
   for (const d of lv.doors) {
     const ids = d.rooms.filter((id) => id > 0);
