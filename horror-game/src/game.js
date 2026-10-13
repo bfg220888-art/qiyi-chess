@@ -206,6 +206,19 @@ export class Game {
     if (this.over || this.dying) return;
     this.director.update(dt);
     this.world.update(dt, P.camera, P.flashOn && P.battery > 0 && !P.hiding);
+    // 日光燈電流聲：每 0.25 秒挑一次最近的亮燈，音量每格跟著閃爍
+    this.buzzT = (this.buzzT || 0) - dt;
+    if (this.buzzT <= 0) {
+      this.buzzT = 0.25;
+      let best = null, bd = 64;
+      for (const f of this.lv.fixtures) {
+        if (!f.on) continue;
+        const d = (f.x - P.pos.x) ** 2 + (f.z - P.pos.z) ** 2;
+        if (d < bd) { bd = d; best = f; }
+      }
+      this.buzzFix = best;
+    }
+    this.audio.setBuzz(this.buzzFix, this.buzzFix ? this.buzzFix.level : 0);
     this.updateInteraction();
     this.markExplored(false);
     if (this.mapOpen && Math.floor(this.time * 4) !== Math.floor((this.time - dt) * 4)) this.ui.drawMap();

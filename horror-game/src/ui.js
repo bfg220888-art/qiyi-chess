@@ -55,7 +55,15 @@ export class UI {
     this.el.touch.classList.toggle('hiding', on);
     this.updateHud();
   }
-  damage(v) { this.el.damage.style.opacity = String(v); }
+  damage(v) {
+    // 每格都會呼叫：數值沒變就不碰 DOM，省下樣式重算
+    const k = v.toFixed(3);
+    if (k !== this.lastDamage) { this.lastDamage = k; this.el.damage.style.opacity = k; }
+  }
+  setBar(v) {
+    const w = (v * 100).toFixed(1) + '%';
+    if (w !== this.lastBar) { this.lastBar = w; this.el.stamina.firstElementChild.style.width = w; }
+  }
   fade(v, dur = 1.2) {
     this.el.fade.style.transitionDuration = dur + 's';
     this.el.fade.style.opacity = String(v);
@@ -102,14 +110,14 @@ export class UI {
     this.el.stamina.classList.add('breath');
     this.el.stamina.classList.toggle('show', holding || b < 0.98);
     this.el.stamina.classList.toggle('ex', b < 0.25);
-    this.el.stamina.firstElementChild.style.width = (b * 100).toFixed(1) + '%';
+    this.setBar(b);
   }
 
   updateStamina(st, exhausted) {
     this.el.stamina.classList.remove('breath');
     this.el.stamina.classList.toggle('show', st < 0.98);
     this.el.stamina.classList.toggle('ex', exhausted);
-    this.el.stamina.firstElementChild.style.width = (st * 100).toFixed(1) + '%';
+    this.setBar(st);
   }
 
   showNote(note) {

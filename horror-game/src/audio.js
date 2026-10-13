@@ -13,7 +13,7 @@ const SFX_FILES = [
   'door_open0', 'door_open1', 'door_close0', 'door_close1', 'creak0', 'creak1', 'creak2', 'door_creak', 'door_slam',
   'latch', 'click', 'locker', 'scream0', 'scream1', 'heart_lub', 'heart_dub', 'rain', 'thunder_near', 'thunder_far',
   'glass', 'glass_hit0', 'glass_hit1', 'glass_hit2', 'shutter', 'paper0', 'paper1', 'pills', 'squeak',
-  'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh',
+  'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh', 'buzz',
 ];
 
 // 原創搖籃曲旋律（MIDI 音高，-1 = 休止）
@@ -105,6 +105,7 @@ export class AudioEngine {
       } catch (e) { /* 這個聲音就用合成的 */ }
     })).then(() => {
       if (this.buf.rain) this.buf.rain = this.makeLoop(this.buf.rain, 1.5);
+      if (this.buf.buzz) this.buf.buzz = this.makeLoop(this.buf.buzz, 0.5);
       const groups = {};
       for (const n of Object.keys(this.buf)) {
         const k = n.replace(/\d+$/, '');
@@ -1180,11 +1181,33 @@ export class AudioEngine {
     }
   }
 
+  // 日光燈的電流聲：跟著離玩家最近、有亮的燈管，音量隨閃爍變化
+  setBuzz(fix, level) {
+    if (!this.ready || !this.buf.buzz || !this.ambStarted) return;
+    const c = this.ctx;
+    if (!this.buzz) {
+      const em = this.createEmitter({ pos: { x: 0, y: 2.9, z: 0 }, ref: 0.8, rolloff: 1.8, reverb: 0.12, hrtf: false });
+      const s = c.createBufferSource();
+      s.buffer = this.buf.buzz;
+      s.loop = true;
+      const g = c.createGain();
+      g.gain.value = 0;
+      s.connect(g).connect(em.input);
+      s.start(c.currentTime, rnd(0, this.buf.buzz.duration));
+      this.buzz = { em, s, g, at: null };
+    }
+    const B = this.buzz;
+    if (fix && fix !== B.at) { B.at = fix; B.em.setPosition(fix.x, fix.y, fix.z); }
+    const v = fix ? level * 0.1 : 0;
+    if (this.changed('buzz', v, 0.01)) B.g.gain.setTargetAtTime(v, c.currentTime, 0.015);
+  }
+
   startPhone(pos) { this.phone = { pos, next: 0 }; }
   stopPhone() { this.phone = null; }
 
   stopAll() {
     this.hums.clear();
+    if (this.buzz) { try { this.buzz.s.stop(); } catch (e) { /* 已停止 */ } this.buzz = null; }
     this.setHeartbeat(0, 0);
     this.setBreathing(0);
     this.setChase(0);

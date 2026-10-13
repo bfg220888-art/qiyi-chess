@@ -41,6 +41,7 @@ JOBS = {
     'metal_reverb': ('berklee/metal_reverb_hit1.mp3', 0, None, -1, 0.5),
     'phone': ('berklee/old_phone1.mp3', 0.2, 3.6, -2, 0.3),
     'woosh': ('sonicpi/samples__ambi_dark_woosh.flac', 0, None, -1, 0.5),
+    'buzz': ('liminal/audio__hum.mp3', 0, None, -3, 0),
 }
 
 def peak_db(path, ss, to):
