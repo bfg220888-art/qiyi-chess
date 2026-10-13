@@ -61,7 +61,16 @@ export class Collision {
     else this.lastSafe = { x: pos.x, z: pos.z };
     return hit;
   }
-  // 射線（水平）對靜態盒子：回傳最近距離（用於手電筒 / 鬼魂瞬移檢查）
+  overlapsStatic(x, z, r) {
+    const bx = clamp(Math.floor(x / CELL), 0, this.bw - 1);
+    const bz = clamp(Math.floor(z / CELL), 0, this.bh - 1);
+    for (const b of this.buckets[bz * this.bw + bx]) {
+      const cx = clamp(x, b.minX, b.maxX), cz = clamp(z, b.minZ, b.maxZ);
+      if ((x - cx) ** 2 + (z - cz) ** 2 < r * r) return true;
+    }
+    return this.lv.cellAt(Math.floor(x / CELL), Math.floor(z / CELL)) < 0;
+  }
+  // 圓與所有靜態 / 動態盒子是否重疊
   overlapsAny(x, z, r) {
     const bx = clamp(Math.floor(x / CELL), 0, this.bw - 1);
     const bz = clamp(Math.floor(z / CELL), 0, this.bh - 1);

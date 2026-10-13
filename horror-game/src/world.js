@@ -71,6 +71,7 @@ export class World {
     scene.add(this.root);
     this.static = new Map(); // materialKey -> Map(chunkKey -> geos)
     this.interactables = [];
+    this.removed = [];
     this.time = 0;
     this.lightningT = 0;
     this.power = 0;
@@ -313,12 +314,10 @@ export class World {
       const sv = d.o === 'h' ? [0, d.swing] : [d.swing, 0];
       d.openSign = Math.sign(tipX * sv[0] + tipZ * sv[1]) || 1;
       d.dirty = true;
-      d.getBox = () => {
-        if (Math.abs(d.angle) > 0.28) return null;
-        return d.o === 'h'
-          ? { minX: m - DOOR_W / 2, maxX: m + DOOR_W / 2, minZ: plane - 0.06, maxZ: plane + 0.06 }
-          : { minX: plane - 0.06, maxX: plane + 0.06, minZ: m - DOOR_W / 2, maxZ: m + DOOR_W / 2 };
-      };
+      const closedBox = d.o === 'h'
+        ? { minX: m - DOOR_W / 2, maxX: m + DOOR_W / 2, minZ: plane - 0.06, maxZ: plane + 0.06 }
+        : { minX: plane - 0.06, maxX: plane + 0.06, minZ: m - DOOR_W / 2, maxZ: m + DOOR_W / 2 };
+      d.getBox = () => (Math.abs(d.angle) > 0.28 ? null : closedBox);
       // 門框
       const fw = 0.06, fd = WALL_T + 0.04;
       if (d.o === 'h') {
@@ -826,6 +825,7 @@ export class World {
     this.lv.gate.open = true;
     this.lv.gate.target = 1.35;
     this.root.remove(this.chain);
+    this.removed.push(this.chain);
     const i = this.interactables.indexOf(this.chain);
     if (i >= 0) this.interactables.splice(i, 1);
   }
@@ -933,6 +933,7 @@ export class World {
     it.taken = true;
     if (it.mesh) {
       this.root.remove(it.mesh);
+      if (!this.removed.includes(it.mesh)) this.removed.push(it.mesh);
       const i = this.interactables.indexOf(it.mesh);
       if (i >= 0) this.interactables.splice(i, 1);
     }
@@ -1104,7 +1105,7 @@ export class World {
     // 電視雜訊
     if (this.tvCtx && (Math.floor(t * 30) % 2 === 0)) {
       const g = this.tvCtx;
-      const img = g.createImageData(80, 60);
+      const img = this.tvImg || (this.tvImg = g.createImageData(80, 60));
       for (let i = 0; i < 80 * 60; i++) {
         const v = Math.random() * 200;
         img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v * 1.05; img.data[i * 4 + 3] = 255;
@@ -1121,7 +1122,10 @@ export class World {
     // 可推動的輪椅
     for (const f of this.dynamicProps) {
       if (f.vel) {
-        f.x += f.vel[0] * dt; f.z += f.vel[1] * dt;
+        const nx = f.x + f.vel[0] * dt, nz = f.z + f.vel[1] * dt;
+        // 撞到牆或家具就停下
+        if (this.propBlocked && this.propBlocked(nx, nz)) { f.vel = null; continue; }
+        f.x = nx; f.z = nz;
         f.vel[0] *= Math.pow(0.35, dt); f.vel[1] *= Math.pow(0.35, dt);
         if (Math.hypot(f.vel[0], f.vel[1]) < 0.03) f.vel = null;
         f.mesh.position.set(f.x, 0, f.z);

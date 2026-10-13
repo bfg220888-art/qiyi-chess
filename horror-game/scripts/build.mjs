@@ -14,7 +14,7 @@ async function assemble(js) {
   const html = await readFile(path.join(root, 'index.html'), 'utf8');
   const cssSrc = await readFile(path.join(root, 'src/style.css'), 'utf8');
   const css = (await esbuild.transform(cssSrc, { loader: 'css', minify: !serve })).code;
-  const safeJs = js.replace(/<\/script/gi, '<\\/script');
+  const safeJs = js.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--');
   const linkTag = '<link rel="stylesheet" href="./src/style.css">';
   const scriptTag = '<script type="module" src="./src/main.js"></script>';
   if (!html.includes(linkTag) || !html.includes(scriptTag)) throw new Error('index.html 缺少預期的 link / script 標籤');

@@ -16,7 +16,8 @@ export class Input {
     this.joy = null;
     this.lookTouch = null;
     this.padPrev = [];
-    this.touchMode = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+    // 只有主要指標是手指時才用觸控模式（觸控筆電仍用滑鼠鍵盤）
+    this.touchMode = matchMedia('(pointer: coarse)').matches;
     this.onLockChange = null;
     this.bind();
   }
@@ -58,8 +59,10 @@ export class Input {
       this.look.x += mx * s;
       this.look.y += my * s;
     });
+    document.addEventListener('pointerlockerror', () => { this.lockFailed = true; });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
+      if (this.locked) this.lockFailed = false;
       if (this.onLockChange) this.onLockChange(this.locked);
     });
 

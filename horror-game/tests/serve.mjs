@@ -5,12 +5,18 @@ import path from 'node:path';
 
 export function serveDir(dir, port = 0) {
   const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
+  const rootDir = path.resolve(dir);
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://x');
-    let p = path.normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');
-    if (!p || p.endsWith('/')) p += 'index.html';
-    const file = path.join(dir, p);
-    if (!file.startsWith(dir)) { res.writeHead(403); res.end(); return; }
+    let file;
+    try {
+      const url = new URL(req.url, 'http://x');
+      let p = decodeURIComponent(url.pathname);
+      if (!p || p.endsWith('/')) p += 'index.html';
+      file = path.resolve(rootDir, '.' + path.posix.normalize('/' + p));
+    } catch {
+      res.writeHead(400); res.end(); return;
+    }
+    if (file !== rootDir && !file.startsWith(rootDir + path.sep)) { res.writeHead(403); res.end(); return; }
     try {
       const data = await readFile(file);
       res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' });

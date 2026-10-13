@@ -260,6 +260,8 @@ export class Ghost {
     const a = this.game.audio;
     if (s === 'chase') {
       this.stopHum();
+      this.lostT = 0;
+      this.replanT = 0;
       if (prev !== 'chase') {
         a.play('shriek', { pos: this.pos });
         this.game.onChaseStart();
@@ -313,10 +315,10 @@ export class Ghost {
     return false;
   }
 
-  hearNoise(x, z, radius) {
+  hearNoise(x, z, radius, kind = '') {
     if (this.state === 'dormant' || this.state === 'stunned' || this.state === 'kill') return;
-    // 追逐中只有在看不到玩家時，才會被大聲響（例如摔破的瓶子）引開
-    if (this.state === 'chase' && (this.seesPlayer || radius < 15 || this.enraged || this.knowsLocker)) return;
+    // 追逐中只有在看不到玩家時，才會被摔破的瓶子之類的大聲響引開（玩家自己的腳步聲不算）
+    if (this.state === 'chase' && (kind !== 'bottle' || this.seesPlayer || this.lostT < 0.3 || this.enraged || this.knowsLocker)) return;
     const d = Math.hypot(x - this.pos.x, z - this.pos.z);
     if (d < radius * this.diff.hearing * this.aggression) {
       this.lastKnown = { x, z };
@@ -453,6 +455,11 @@ export class Ghost {
         speed = (this.enraged ? 4.15 : 3.45) * base;
         this.replanT -= dt;
         if (!sees) this.lostT += dt;
+        // 她以為你在某個櫃子裡，但你已經出來了（或根本沒進去）→ 改追你本人
+        if (this.knowsLocker && P.hiding !== this.knowsLocker && !(P.hideAnim && P.hideAnim.entering && P.hideAnim.locker === this.knowsLocker)) {
+          this.knowsLocker = null;
+          this.path = null;
+        }
         // 玩家躲進櫃子的瞬間被看到 → 她會直接過去
         if (P.hiding && this.knowsLocker !== P.hiding) {
           if (this.lostT < 0.6 && dist < 14) this.knowsLocker = P.hiding;
@@ -460,19 +467,21 @@ export class Ghost {
         const tgt = this.knowsLocker ? { x: this.knowsLocker.exitX, z: this.knowsLocker.exitZ } : (sees ? eye : this.lastKnown);
         if (tgt && (this.replanT <= 0 || !this.path)) {
           this.replanT = 0.35;
-          if (sees && dist < 2.2 && !this.knowsLocker) this.path = [{ x: eye.x, z: eye.z }], this.pathI = 0;
-          else this.goTo(tgt.x, tgt.z);
+          if (sees && dist < 2.2 && !this.knowsLocker) {
+            this.path = [{ x: eye.x, z: eye.z }];
+            this.pathI = 0;
+          } else this.goTo(tgt.x, tgt.z);
         }
         this.moveAlong(dt, speed);
         if (this.knowsLocker) {
-          if (Math.hypot(this.knowsLocker.exitX - this.pos.x, this.knowsLocker.exitZ - this.pos.z) < 0.7) {
+          if (P.hiding === this.knowsLocker && Math.hypot(this.knowsLocker.exitX - this.pos.x, this.knowsLocker.exitZ - this.pos.z) < 0.7) {
             this.setState('kill');
             g.onCaught(true);
           }
         } else if (dist < 0.85 && !P.hiding) {
           this.setState('kill');
           g.onCaught(false);
-        } else if (this.lostT > (this.enraged ? 6 : 3.2) || (P.hiding && !this.knowsLocker)) {
+        } else if ((!this.enraged && this.lostT > 3.2) || (P.hiding && !this.knowsLocker)) {
           this.setState('search');
           this.searchN = 0;
         }

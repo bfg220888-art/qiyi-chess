@@ -8,7 +8,15 @@ import { Game } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
-  get(k, d) { try { const v = localStorage.getItem('silentward.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  // 讀回來的資料要檢查型別：壞掉或被改過的存檔不能讓遊戲開不起來
+  get(k, d) {
+    try {
+      const v = localStorage.getItem('silentward.' + k);
+      if (v === null) return d;
+      const x = JSON.parse(v);
+      return x === null || typeof x !== typeof d || Array.isArray(x) !== Array.isArray(d) ? d : x;
+    } catch (e) { return d; }
+  },
   set(k, v) { try { localStorage.setItem('silentward.' + k, JSON.stringify(v)); } catch (e) { /* 私密模式 */ } },
 };
 
@@ -25,11 +33,15 @@ const TIPS = [
 class App {
   constructor() {
     this.canvas = $('game');
-    this.settings = {
+    const defaults = {
       volume: 0.85, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
       quality: null, difficulty: 'normal',
-      ...store.get('settings', {}),
     };
+    this.settings = { ...defaults, ...store.get('settings', {}) };
+    const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
+    clampNum('volume', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
+    this.settings.invertY = this.settings.invertY === true;
+    this.settings.showFps = this.settings.showFps === true;
     const touch = matchMedia('(pointer: coarse)').matches;
     if (!this.settings.quality || !QUALITY[this.settings.quality]) {
       const mem = navigator.deviceMemory || 4;
@@ -70,7 +82,7 @@ class App {
       if (document.hidden) {
         if (this.state === 'playing' && !this.paused) this.pause();
         this.audio.suspend();
-      } else if (this.state === 'playing' && !this.paused) this.audio.resume();
+      } else if (!(this.state === 'playing' && this.paused)) this.audio.resume();
     });
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
@@ -100,7 +112,10 @@ class App {
   checkOrientation() {
     if (!this.input || !this.input.touchMode) return;
     const portrait = innerHeight > innerWidth;
-    if (portrait && this.state === 'playing' && !this.rotateDismissed) $('rotate').hidden = false;
+    if (portrait && this.state === 'playing' && !this.rotateDismissed && $('rotate').hidden) {
+      $('rotate').hidden = false;
+      this.pause();
+    }
     if (!portrait) $('rotate').hidden = true;
   }
 
@@ -137,7 +152,12 @@ class App {
     $('btnNew').addEventListener('click', () => this.startGame(undefined, true));
     $('btnMenu').addEventListener('click', () => this.toMenu());
     $('btnRotateOk').addEventListener('click', () => { this.rotateDismissed = true; $('rotate').hidden = true; });
-    $('note').addEventListener('pointerdown', () => { if (this.game) this.input.push('interact'); });
+    // 手機上點紙張本身可以捲動閱讀；點紙張外面或「關閉」才關掉
+    $('note').addEventListener('pointerdown', (e) => {
+      if (!this.game) return;
+      const onPaper = e.target.closest && e.target.closest('.paper');
+      if (e.pointerType === 'mouse' || !onPaper || e.target.id === 'noteClose') this.input.push('interact');
+    });
     $('mapView').addEventListener('pointerdown', () => { if (this.game) this.input.push('map'); });
     // 設定
     const qs = $('qualitySeg');
@@ -189,7 +209,8 @@ class App {
     if (this.game) { this.game.dispose(); this.game = null; }
     this.quality = QUALITY[this.settings.quality];
     this.resScale = 1;
-    ['menu', 'end', 'pause', 'help', 'settings'].forEach((id) => { $(id).hidden = true; });
+    ['menu', 'end', 'pause', 'help', 'settings', 'note', 'mapView', 'hideOverlay'].forEach((id) => { $(id).hidden = true; });
+    this.ui.setHiding(false);
     this.ui.fade(0, 0.01);
     $('loading').hidden = false;
     $('loadTip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
@@ -214,6 +235,7 @@ class App {
     this.game = game;
     $('loading').hidden = true;
     const begin = () => {
+      this.audio.resume();
       this.state = 'playing';
       this.paused = false;
       $('hud').hidden = false;
@@ -228,7 +250,7 @@ class App {
       this.busy = false;
     };
     this.state = 'intro';
-    if (skipIntro || store.get('introSeen', false) && seed !== undefined) begin();
+    if (skipIntro || store.get('introSeen', false)) begin();
     else {
       this.ui.typeIntro([
         '1999 年 8 月，聖羅莎紀念醫院在一連串失蹤事件後封院。',
@@ -259,7 +281,11 @@ class App {
     this.input.enabled = true;
     this.input.clear();
     this.last = performance.now();
-    if (!this.input.touchMode) this.input.requestLock();
+    if (!this.input.touchMode) {
+      this.input.requestLock();
+      // 用 Esc 繼續時瀏覽器不允許立刻鎖定滑鼠：提示玩家點一下
+      setTimeout(() => { if (this.state === 'playing' && !this.paused && !this.input.locked) this.ui.hint('點一下畫面恢復滑鼠視角', 3); }, 500);
+    }
   }
   toMenu() {
     if (this.game) { this.game.dispose(); this.game = null; }
@@ -270,6 +296,8 @@ class App {
     this.ui.fade(0, 0.01);
     this.ui.damage(0);
     this.ui.setFps(false);
+    this.ui.setHiding(false);
+    this.audio.resume();
     $('menu').hidden = false;
     // 更新最佳紀錄顯示
     const k = this.settings.difficulty;

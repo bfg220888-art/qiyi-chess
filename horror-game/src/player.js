@@ -142,7 +142,7 @@ export class Player {
         const room = g.lv.roomAtWorld(this.pos.x, this.pos.z);
         const surface = room && room.id > 0 && !['office', 'nurse', 'lobby'].includes(room.type) ? 'tile' : 'vinyl';
         g.audio.play('footstep', { run: sprint, crouch, surface });
-        g.makeNoise(this.pos.x, this.pos.z, sprint ? 15 : crouch ? 2 : 6.5);
+        g.makeNoise(this.pos.x, this.pos.z, sprint ? 15 : crouch ? 2 : 6.5, 'step');
       }
     } else {
       this.vel.set(0, 0);

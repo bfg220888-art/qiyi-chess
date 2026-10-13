@@ -691,7 +691,8 @@ export class AudioEngine {
   // ---------------------------------------------------------------------
   // 持續聲音
   startAmbience() {
-    if (!this.ctx || this.ambStarted) return;
+    if (!this.ctx) return;
+    if (this.ambStarted) { this.amb.gain.setTargetAtTime(1, this.ctx.currentTime, 1.5); return; }
     this.ambStarted = true;
     const c = this.ctx, t = c.currentTime;
     // 房間底噪
@@ -778,14 +779,21 @@ export class AudioEngine {
     this.amb.gain.setTargetAtTime(1, t, 1.5);
   }
 
-  setRain(v) { if (this.rainGain) this.rainGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.5); }
-  setTinnitus(v) { if (this.tinn) this.tinn.gain.setTargetAtTime(v * 0.012, this.ctx.currentTime, 0.4); }
-  setStatic(v) { if (this.staticGain) this.staticGain.gain.setTargetAtTime(v * 0.08, this.ctx.currentTime, 0.15); }
+  // 參數變化很小就不排新的自動化事件（每格呼叫，避免時間軸塞爆）
+  changed(key, v, eps = 0.004) {
+    this.last = this.last || {};
+    if (this.last[key] !== undefined && Math.abs(this.last[key] - v) < eps) return false;
+    this.last[key] = v;
+    return true;
+  }
+  setRain(v) { if (this.rainGain && this.changed('rain', v)) this.rainGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.5); }
+  setTinnitus(v) { if (this.tinn && this.changed('tinn', v)) this.tinn.gain.setTargetAtTime(v * 0.012, this.ctx.currentTime, 0.4); }
+  setStatic(v) { if (this.staticGain && this.changed('static', v)) this.staticGain.gain.setTargetAtTime(v * 0.08, this.ctx.currentTime, 0.15); }
   setHeartbeat(bpm, vol) { this.hb.bpm = bpm; this.hb.vol = vol; }
   setBreathing(level, hiding = false) { this.breath.level = level; this.breath.hiding = hiding; }
   setChase(level) {
     this.chase.level = level;
-    if (this.chaseGain) this.chaseGain.gain.setTargetAtTime(level * 0.55, this.ctx.currentTime, level > 0.5 ? 0.3 : 1.2);
+    if (this.chaseGain && this.changed('chase', level)) this.chaseGain.gain.setTargetAtTime(level * 0.55, this.ctx.currentTime, level > 0.5 ? 0.3 : 1.2);
   }
   setAlarm(on) { this.alarmOn = on; }
 
@@ -960,6 +968,8 @@ export class AudioEngine {
     this.setTinnitus(0);
     this.alarmOn = false;
     this.phone = null;
+    this.last = {};
+    if (this.amb) this.amb.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
     for (const em of [...this.emitters]) em.dispose();
   }
 }

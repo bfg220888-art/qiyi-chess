@@ -43,6 +43,7 @@ export class Game {
     this.target = null;
     this.mapOpen = false;
     this.projectiles = [];
+    this.timers = new Set();
     this.sight = (ax, az, bx, bz) => sightClear(this.lv, ax, az, bx, bz);
   }
 
@@ -58,7 +59,10 @@ export class Game {
     this.scene.fog = new THREE.FogExp2(0x000000, 0.055);
     // 極弱的環境反射：讓金屬與濕地板有一點點反光
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const room = new RoomEnvironment();
+    this.envRT = pmrem.fromScene(room, 0.04);
+    this.envTex = this.envRT.texture;
+    if (room.dispose) room.dispose();
     pmrem.dispose();
     this.scene.environment = this.envTex;
     this.scene.environmentIntensity = 0.035;
@@ -79,6 +83,7 @@ export class Game {
       this.collision.dynamic.push({ getBox: () => f.box });
     }
     this.ghostNav = new NavGrid(this.lv, GHOST_R, { ghost: true });
+    this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
     this.player = new Player(this);
     this.ghost = new Ghost(this, new GhostModel(this.tf, this.world.M));
     this.director = new Director(this);
@@ -120,24 +125,35 @@ export class Game {
     this.audio.setRain(0.1);
     this.ui.updateHud();
     // 開場：身後的大門砰一聲關上
-    setTimeout(() => {
+    this.later(() => {
       if (this.over) return;
       this.audio.play('doorSlam', { pos: { x: this.lv.gate.x, y: 1.2, z: this.lv.gate.z } });
       this.audio.play('metalClank', { pos: { x: this.lv.gate.x, y: 1, z: this.lv.gate.z } });
       this.player.shake = 0.8;
       this.ui.subtitle('（大門在身後鎖上了）', 3.5);
     }, 1400);
-    setTimeout(() => {
+    this.later(() => {
       if (this.over) return;
       this.ui.hint(this.input.touchMode ? '左邊拖曳移動，右邊滑動看四周。看到東西時按「互動」。' : 'WASD 移動・滑鼠看四周・E 互動・F 手電筒・Q 相機閃光', 6);
     }, 4200);
-    setTimeout(() => { if (!this.over) this.ui.subtitle('先看看大廳牆上的平面圖。', 4); }, 11000);
+    this.later(() => { if (!this.over) this.ui.subtitle('先看看大廳牆上的平面圖。', 4); }, 11000);
+  }
+
+  // 會在遊戲結束或離開後自動取消的計時器
+  later(fn, ms) {
+    const id = setTimeout(() => {
+      this.timers.delete(id);
+      if (this.over || this.disposed || this.app.game !== this) return;
+      fn();
+    }, ms);
+    this.timers.add(id);
+    return id;
   }
 
   // 噪音：會吸引她
-  makeNoise(x, z, radius) {
+  makeNoise(x, z, radius, kind = '') {
     if (radius <= 0 || !this.ghost) return;
-    this.ghost.hearNoise(x, z, radius);
+    this.ghost.hearNoise(x, z, radius, kind);
   }
 
   // ---------------------------------------------------------------------
@@ -174,6 +190,7 @@ export class Game {
     P.update(dt, inp);
     this.updateProjectiles(dt);
     this.ghost.update(dt);
+    if (this.over || this.dying) return;
     this.director.update(dt);
     this.world.update(dt, P.camera, P.flashOn && P.battery > 0 && !P.hiding);
     this.updateInteraction();
@@ -198,7 +215,7 @@ export class Game {
     }
 
     // 逃出大門
-    if (this.lv.gate.open && P.pos.z > this.lv.gate.z + 0.7) this.win();
+    if (this.lv.gate.open && P.pos.z > this.lv.gate.z + 0.7) { this.win(); return; }
     // 進入發電機房
     if (!this.seenGenerator) {
       const room = this.lv.roomAtWorld(P.pos.x, P.pos.z);
@@ -314,7 +331,7 @@ export class Game {
         const pos = { x: d.cx, y: 1.2, z: d.cz };
         if (d.target > 0.3) {
           this.world.setDoor(d, 0, 3.2);
-          setTimeout(() => A.play('doorClose', { pos }), 380);
+          this.later(() => A.play('doorClose', { pos }), 380);
           this.makeNoise(d.cx, d.cz, 5);
         } else {
           this.world.setDoor(d, 1.5, 2.6);
@@ -426,7 +443,8 @@ export class Game {
         this.scene.remove(p.mesh);
         this.projectiles.splice(i, 1);
         this.audio.play('bottleBreak', { pos: { x: at.x, y: at.y, z: at.z } });
-        this.makeNoise(at.x, at.z, 20);
+        this.makeNoise(at.x, at.z, 20, 'bottle');
+        p.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
         continue;
       }
       p.life = (p.life || 0) + dt;
@@ -464,13 +482,13 @@ export class Game {
     lamp.material.emissive.set(0x30ff60);
     lamp.material.emissiveIntensity = 1.2;
     this.ghost.aggression = 1 + 0.15 * this.fusesInserted;
-    setTimeout(() => {
+    this.later(() => {
       if (this.over) return;
       A.play('powerUp');
       W.setPower(this.fusesInserted);
       if (this.fusesInserted === 1) {
         this.ui.subtitle('有些燈亮了。遠處傳來一聲尖叫。', 4);
-        setTimeout(() => {
+        this.later(() => {
           const s = this.ghost.findSpot(15, 30, false);
           if (s) A.play('shriek', { pos: { x: s.x, y: 1.6, z: s.z } });
         }, 2500);
@@ -486,7 +504,7 @@ export class Game {
   startEscape() {
     const A = this.audio;
     this.phase = 'escape';
-    setTimeout(() => {
+    this.later(() => {
       if (this.over) return;
       A.setAlarm(true);
       this.world.setPower(3);
@@ -497,7 +515,7 @@ export class Game {
       this.collision.allowOutside = true;
       this.ghost.enraged = true;
       this.ghost.aggression = 1.5;
-      setTimeout(() => {
+      this.later(() => {
         if (this.over) return;
         A.play('ghostScream', { pos: this.ghost.state === 'dormant' ? { x: this.player.pos.x + 12, y: 1.6, z: this.player.pos.z } : this.ghost.pos });
         this.ui.hint('往大門跑，不要回頭！', 4);
@@ -609,16 +627,23 @@ export class Game {
     this.over = true;
     this.audio.stopAll();
     this.audio.play('thunder', { near: 0.3 });
+    this.input.exitLock();
+    this.ui.prompt('');
     this.ui.fade(1, 1.6);
     const allNotes = this.notesRead.size === NOTES.length;
     const text = allNotes
       ? '你讀完了所有的紀錄。走出大門時，你聽見身後傳來孩子的笑聲，和一聲很輕的「謝謝」。她終於找到了。'
       : '你逃出了醫院。回家重看錄影時，最後一格畫面裡，她就站在你身後。';
     const best = this.app.recordBest(this.diffKey, this.time);
-    setTimeout(() => {
-      this.ui.showEnd(true, [...this.statRows(), ...(best ? [['新紀錄！', fmtTime(this.time)]] : [])], text);
+    const rows = [...this.statRows(), ...(best ? [['新紀錄！', fmtTime(this.time)]] : [])];
+    const id = setTimeout(() => {
+      this.timers.delete(id);
+      if (this.disposed || this.app.game !== this) return;
+      this.ui.showEnd(true, rows, text);
+      this.ui.fade(0, 0.8);
       this.app.onGameOver(true);
     }, 1700);
+    this.timers.add(id);
   }
 
   statRows() {
@@ -667,8 +692,16 @@ export class Game {
 
   dispose() {
     this.over = true;
+    this.disposed = true;
+    for (const id of this.timers) clearTimeout(id);
+    this.timers.clear();
     this.audio.stopAll();
+    this.audio.occlusionFn = null;
+    if (this.ui.game === this) this.ui.game = null;
     this.input.exitLock();
+    // 已經從場景移除的物件也要釋放
+    for (const o of this.world.removed) this.scene.add(o);
+    for (const p of this.projectiles) this.scene.add(p.mesh);
     const disposeMat = (m) => {
       for (const k of Object.keys(m)) {
         const v = m[k];
@@ -679,13 +712,14 @@ export class Game {
     const mats = new Set();
     this.scene.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
+      if (o.isInstancedMesh) o.dispose();
       if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => mats.add(m));
       if (o.isLight && o.shadow && o.shadow.map) o.shadow.map.dispose();
     });
     for (const m of mats) disposeMat(m);
     for (const v of this.tf.cache.values()) for (const t of Object.values(v)) if (t && t.isTexture) t.dispose();
     if (this.world.aoTex) this.world.aoTex.dispose();
-    if (this.envTex) this.envTex.dispose();
+    if (this.envRT) this.envRT.dispose();
     this.post.dispose();
     this.renderer.renderLists.dispose();
   }

@@ -46,7 +46,7 @@ export class Director {
       }
     }
     // 幻影
-    if (this.apparition.visible) this.updateApparition(dt);
+    if (this.apparition.visible && !this.fakeRush) this.updateApparition(dt);
     if (this.fakeRush) this.updateRush(dt);
 
     // 隨機事件
@@ -124,7 +124,7 @@ export class Director {
         const a = Math.random() * Math.PI * 2;
         // 檢查推動方向是否淨空
         const tx = w.x + Math.cos(a) * 1.4, tz = w.z + Math.sin(a) * 1.4;
-        if (!g.ghostNav.isFree(tx, tz) || Math.hypot(tx - pp.x, tz - pp.z) < 1.5) break;
+        if (!g.ghostNav.isFree(tx, tz) || Math.hypot(tx - pp.x, tz - pp.z) < 1.5 || !g.sight(w.x, w.z, tx, tz) || g.collision.overlapsStatic(tx, tz, 0.45)) break;
         w.vel = [Math.cos(a) * 1.2, Math.sin(a) * 1.2];
         A.play('wheelchair', { pos: { x: w.x, y: 0.5, z: w.z } });
         break;
@@ -132,7 +132,7 @@ export class Director {
       case 'thunder': {
         const nearWin = lv.windows.some((w) => Math.hypot(w.x - pp.x, w.z - pp.z) < 9);
         g.world.lightning(nearWin ? 1 : 0.25);
-        setTimeout(() => A.play('thunder', { near: nearWin ? rnd(0.5, 1) : rnd(0, 0.5) }), rnd(300, 1500));
+        g.later(() => A.play('thunder', { near: nearWin ? rnd(0.5, 1) : rnd(0, 0.5) }), rnd(300, 1500));
         break;
       }
       case 'peek':
@@ -171,11 +171,11 @@ export class Director {
     this.phoneRinging = false;
     g.audio.stopPhone();
     g.audio.play('static', { dur: 1.2, vol: 0.5 });
-    setTimeout(() => {
+    g.later(() => {
       g.audio.play('whisper', { pan: 0.0, vol: 1.2, dur: 2.6 });
       g.ui.subtitle('「……你也是來找我的孩子的嗎……」', 4);
     }, 1200);
-    setTimeout(() => {
+    g.later(() => {
       g.ui.subtitle('「……他在發電機房。」', 3.5);
       g.player.sanity = Math.max(0, g.player.sanity - 0.1);
     }, 5000);
@@ -226,6 +226,7 @@ export class Director {
     if (d < 6 || this.appT > 6 || this.appSeen > 1.6) this.vanishApparition(true);
   }
   vanishApparition(withStatic) {
+    this.fakeRush = null; // 被閃光打散的幻覺不會再造成驚嚇
     if (!this.apparition.visible) return;
     this.apparition.visible = false;
     this.appStinger = false;

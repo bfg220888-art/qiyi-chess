@@ -190,6 +190,9 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   assert(await page.evaluate(() => window.__SW.game.over), 'should win after walking out');
   await page.waitForTimeout(2200);
   assert(await page.evaluate(() => !document.getElementById('end').hidden && document.getElementById('endTitle').textContent.includes('逃')), 'victory screen');
+  await page.waitForTimeout(1000);
+  const fadeOpacity = await page.evaluate(() => Number(getComputedStyle(document.getElementById('fade')).opacity));
+  assert(fadeOpacity < 0.1, 'victory screen must not be covered by the black fade (opacity ' + fadeOpacity + ')');
   await shot(page, 'd9-win');
 });
 
@@ -222,6 +225,16 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   await sim(page, 0.6);
   const afterFlash = await page.evaluate(() => window.__SW.game.ghost.state);
   log('ghost after flash', afterFlash);
+  if (afterFlash !== 'stunned') {
+    const geo = await page.evaluate(() => {
+      const g = window.__SW.game, P = g.player, gh = g.ghost, cam = P.camera;
+      const fwd = P.forward(cam.position.clone());
+      const to = gh.pos.clone().setY(1.5).sub(cam.position);
+      const d = to.length();
+      return { d, dot: to.normalize().dot(fwd), sight: g.sight(P.pos.x, P.pos.z, gh.pos.x, gh.pos.z), yaw: P.yaw, pitch: P.pitch, stats: g.stats, pending: P.pendingFlash, film: P.film };
+    });
+    log('flash debug', JSON.stringify(geo));
+  }
   assert(afterFlash === 'stunned', 'camera flash should stun her');
   // 2. 長時間 AI 模擬：玩家站著不動，鬼魂遊蕩，不能出錯
   await page.evaluate(() => { const g = window.__SW.game; g.player.lives = 99; });

@@ -90,6 +90,8 @@ export class UI {
 
   updateTimecode(t) {
     const s = Math.floor(t);
+    if (s === this.lastSec) return;
+    this.lastSec = s;
     const hh = String(Math.floor(s / 3600)).padStart(2, '0');
     const mm = String(Math.floor(s / 60) % 60).padStart(2, '0');
     const ss = String(s % 60).padStart(2, '0');
@@ -123,15 +125,22 @@ export class UI {
   drawMap() {
     const g = this.game, lv = g.lv, c = this.el.mapCanvas, ctx = c.getContext('2d');
     const W = c.width, H = c.height;
-    ctx.fillStyle = '#d6cdb3';
-    ctx.fillRect(0, 0, W, H);
-    // 紙張紋理
-    for (let i = 0; i < 40; i++) {
-      const x = (i * 97) % W, y = (i * 211) % H;
-      const gr = ctx.createRadialGradient(x, y, 1, x, y, 60 + (i % 5) * 20);
-      gr.addColorStop(0, 'rgba(90,70,40,0.12)'); gr.addColorStop(1, 'rgba(90,70,40,0)');
-      ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+    // 紙張紋理只畫一次
+    if (!this.paperBg || this.paperBg.width !== W || this.paperBg.height !== H) {
+      const pc = document.createElement('canvas');
+      pc.width = W; pc.height = H;
+      const pg = pc.getContext('2d');
+      pg.fillStyle = '#d6cdb3';
+      pg.fillRect(0, 0, W, H);
+      for (let i = 0; i < 40; i++) {
+        const x = (i * 97) % W, y = (i * 211) % H;
+        const gr = pg.createRadialGradient(x, y, 1, x, y, 60 + (i % 5) * 20);
+        gr.addColorStop(0, 'rgba(90,70,40,0.12)'); gr.addColorStop(1, 'rgba(90,70,40,0)');
+        pg.fillStyle = gr; pg.fillRect(0, 0, W, H);
+      }
+      this.paperBg = pc;
     }
+    ctx.drawImage(this.paperBg, 0, 0);
     const scale = Math.min((W - 60) / (lv.W * CELL), (H - 90) / (lv.H * CELL));
     const ox = W / 2 - (lv.W * CELL * scale) / 2, oy = 60;
     ctx.fillStyle = '#2b2419';

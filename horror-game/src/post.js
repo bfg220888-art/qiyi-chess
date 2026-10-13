@@ -102,6 +102,8 @@ export class Post {
     this.composer.render(dt);
   }
   dispose() {
+    // EffectComposer.dispose() 不會釋放各個 pass（泛光的 mip 目標等），要自己來
+    for (const p of this.composer.passes) if (p.dispose) p.dispose();
     this.composer.dispose();
   }
 }
