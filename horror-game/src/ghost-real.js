@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
+import { assetUrl } from './assets.js';
 
 const BASE = 'assets/ghost/';
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -13,7 +14,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 let glbP = null;
 const imgP = new Map();
 function getGlb() {
-  if (!glbP) glbP = new GLTFLoader().loadAsync(BASE + 'ghost.glb').catch((e) => { glbP = null; throw e; });
+  if (!glbP) glbP = new GLTFLoader().loadAsync(assetUrl(BASE + 'ghost.glb')).catch((e) => { glbP = null; throw e; });
   return glbP;
 }
 function getImage(name) {
@@ -22,7 +23,7 @@ function getImage(name) {
       const img = new Image();
       img.onload = () => res(img);
       img.onerror = () => { imgP.delete(name); rej(new Error('load ' + name)); };
-      img.src = BASE + name;
+      img.src = assetUrl(BASE + name);
     }));
   }
   return imgP.get(name);

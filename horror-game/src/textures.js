@@ -3,6 +3,7 @@
 // 再疊上程序生成的水漬、黴菌、髒污；照片載入失敗時整套退回純程序貼圖。
 import * as THREE from 'three';
 import { RNG } from './rng.js';
+import { assetUrl } from './assets.js';
 
 const mk = (w, h) => {
   const c = document.createElement('canvas');
@@ -144,7 +145,7 @@ function getPhoto(url) {
       const img = new Image();
       img.onload = () => res(img);
       img.onerror = () => { photoImg.delete(url); rej(new Error('load ' + url)); };
-      img.src = url;
+      img.src = assetUrl(url);
     }));
   }
   return photoImg.get(url);

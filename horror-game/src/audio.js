@@ -1,6 +1,7 @@
 // 音效引擎（Web Audio）：實錄音效（CC0 / CC BY，見 CREDITS.md）＋即時合成。
 // 音檔載入失敗或還沒載完時，每個聲音都會退回合成版本。
 // 含 HRTF 3D 定位、牆壁遮蔽（悶音）、卷積殘響。
+import { assetUrl } from './assets.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -98,7 +99,7 @@ export class AudioEngine {
     });
     this.samplesLoading = Promise.all(SFX_FILES.map(async (n) => {
       try {
-        const r = await fetch(base + n + '.mp3');
+        const r = await fetch(assetUrl(base + n + '.mp3'));
         if (!r.ok) throw new Error('HTTP ' + r.status);
         this.buf[n] = await decode(await r.arrayBuffer());
       } catch (e) { /* 這個聲音就用合成的 */ }
