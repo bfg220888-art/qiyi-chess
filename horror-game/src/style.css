@@ -6,7 +6,7 @@
   --faint: rgba(230, 224, 211, 0.16);
   --blood: #a3170f;
   --rec: #e3291c;
-  --panel: rgba(10, 10, 11, 0.86);
+  --panel: rgba(10, 10, 11, 0.95);
   --paper: #ddd4bd;
   --paper-ink: #2a2218;
   --display: "Noto Serif TC", "Songti TC", "PMingLiU", "MingLiU", serif;
@@ -24,7 +24,7 @@ html, body {
 #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
 
 .screen, .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 20; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
-.overlay { background: rgba(0, 0, 0, 0.55); z-index: 30; }
+.overlay { background: rgba(0, 0, 0, 0.72); z-index: 30; }
 
 /* ---------- 主選單 ---------- */
 #menu {
