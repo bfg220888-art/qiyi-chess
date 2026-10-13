@@ -5,6 +5,8 @@ import { AudioEngine } from './audio.js';
 import { Input } from './input.js';
 import { UI, fmtTime } from './ui.js';
 import { Game } from './game.js';
+import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
+import { loadPhotos, prefetchPhotos } from './textures.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -35,17 +37,21 @@ class App {
     this.canvas = $('game');
     const defaults = {
       volume: 0.85, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
-      quality: null, difficulty: 'normal',
+      quality: null, difficulty: 'normal', fpsCap: 60,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
     clampNum('volume', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
     this.settings.invertY = this.settings.invertY === true;
     this.settings.showFps = this.settings.showFps === true;
+    if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
     const touch = matchMedia('(pointer: coarse)').matches;
+    // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
+    if ((this.settings.cfgVer || 1) < 2 && this.settings.quality === 'high' && !this.settings.qualityChosen) this.settings.quality = null;
+    this.settings.cfgVer = 2;
     if (!this.settings.quality || !QUALITY[this.settings.quality]) {
       const mem = navigator.deviceMemory || 4;
-      this.settings.quality = touch ? (mem <= 3 ? 'low' : 'medium') : 'high';
+      this.settings.quality = touch && mem <= 3 ? 'low' : 'medium';
     }
     if (!DIFFICULTY[this.settings.difficulty]) this.settings.difficulty = 'normal';
     this.quality = QUALITY[this.settings.quality];
@@ -75,6 +81,9 @@ class App {
     this.paused = false;
     this.state = 'menu';
     this.frameTimes = [];
+    this.lastFrame = 0;
+    this.ghostTries = 0;
+    this.photoTries = 0;
     this.bindMenu();
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -87,6 +96,37 @@ class App {
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
     if (location.search.includes('debug')) window.__SW = this;
+    setTimeout(() => this.prefetchAssets(), 400);
+  }
+
+  // 寫實女鬼的素材只下載一次；失敗就回傳 null（遊戲改用程序化女鬼），下一局再試
+  // 外部素材：第一局最多等 25 秒；之後如果還沒下載完，只等幾秒就先用程序生成的版本，
+  // 下載會在背景繼續，給下一局用
+  async ghostAssets() {
+    const wait = this.ghostTries++ ? 4000 : 25000;
+    try {
+      return await loadGhostAssets(this.renderer, this.quality, wait);
+    } catch (e) {
+      console.warn('寫實女鬼素材還沒準備好，先用程序化模型：', e && e.message);
+      return null;
+    }
+  }
+
+  async photoAssets() {
+    const wait = this.photoTries++ ? 3000 : 20000;
+    try {
+      return await loadPhotos(undefined, wait);
+    } catch (e) {
+      console.warn('照片貼圖還沒準備好，先用程序貼圖：', e && e.message);
+      return null;
+    }
+  }
+
+  prefetchAssets() {
+    try {
+      prefetchGhost(this.quality);
+      prefetchPhotos();
+    } catch (e) { /* 預先下載失敗沒關係，開局時會再試 */ }
   }
 
   fatal(msg) {
@@ -167,8 +207,17 @@ class App {
       this.saveSettings();
       $('qualityNote').textContent = this.game ? '變更畫質會在下一局生效。' : `目前：${QUALITY[k].label}`;
     };
-    for (const b of qs.querySelectorAll('button')) b.addEventListener('click', () => setQ(b.dataset.q));
+    for (const b of qs.querySelectorAll('button')) b.addEventListener('click', () => { this.settings.qualityChosen = true; setQ(b.dataset.q); });
     setQ(this.settings.quality);
+    const fs = $('fpsSeg');
+    const setFps = (v) => {
+      this.settings.fpsCap = v;
+      for (const b of fs.querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.fps) === v);
+      this.frameTimes.length = 0;
+      this.saveSettings();
+    };
+    for (const b of fs.querySelectorAll('button')) b.addEventListener('click', () => setFps(Number(b.dataset.fps)));
+    setFps(this.settings.fpsCap);
     const bindRange = (id, key, fn) => {
       const el = $(id);
       el.value = this.settings[key];
@@ -321,6 +370,13 @@ class App {
 
   loop(now) {
     requestAnimationFrame((t) => this.loop(t));
+    // 更新率上限：高更新率螢幕（120/144 Hz）不必每格都畫，省電也比較不燙
+    const cap = this.settings.fpsCap;
+    if (cap > 0 && this.state === 'playing') {
+      const iv = 1000 / cap;
+      if (now - this.lastFrame < iv - 2) return;
+      this.lastFrame = Math.max(this.lastFrame + iv, now - iv);
+    }
     let dt = (now - this.last) / 1000;
     this.last = now;
     if (!(dt > 0)) return;
@@ -347,8 +403,9 @@ class App {
     ft.length = 0;
     if (this.settings.showFps) this.ui.setFps(true, `${(1 / avg).toFixed(0)} FPS・${this.quality.label}・${(this.pixelRatio()).toFixed(2)}x`);
     let changed = false;
-    if (avg > 1 / 40 && this.resScale > 0.6) { this.resScale = Math.max(0.6, this.resScale - 0.1); changed = true; }
-    else if (avg < 1 / 58 && this.resScale < 1) { this.resScale = Math.min(1, this.resScale + 0.05); changed = true; }
+    const target = this.settings.fpsCap || 60;
+    if (avg > 1.45 / target && this.resScale > 0.6) { this.resScale = Math.max(0.6, this.resScale - 0.1); changed = true; }
+    else if (avg < 1.08 / target && this.resScale < 1) { this.resScale = Math.min(1, this.resScale + 0.05); changed = true; }
     if (changed && this.game) this.game.resize();
   }
 }

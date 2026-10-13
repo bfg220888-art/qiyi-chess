@@ -1,7 +1,6 @@
 // 驚嚇導演：控制節奏、隨機事件、幻覺與鬼魂登場
 import * as THREE from 'three';
 import { sightClear } from './nav.js';
-import { GhostModel } from './ghost.js';
 import { WALL_WRITINGS } from './level.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -19,7 +18,7 @@ export class Director {
     this.phoneRinging = false;
     this.firstPeekDone = false;
     // 幻影（只有外表，不會傷人）
-    const m = new GhostModel(game.tf, game.world.M);
+    const m = game.makeGhostModel();
     this.appModel = m;
     this.apparition = m.root;
     m.root.visible = false;
@@ -212,6 +211,7 @@ export class Director {
   updateApparition(dt) {
     const g = this.game, P = g.player, a = this.apparition;
     this.appT += dt;
+    if (this.appModel.setLookTarget) this.appModel.setLookTarget(P.camera.position, 1);
     this.appModel.pose('idle', g.time, 0, 0);
     const d = Math.hypot(a.position.x - P.pos.x, a.position.z - P.pos.z);
     // 被看著（在畫面中央）會累積

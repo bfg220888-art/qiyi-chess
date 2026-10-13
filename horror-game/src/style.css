@@ -168,6 +168,9 @@ html, body {
 .note-small { margin: -6px 0 0; font-size: 12px; color: var(--dim); }
 .help-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
 .help-cols > div { min-width: 0; }
+.credits { margin: 14px 0 4px; font-size: 12px; color: var(--dim); line-height: 1.6; }
+.credits summary { cursor: pointer; letter-spacing: 0.06em; }
+.credits p { margin: 6px 0 0; overflow-wrap: anywhere; }
 dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; line-height: 1.5; }
 dt { font-family: var(--mono); color: var(--ink); white-space: nowrap; }
 dd { margin: 0; color: #c5bfb2; }

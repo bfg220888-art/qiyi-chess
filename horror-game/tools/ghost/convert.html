@@ -1,0 +1,154 @@
+<!doctype html><html><body>
+<script type="importmap">{"imports":{"three":"/three/build/three.module.js","three/addons/":"/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+const out = { log: [] };
+const log = (...a) => out.log.push(a.join(' '));
+const loader = new FBXLoader();
+const load = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
+const KEEP_MORPHS = {
+  jawOpen: 'AK_25_JawOpen', mouthStretchL: 'AK_46_MouthStretchLeft', mouthStretchR: 'AK_47_MouthStretchRight',
+  mouthFunnel: 'AK_32_MouthFunnel', eyeWideL: 'AK_21_EyeWideLeft', eyeWideR: 'AK_22_EyeWideRight',
+  browInnerUp: 'AK_03_BrowInnerUp', blinkL: 'AK_09_EyeBlinkLeft', blinkR: 'AK_10_EyeBlinkRight',
+  frownL: 'AK_30_MouthFrownLeft', frownR: 'AK_31_MouthFrownRight', mouthStretch: 'AU_27_MouthStretch',
+  lowerDownL: 'AK_34_MouthLowerDownLeft', lowerDownR: 'AK_35_MouthLowerDownRight', noseSneerL: 'AK_50_NoseSneerLeft', noseSneerR: 'AK_51_NoseSneerRight',
+};
+const KEEP_BONE = /^(Bip01|Bip01_Pelvis|Bip01_Spine\d?|Bip01_Neck|Bip01_Head|Bip01_[LR]_(Clavicle|UpperArm|Forearm|Hand|Finger\d+|Thigh|Calf|Foot|Toe0))$/;
+try {
+  const model = await load('/conv/Medical_Female_01_facial.fbx');
+  let mesh = null;
+  model.traverse((o) => { if (o.isSkinnedMesh) mesh = o; });
+  const g = mesh.geometry;
+  const matNames = mesh.material.map((m) => m.name);
+  log('materials', matNames.join(','), 'groups', JSON.stringify(g.groups));
+  // --- 刪掉髮髻：頭部材質、UV 落在貼圖右下方捲髮區的三角形
+  const uv = g.attributes.uv;
+  const triKeep = [];
+  const triCount = g.attributes.position.count / 3;
+  const matOfTri = new Int32Array(triCount);
+  for (const gr of g.groups) for (let t = gr.start / 3; t < (gr.start + gr.count) / 3; t++) matOfTri[t] = gr.materialIndex;
+  let removed = 0;
+  for (let t = 0; t < triCount; t++) {
+    const mi = matOfTri[t];
+    const name = matNames[mi] || '';
+    let drop = false;
+    if (name.endsWith('_head')) {
+      let inBun = 0;
+      for (let k = 0; k < 3; k++) {
+        const u = uv.getX(t * 3 + k), v = uv.getY(t * 3 + k);
+        // 1024 空間的捲髮區：x>130 且 y>690（v 由下往上）
+        if (u > 0.13 && v < 0.33) inBun++;
+      }
+      if (inBun === 3) drop = true;
+      // 頭頂的髮圈（貼圖最上方那條帶子）
+      let tie = 0;
+      for (let k = 0; k < 3; k++) if (uv.getY(t * 3 + k) > 0.9) tie++;
+      if (tie === 3) drop = true;
+    }
+    if (name.endsWith('_opacity')) {
+      // 透明材質：只留睫毛（貼圖下半部中央），其餘是髮髻 / 髮絲
+      let lash = 0;
+      for (let k = 0; k < 3; k++) {
+        const u = uv.getX(t * 3 + k), v = uv.getY(t * 3 + k);
+        if (u > 0.38 && u < 0.62 && v > 0.05 && v < 0.42) lash++;
+      }
+      if (lash < 3) drop = true;
+    }
+    if (drop) removed++; else triKeep.push(t);
+  }
+  log('removed triangles', removed, 'kept', triKeep.length);
+  // 重新組裝幾何（保留 groups 依材質排序）
+  const ng = new THREE.BufferGeometry();
+  const order = triKeep.slice().sort((a, b) => matOfTri[a] - matOfTri[b]);
+  const copyAttr = (attr) => {
+    const arr = new attr.array.constructor(order.length * 3 * attr.itemSize);
+    let o = 0;
+    for (const t of order) for (let k = 0; k < 3; k++) { const i = t * 3 + k; for (let c = 0; c < attr.itemSize; c++) arr[o++] = attr.array[i * attr.itemSize + c]; }
+    return new THREE.BufferAttribute(arr, attr.itemSize, attr.normalized);
+  };
+  for (const name of ['position', 'normal', 'uv', 'skinIndex', 'skinWeight']) ng.setAttribute(name, copyAttr(g.attributes[name]));
+  const dict = mesh.morphTargetDictionary;
+  const morphNames = [];
+  ng.morphAttributes.position = [];
+  for (const [alias, key] of Object.entries(KEEP_MORPHS)) {
+    const full = Object.keys(dict).find((n) => n.endsWith(key));
+    if (full === undefined) { log('missing morph', key); continue; }
+    const ma = copyAttr(g.morphAttributes.position[dict[full]]);
+    ma.name = alias;
+    ng.morphAttributes.position.push(ma);
+    morphNames.push(alias);
+  }
+  ng.morphTargetsRelative = g.morphTargetsRelative;
+  // groups
+  let start = 0;
+  for (let mi = 0; mi < matNames.length; mi++) {
+    const n = order.filter((t) => matOfTri[t] === mi).length;
+    if (n) ng.addGroup(start * 3, n * 3, mi);
+    start += n;
+  }
+  // glTF 的 UV 原點在左上角：翻轉 v，讓載入時 flipY=false 的貼圖對得上
+  const uvA = ng.attributes.uv;
+  for (let i = 0; i < uvA.count; i++) uvA.setY(i, 1 - uvA.getY(i));
+  const merged = mergeVertices(ng, 1e-4);
+  log('verts before', ng.attributes.position.count, 'after', merged.attributes.position.count, 'morphs', morphNames.length, 'relative', g.morphTargetsRelative);
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  merged.morphAttributes.position.forEach((a, i) => { a.name = morphNames[i]; });
+  mesh.geometry = merged;
+  mesh.updateMorphTargets();
+  log('morph dict', Object.keys(mesh.morphTargetDictionary).join(','));
+  mesh.material = matNames.map((n) => new THREE.MeshStandardMaterial({ name: n.replace(/^f152_/, '') }));
+  mesh.name = 'ghostBody';
+  // --- 動畫
+  const clips = [];
+  const animFiles = { walk: 'f_walk_injured', walk2: 'f_walk_bruised', drunk: 'f_walk_drunk', run: 'f_run_injured', look: 'f_idle_look_around_01', roll: 'f_idle_roll_head_01' };
+  for (const [name, file] of Object.entries(animFiles)) {
+    const a = await load('/conv/' + file + '.max.fbx');
+    const clip = a.animations[0];
+    clip.name = name;
+    clip.tracks = clip.tracks.filter((t) => {
+      const [bone, prop] = t.name.split('.');
+      if (!KEEP_BONE.test(bone)) return false;
+      if (prop === 'scale') return false;
+      if (prop === 'position' && bone !== 'Bip01_Pelvis') return false;
+      if (bone === 'Bip01' && prop !== 'quaternion') return false;
+      return true;
+    });
+    // 長的待機動畫重新取樣到每秒 15 格
+    if (clip.duration > 3) {
+      const fps = 15;
+      clip.tracks = clip.tracks.map((t) => {
+        const n = Math.max(2, Math.round(clip.duration * fps) + 1);
+        const times = new Float32Array(n);
+        const vals = new Float32Array(n * t.getValueSize());
+        const it = t.createInterpolant();
+        for (let i = 0; i < n; i++) {
+          times[i] = Math.min(clip.duration, i / fps);
+          vals.set(it.evaluate(times[i]), i * t.getValueSize());
+        }
+        return new t.constructor(t.name, times, vals);
+      });
+    }
+    clip.optimize();
+    clip.resetDuration();
+    let keys = 0;
+    for (const t of clip.tracks) keys += t.times.length;
+    log('clip', name, clip.duration.toFixed(2), 'tracks', clip.tracks.length, 'keys', keys);
+    clips.push(clip);
+  }
+  model.animations = clips;
+  // 只留下骨架網格與骨頭
+  const exporter = new GLTFExporter();
+  const glb = await exporter.parseAsync(model, { binary: true, animations: clips, onlyVisible: false });
+  const bytes = new Uint8Array(glb);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  out.glb = btoa(s);
+  out.size = bytes.length;
+} catch (e) { out.error = String(e && e.stack || e); }
+window.__out = out;
+document.title = 'done';
+</script></body></html>

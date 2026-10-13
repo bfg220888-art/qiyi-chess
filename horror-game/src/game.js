@@ -8,6 +8,7 @@ import { TextureFactory } from './textures.js';
 import { World } from './world.js';
 import { Player } from './player.js';
 import { Ghost, GhostModel } from './ghost.js';
+import { RealGhostModel } from './ghost-real.js';
 import { Director } from './events.js';
 import { Post } from './post.js';
 import { fmtTime } from './ui.js';
@@ -66,7 +67,10 @@ export class Game {
     pmrem.dispose();
     this.scene.environment = this.envTex;
     this.scene.environmentIntensity = 0.035;
-    this.tf = new TextureFactory(this.renderer, this.quality, this.seed);
+    // 外部素材（照片貼圖、寫實女鬼）同時下載；失敗都有程序生成的備援
+    const ghostP = this.app.ghostAssets();
+    const photos = await this.app.photoAssets();
+    this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
     this.tf.wall(); progress(0.25, '正在鋪地磚……'); await nextFrame();
     this.tf.floorVinyl(); this.tf.floorTile(); progress(0.35, '正在掛上天花板……'); await nextFrame();
     this.tf.ceiling(); this.tf.door(); this.tf.lockerDoor(); progress(0.45, '正在搬進病床……'); await nextFrame();
@@ -85,7 +89,9 @@ export class Game {
     this.ghostNav = new NavGrid(this.lv, GHOST_R, { ghost: true });
     this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
     this.player = new Player(this);
-    this.ghost = new Ghost(this, new GhostModel(this.tf, this.world.M));
+    // 寫實女鬼模型（下載失敗就用程序化的備援）
+    this.ghostAssets = await ghostP;
+    this.ghost = new Ghost(this, this.makeGhostModel());
     this.director = new Director(this);
     this.post = new Post(this.renderer, this.scene, this.player.camera, this.quality);
     this.audio.occlusionFn = (ax, az, bx, bz) => wallsBetween(this.lv, ax, az, bx, bz, 2);
@@ -137,6 +143,13 @@ export class Game {
       this.ui.hint(this.input.touchMode ? '左邊拖曳移動，右邊滑動看四周。看到東西時按「互動」。' : 'WASD 移動・滑鼠看四周・E 互動・F 手電筒・Q 相機閃光', 6);
     }, 4200);
     this.later(() => { if (!this.over) this.ui.subtitle('先看看大廳牆上的平面圖。', 4); }, 11000);
+  }
+
+  makeGhostModel() {
+    if (this.ghostAssets) {
+      try { return new RealGhostModel(this.ghostAssets, this.tf); } catch (e) { console.warn('real ghost failed, using fallback', e); this.ghostAssets = null; }
+    }
+    return new GhostModel(this.tf, this.world.M);
   }
 
   // 會在遊戲結束或離開後自動取消的計時器
@@ -592,9 +605,18 @@ export class Game {
     const fwd = new THREE.Vector3(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
     const dist = Math.max(0.4, 0.8 - d.t * 0.55);
     m.root.visible = true;
-    m.root.position.set(cam.position.x + fwd.x * dist, cam.position.y - 1.6 + Math.sin(d.t * 40) * 0.01, cam.position.z + fwd.z * dist);
+    m.root.position.set(cam.position.x + fwd.x * dist, cam.position.y - (m.faceHeight || 1.6) + Math.sin(d.t * 40) * 0.01, cam.position.z + fwd.z * dist);
     m.root.rotation.set(0, Math.atan2(-fwd.x, -fwd.z), 0);
-    m.pose('kill', this.time + d.t, d.t * 10, 0);
+    if (m.setLookTarget) m.setLookTarget(cam.position, 1);
+    m.pose('kill', this.time, d.t * 10, 0);
+    // 寫實模型：依當下的姿勢把臉對準鏡頭正前方
+    if (m.faceWorld) {
+      m.root.updateMatrixWorld(true);
+      const face = m.faceWorld(new THREE.Vector3());
+      const want = new THREE.Vector3(cam.position.x + fwd.x * (dist - 0.12), cam.position.y - 0.02, cam.position.z + fwd.z * (dist - 0.12));
+      m.root.position.add(want.sub(face));
+      m.root.updateMatrixWorld(true);
+    }
     m.revealFace(Math.min(1, d.t * 3));
     m.setEyes(1.6);
     m.uniforms.uTime.value = this.time + d.t;
@@ -713,6 +735,7 @@ export class Game {
     this.scene.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
       if (o.isInstancedMesh) o.dispose();
+      if (o.isSkinnedMesh && o.skeleton) o.skeleton.dispose();
       if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => mats.add(m));
       if (o.isLight && o.shadow && o.shadow.map) o.shadow.map.dispose();
     });

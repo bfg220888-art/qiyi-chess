@@ -135,6 +135,14 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   const r0 = await render(page);
   log('render', JSON.stringify(r0));
   await shot(page, 'd1-start');
+  // 外部素材真的有載入（路徑壞掉時遊戲會默默改用程序版本，這裡要抓出來）
+  const assets = await page.evaluate(async () => {
+    const g = window.__SW.game;
+    if (g.audio.samplesLoading) await g.audio.samplesLoading;
+    return { real: !!g.ghost.model.isReal, photos: !!g.tf.photos, sfx: Object.keys(g.audio.buf || {}).length };
+  });
+  log('assets', JSON.stringify(assets));
+  assert(assets.real && assets.photos && assets.sfx >= 40, 'external assets should load');
   const before = await sim(page, 0.05);
   const after = await sim(page, 3, { my: 1 });
   log('walk', before.x.toFixed(2), before.z.toFixed(2), '->', after.x.toFixed(2), after.z.toFixed(2), `update ${after.ms.toFixed(2)}ms`);
@@ -303,7 +311,12 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   const thrown = await page.evaluate(() => {
     const g = window.__SW.game, P = g.player;
     P.bottles = 2;
-    const s = g.ghost.findSpot(5, 10, true) || g.ghost.findSpot(4, 12, false);
+    let s = g.ghost.findSpot(5, 10, true) || g.ghost.findSpot(4, 12, false) || g.ghost.findSpot(2, 20, false);
+    // 隨機關卡偶爾在附近找不到位置：退而求其次找任何一個能走的點
+    for (let k = 0; k < 2000 && !s; k++) {
+      const x = P.pos.x + (Math.random() - 0.5) * 30, z = P.pos.z + (Math.random() - 0.5) * 30;
+      if (g.ghostNav.isFree(x, z) && Math.hypot(x - P.pos.x, z - P.pos.z) > 3) s = { x, z };
+    }
     g.ghost.spawnAt(s.x, s.z, 'wander');
     g.ghost.path = null; g.ghost.idleT = 30;
     g.ghost.dormantUntil = 0;
@@ -316,7 +329,8 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   const after = await page.evaluate(() => { const g = window.__SW.game, p = g.projectiles[0]; return { n: g.projectiles.length, state: g.ghost.state, bottles: g.player.bottles, over: g.over, dying: !!g.dying, time: g.time, p: p && [p.pos.x, p.pos.y, p.pos.z, p.vel.y, p.life] }; });
   log('after throw', JSON.stringify(after));
   assert(after.n === 0 && after.bottles === 1, 'bottle shattered');
-  assert(after.state === 'investigate' || after.state === 'search', 'ghost should investigate the noise, got ' + after.state);
+  // 她去查看聲音時也可能順便看到玩家而直接追過來，只要不是繼續閒晃就算有反應
+  assert(['investigate', 'search', 'chase'].includes(after.state), 'ghost should react to the noise, got ' + after.state);
   // 6. 門
   const di = await page.evaluate(() => window.__SW.game.lv.doors.findIndex((d) => d.angle < 0.05));
   const dt = await faceThing(page, 'door', di);

@@ -1,9 +1,19 @@
-// 程序化音效引擎（Web Audio）：所有聲音都是即時合成，沒有任何音檔。
+// 音效引擎（Web Audio）：實錄音效（CC0 / CC BY，見 CREDITS.md）＋即時合成。
+// 音檔載入失敗或還沒載完時，每個聲音都會退回合成版本。
 // 含 HRTF 3D 定位、牆壁遮蔽（悶音）、卷積殘響。
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+// assets/sfx/ 裡的檔案；結尾是數字的會分成一組，播放時隨機挑一個
+const SFX_FILES = [
+  'step0', 'step1', 'step2', 'step3', 'step4', 'step5', 'step6', 'step7',
+  'door_open0', 'door_open1', 'door_close0', 'door_close1', 'creak0', 'creak1', 'creak2', 'door_creak', 'door_slam',
+  'latch', 'click', 'locker', 'scream0', 'scream1', 'heart_lub', 'heart_dub', 'rain', 'thunder_near', 'thunder_far',
+  'glass', 'glass_hit0', 'glass_hit1', 'glass_hit2', 'shutter', 'paper0', 'paper1', 'pills', 'squeak',
+  'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh',
+];
 
 // 原創搖籃曲旋律（MIDI 音高，-1 = 休止）
 const LULLABY = [
@@ -26,6 +36,8 @@ export class AudioEngine {
     this.drips = { next: 0 };
     this.phone = null;
     this.alarmOn = false;
+    this.buf = {};
+    this.groups = {};
   }
 
   get ready() { return !!this.ctx && this.ctx.state === 'running'; }
@@ -73,6 +85,100 @@ export class AudioEngine {
     }
     this.tick = this.tick.bind(this);
     this.timer = setInterval(this.tick, 50);
+    this.loadSamples();
+  }
+
+  // ---- 實錄音效
+  loadSamples(base = 'assets/sfx/') {
+    if (!this.ctx || this.samplesLoading) return this.samplesLoading;
+    const c = this.ctx;
+    const decode = (ab) => new Promise((res, rej) => {
+      const p = c.decodeAudioData(ab, res, rej);
+      if (p && p.catch) p.catch(rej);
+    });
+    this.samplesLoading = Promise.all(SFX_FILES.map(async (n) => {
+      try {
+        const r = await fetch(base + n + '.mp3');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        this.buf[n] = await decode(await r.arrayBuffer());
+      } catch (e) { /* 這個聲音就用合成的 */ }
+    })).then(() => {
+      if (this.buf.rain) this.buf.rain = this.makeLoop(this.buf.rain, 1.5);
+      const groups = {};
+      for (const n of Object.keys(this.buf)) {
+        const k = n.replace(/\d+$/, '');
+        (groups[k] || (groups[k] = [])).push(this.buf[n]);
+      }
+      this.groups = groups;
+      this.useSampledRain();
+      const n = Object.keys(this.buf).length;
+      if (n < SFX_FILES.length) console.warn(`音檔載入 ${n}/${SFX_FILES.length}，其餘用合成音`);
+    });
+    return this.samplesLoading;
+  }
+  has(name) { return !!(this.groups[name] && this.groups[name].length); }
+  // 去掉編碼器補的頭尾靜音，再把結尾交叉淡入開頭，做成無縫循環
+  makeLoop(b, xf) {
+    const c = this.ctx, ch = b.numberOfChannels, sr = b.sampleRate;
+    const d0 = b.getChannelData(0);
+    let a = 0, z = d0.length - 1;
+    while (a < d0.length && Math.abs(d0[a]) < 1e-4) a++;
+    while (z > a && Math.abs(d0[z]) < 1e-4) z--;
+    const X = Math.floor(xf * sr), len = z - a + 1 - X;
+    if (len < sr) return b;
+    const out = c.createBuffer(ch, len, sr);
+    for (let k = 0; k < ch; k++) {
+      const src = b.getChannelData(k), dst = out.getChannelData(k);
+      for (let i = 0; i < len; i++) dst[i] = src[a + i];
+      for (let i = 0; i < X; i++) {
+        const w = i / X;
+        dst[i] = src[a + i] * Math.sqrt(w) + src[a + len + i] * Math.sqrt(1 - w);
+      }
+    }
+    return out;
+  }
+  // 播一段音檔；name 可以是組名（隨機挑一個）或 AudioBuffer
+  sample(dest, name, t, { rate = 1, gain = 1, offset = 0, dur, fade = 0.06 } = {}) {
+    const b = typeof name === 'string' ? (this.has(name) ? pick(this.groups[name]) : null) : name;
+    if (!b) return 0;
+    const c = this.ctx;
+    const s = c.createBufferSource();
+    s.buffer = b;
+    s.playbackRate.value = rate;
+    const g = c.createGain();
+    g.gain.value = gain;
+    s.connect(g).connect(dest);
+    const len = Math.max(0.02, Math.min(dur ?? Infinity, b.duration - offset));
+    if (dur !== undefined) {
+      // 從中間截一段：淡入淡出避免爆音
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(gain, t + Math.min(0.02, len / 4));
+      g.gain.setValueAtTime(gain, t + Math.max(0, len / rate - fade));
+      g.gain.linearRampToValueAtTime(0, t + len / rate);
+    }
+    s.start(t, offset, len);
+    s.onended = () => { try { g.disconnect(); } catch (e) { /* 已斷開 */ } };
+    return len / rate;
+  }
+  // 雨聲換成錄音（悶在建築物裡的雨）
+  useSampledRain() {
+    if (!this.ambStarted || !this.buf.rain || this.rainSample || !this.rainGain) return;
+    const c = this.ctx, t = c.currentTime;
+    const s = c.createBufferSource();
+    s.buffer = this.buf.rain;
+    s.loop = true;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.8, t + 2);
+    s.connect(g).connect(this.rainGain);
+    s.start(t, rnd(0, this.buf.rain.duration));
+    this.rainSample = s;
+    if (this.rainNoise) {
+      this.rainNoiseGain.gain.setTargetAtTime(0, t, 0.6);
+      const n = this.rainNoise;
+      setTimeout(() => { try { n.stop(); n.disconnect(); } catch (e) { /* 已停止 */ } }, 4000);
+      this.rainNoise = null;
+    }
   }
 
   async resume() {
@@ -138,8 +244,9 @@ export class AudioEngine {
       L.setPosition(p.x, p.y, p.z);
       L.setOrientation(f.x, f.y, f.z, u.x, u.y, u.z);
     }
-    // 牆壁遮蔽
-    if (this.occlusionFn) {
+    // 牆壁遮蔽（每秒約 12 次就夠了，不用每格算）
+    if (this.occlusionFn && !(t - this.occlT < 0.08)) {
+      this.occlT = t;
       for (const em of this.emitters) {
         const walls = this.occlusionFn(p.x, p.z, em.pos.x, em.pos.z);
         if (walls !== em.walls) {
@@ -297,6 +404,13 @@ export class AudioEngine {
   s_footstep(o, t) {
     const run = o.run, crouch = o.crouch;
     const base = run ? 0.55 : crouch ? 0.1 : 0.28;
+    if (this.has('step')) {
+      const out = this.out(null, 0.5, run ? 0.22 : 0.16);
+      const tile = o.surface === 'tile';
+      this.sample(out, 'step', t, { rate: rnd(0.93, 1.07) * (tile ? 1.1 : 1) * (run ? 1.06 : crouch ? 0.94 : 1), gain: base * 1.5 });
+      if (Math.random() < 0.12) this.burst(out, t + 0.02, { ftype: 'highpass', f: 5000, d: 0.06, peak: base * 0.12 }); // 踩到碎玻璃 / 紙
+      return;
+    }
     const out = this.out(null, 0.3, run ? 0.22 : 0.16);
     const tile = o.surface === 'tile';
     this.burst(out, t, { f: rnd(380, 560) * (run ? 1.25 : 1) * (tile ? 1.3 : 1), q: 1.1, d: 0.07, peak: base });
@@ -306,15 +420,28 @@ export class AudioEngine {
     if (Math.random() < 0.18) this.burst(out, t + 0.02, { ftype: 'highpass', f: 5000, d: 0.06, peak: base * 0.15 }); // 踩到碎玻璃 / 紙
   }
   s_ghostStep(o, t) {
-    const out = this.out(o, 0.6, 0.4);
+    const out = this.out(o, 0.8, 0.4);
     const pk = o.fast ? 0.75 : 0.45;
+    if (this.has('step')) {
+      // 她的腳步：比較重、比較悶，偶爾拖著腳
+      const lp = this.filt('lowpass', o.fast ? 2600 : 1500, 0.7);
+      lp.connect(out);
+      this.sample(lp, 'step', t, { rate: rnd(0.78, 0.86), gain: pk * 1.7 });
+      if (!o.fast && Math.random() < 0.5) this.burst(out, t + 0.05, { f: 1600, q: 0.7, a: 0.08, d: 0.3, peak: 0.06 });
+      return;
+    }
     this.burst(out, t, { ftype: 'lowpass', f: 900, q: 0.8, a: 0.001, d: 0.06, peak: pk });
     this.thump(out, t, 70, 40, 0.09, pk * 0.8);
     if (!o.fast) this.burst(out, t + 0.04, { f: 1800, q: 0.7, a: 0.08, d: 0.3, peak: 0.08 });
   }
   s_doorCreak(o, t) {
     const dur = o.short ? 0.6 : rnd(1.1, 1.7);
-    const out = this.out(o, dur, 0.4);
+    const out = this.out(o, dur + 0.3, 0.4);
+    if (this.buf.door_creak) {
+      const B = this.buf.door_creak;
+      this.sample(out, B, t, { rate: rnd(0.85, 1.05), gain: 0.6, offset: rnd(0, Math.max(0, B.duration - dur - 0.1)), dur, fade: 0.25 });
+      return;
+    }
     this.creak(out, t, dur, 0.55);
   }
   creak(dest, t, dur, vol) {
@@ -348,36 +475,69 @@ export class AudioEngine {
     src.start(t);
   }
   s_doorBang(o, t) {
-    const out = this.out(o, 1.2, 0.5);
+    const out = this.out(o, 1.6, 0.5);
+    if (this.buf.door_slam) {
+      this.sample(out, this.buf.door_slam, t + 0.08, { rate: rnd(0.85, 0.95), gain: 0.9 });
+      if (this.has('creak')) this.sample(out, 'creak', t, { rate: 1.2, gain: 0.35 });
+      this.thump(out, t + 0.12, 75, 40, 0.3, 0.5);
+      return;
+    }
     this.creak(out, t, 0.35, 0.4);
     this.thump(out, t + 0.12, 75, 40, 0.3, 0.9);
     this.burst(out, t + 0.12, { ftype: 'lowpass', f: 1400, d: 0.2, peak: 0.6 });
     this.ring(out, t + 0.12, [[2400, 25, 0.3], [1650, 30, 0.25]], 0.6, 0.6);
   }
   s_doorOpen(o, t) {
-    const out = this.out(o, 1, 0.35);
+    const out = this.out(o, 2, 0.35);
+    if (this.has('door_open')) {
+      this.sample(out, 'door_open', t, { rate: rnd(0.92, 1.06), gain: 0.5 });
+      if (this.has('creak') && Math.random() < 0.55) this.sample(out, 'creak', t + 0.08, { rate: rnd(0.8, 1.0), gain: 0.32 });
+      return;
+    }
     this.burst(out, t, { ftype: 'highpass', f: 2800, a: 0.001, d: 0.02, peak: 0.35 });
     this.thump(out, t, 140, 90, 0.06, 0.2);
     if (Math.random() < 0.6) this.creak(out, t + 0.05, rnd(0.4, 0.8), 0.32);
   }
   s_doorClose(o, t) {
-    const out = this.out(o, 1, 0.35);
+    const out = this.out(o, 1.2, 0.35);
+    if (this.has('door_close')) {
+      this.sample(out, 'door_close', t, { rate: rnd(0.92, 1.06), gain: 0.6 });
+      return;
+    }
     this.thump(out, t, 110, 50, 0.14, 0.6);
     this.burst(out, t, { ftype: 'lowpass', f: 1600, d: 0.08, peak: 0.35 });
     this.burst(out, t + 0.01, { ftype: 'highpass', f: 3000, a: 0.001, d: 0.02, peak: 0.3 });
   }
   s_doorSlam(o, t) {
     const out = this.out(o, 2, 0.7);
+    if (this.buf.door_slam) {
+      this.sample(out, this.buf.door_slam, t, { rate: rnd(0.9, 1.0), gain: 1.0 });
+      this.thump(out, t, 60, 30, 0.6, 0.6);
+      return;
+    }
     this.thump(out, t, 60, 30, 0.6, 1.0);
     this.burst(out, t, { ftype: 'lowpass', f: 1800, d: 0.25, peak: 0.9 });
     this.ring(out, t, [[1850, 30, 0.4], [2700, 40, 0.3], [930, 25, 0.3]], 1, 0.8);
   }
   s_locked(o, t) {
     const out = this.out(o, 1, 0.3);
+    if (this.buf.latch) {
+      // 轉不動的門把喀喀響
+      for (let k = 0; k < 3; k++) this.sample(out, this.buf.latch, t + k * 0.11 + rnd(0, 0.02), { rate: rnd(1.0, 1.2), gain: 0.4 - k * 0.07 });
+      return;
+    }
     for (let k = 0; k < 3; k++) this.burst(out, t + k * 0.09, { f: 1500, q: 4, a: 0.002, d: 0.05, peak: 0.35 });
   }
   s_lockerOpen(o, t) {
-    const out = this.out(o, 1.2, 0.35);
+    const out = this.out(o, 1.6, 0.35);
+    if (this.buf.latch && this.buf.locker) {
+      this.sample(out, this.buf.latch, t, { rate: rnd(0.9, 1.05), gain: 0.5 });
+      this.sample(out, this.buf.locker, t + 0.06, { rate: rnd(1.1, 1.2), gain: 0.35, offset: 0.35, dur: 0.9, fade: 0.3 });
+      const sq = this.osc('sine', 2300, t + 0.05, 0.25);
+      sq.frequency.linearRampToValueAtTime(1700, t + 0.28);
+      sq.connect(this.env(t + 0.05, 0.03, 0.2, 0.03)).connect(out);
+      return;
+    }
     this.burst(out, t, { f: 1300, q: 3, d: 0.12, peak: 0.4 });
     this.ring(out, t, [[760, 40, 0.5], [1850, 50, 0.35], [2950, 60, 0.2]], 0.8, 0.5);
     const sq = this.osc('sine', 2300, t + 0.02, 0.2);
@@ -385,7 +545,11 @@ export class AudioEngine {
     sq.connect(this.env(t + 0.02, 0.02, 0.15, 0.05)).connect(out);
   }
   s_lockerClose(o, t) {
-    const out = this.out(o, 1.2, 0.35);
+    const out = this.out(o, 1.8, 0.35);
+    if (this.buf.locker) {
+      this.sample(out, this.buf.locker, t, { rate: rnd(0.95, 1.05), gain: 0.65 });
+      return;
+    }
     this.thump(out, t, 120, 60, 0.1, 0.5);
     this.burst(out, t, { f: 1100, q: 2, d: 0.1, peak: 0.45 });
     this.ring(out, t, [[700, 35, 0.6], [1720, 45, 0.4]], 0.8, 0.55);
@@ -401,7 +565,8 @@ export class AudioEngine {
     for (const [f, d, dt] of [[523, 1.0, 0], [784, 0.9, 0.08], [1046, 0.8, 0.16]]) this.osc('triangle', f, t + dt, d).connect(this.env(t + dt, 0.005, d, 0.07)).connect(out);
   }
   s_paper(o, t) {
-    const out = this.out(null, 0.6, 0.15);
+    const out = this.out(null, 2, 0.15);
+    if (this.has('paper')) { this.sample(out, 'paper', t, { rate: rnd(0.95, 1.1), gain: 0.5 }); return; }
     const n = this.noise('white');
     const f = this.filt('bandpass', 4200, 0.7);
     const g = this.ctx.createGain();
@@ -412,7 +577,8 @@ export class AudioEngine {
     this.startNoise(n, t, 0.4);
   }
   s_pills(o, t) {
-    const out = this.out(null, 0.8, 0.15);
+    const out = this.out(null, 1.3, 0.15);
+    if (this.buf.pills) { this.sample(out, this.buf.pills, t, { rate: rnd(0.95, 1.1), gain: 0.45 }); return; }
     for (let k = 0; k < 12; k++) this.burst(out, t + rnd(0, 0.35), { ftype: 'highpass', f: 5000, a: 0.001, d: 0.01, peak: 0.2 });
   }
   s_battery(o, t) {
@@ -426,12 +592,16 @@ export class AudioEngine {
     this.burst(out, t + 0.035, { ftype: 'highpass', f: 3000, a: 0.0005, d: 0.01, peak: 0.25 });
   }
   s_cameraFlash(o, t) {
-    const out = this.out(null, 1, 0.2);
+    const out = this.out(null, 1.6, 0.2);
     const w = this.osc('sine', 1800, t, 0.3);
     w.frequency.exponentialRampToValueAtTime(7000, t + 0.28);
     w.connect(this.env(t, 0.25, 0.04, 0.035, 'lin')).connect(out);
-    this.burst(out, t + 0.3, { f: 3000, q: 1, a: 0.001, d: 0.03, peak: 0.5 });
-    this.burst(out, t + 0.36, { f: 2200, q: 1, a: 0.001, d: 0.03, peak: 0.4 });
+    if (this.buf.shutter) {
+      this.sample(out, this.buf.shutter, t + 0.27, { gain: 0.55 });
+    } else {
+      this.burst(out, t + 0.3, { f: 3000, q: 1, a: 0.001, d: 0.03, peak: 0.5 });
+      this.burst(out, t + 0.36, { f: 2200, q: 1, a: 0.001, d: 0.03, peak: 0.4 });
+    }
     this.burst(out, t + 0.3, { ftype: 'lowpass', f: 700, d: 0.1, peak: 0.4 });
   }
   s_throwWhoosh(o, t) {
@@ -446,6 +616,7 @@ export class AudioEngine {
   s_bottleBreak(o, t) {
     this.s_glass({ ...o, ref: 2.5 }, t);
     const out = this.out(o, 1, 0.6);
+    if (this.has('glass_hit')) { this.sample(out, 'glass_hit', t, { rate: rnd(0.9, 1.1), gain: 0.6 }); return; }
     this.burst(out, t, { ftype: 'highpass', f: 1800, a: 0.001, d: 0.2, peak: 0.7 });
     this.thump(out, t, 160, 80, 0.06, 0.4);
   }
@@ -493,22 +664,33 @@ export class AudioEngine {
     }
   }
   s_shriek(o, t) {
-    const out = this.out({ ...o, hrtf: true, ref: 3 }, 1.4, 0.5);
+    const out = this.out({ ...o, hrtf: true, ref: 3 }, 2.8, 0.5);
+    if (this.buf.scream0) { this.sample(out, this.buf.scream0, t, { rate: rnd(0.95, 1.05), gain: 0.75 }); return; }
     this.voiceScream(out, t, [620, 830, 1040], 0.95, 0.7);
   }
   s_ghostScream(o, t) {
-    const out = this.out({ ...o, hrtf: true, ref: 3 }, 2, 0.5);
+    const out = this.out({ ...o, hrtf: true, ref: 3 }, 3.6, 0.5);
+    if (this.buf.scream1) {
+      // 錄音放慢一點，再疊一層斷續的合成尖叫，聽起來不像活人
+      this.sample(out, this.buf.scream1, t, { rate: rnd(0.8, 0.86), gain: 0.8 });
+      this.voiceScream(out, t, [380, 470, 565], 1.6, 0.25, 17);
+      return;
+    }
     this.voiceScream(out, t, [380, 470, 565], 1.6, 0.8, 17);
   }
   s_jumpscare(o, t) {
-    const out = this.out(null, 2.5, 0.35);
-    this.voiceScream(out, t, [700, 880, 1180, 1500], 1.4, 1.0, 23);
+    const out = this.out(null, 3.5, 0.35);
+    if (this.buf.scream1) {
+      this.sample(out, this.buf.scream1, t, { rate: 1.04, gain: 1.0 });
+      this.voiceScream(out, t, [700, 880, 1180, 1500], 1.4, 0.35, 23);
+    } else this.voiceScream(out, t, [700, 880, 1180, 1500], 1.4, 1.0, 23);
     this.thump(out, t, 55, 28, 1.2, 1.0);
     this.burst(out, t, { type: 'white', ftype: 'bandpass', f: 2500, q: 0.6, a: 0.005, d: 0.8, peak: 0.6 });
     this.s_stinger({ vol: 0.8 }, t);
   }
   s_stinger(o, t) {
-    const out = this.out(null, 3.5, 0.6);
+    const out = this.out(null, 4, 0.6);
+    if (this.buf.woosh) this.sample(out, this.buf.woosh, t, { rate: 0.9, gain: 0.5 * (o.vol || 1) });
     const c = this.ctx;
     const lp = this.filt('lowpass', 7000, 0.7);
     lp.frequency.setValueAtTime(7000, t);
@@ -556,6 +738,15 @@ export class AudioEngine {
   }
   s_thunder(o, t) {
     const near = o.near ?? Math.random();
+    const B = near > 0.55 ? this.buf.thunder_near : this.buf.thunder_far;
+    if (B) {
+      const out = this.out(null, B.duration + 1, 0.6);
+      // 隔著牆聽：高頻悶掉一些
+      const lp = this.filt('lowpass', 1800 + near * 3000, 0.5);
+      lp.connect(out);
+      this.sample(lp, B, t + (1 - near) * 0.8, { rate: rnd(0.9, 1.05), gain: 0.35 + near * 0.45 });
+      return;
+    }
     const out = this.out(null, 6, 0.6);
     const c = this.ctx;
     const n = this.noise('brown');
@@ -573,17 +764,24 @@ export class AudioEngine {
     if (near > 0.6) this.burst(out, t, { ftype: 'highpass', f: 1200, a: 0.002, d: 0.3, peak: 0.25 });
   }
   s_distantBang(o, t) {
-    const out = this.out(o, 2.5, 0.8);
+    const out = this.out(o, 3.5, 0.8);
+    if (this.buf.bang) { this.sample(out, this.buf.bang, t, { rate: rnd(0.85, 1.0), gain: 0.7 }); return; }
     this.thump(out, t, 50, 30, 0.8, 0.8);
     this.burst(out, t, { ftype: 'lowpass', f: 500, d: 0.6, peak: 0.6 });
   }
   s_metalClank(o, t) {
-    const out = this.out(o, 2.5, 0.7);
+    const out = this.out(o, 5, 0.7);
+    if (this.buf.metal_reverb) {
+      if (this.has('metal')) this.sample(out, 'metal', t, { rate: rnd(0.8, 1.0), gain: 0.5 });
+      this.sample(out, this.buf.metal_reverb, t, { rate: rnd(0.9, 1.1), gain: 0.6 });
+      return;
+    }
     this.burst(out, t, { f: 1200, q: 1, a: 0.001, d: 0.05, peak: 0.4 });
     this.ring(out, t, [[520, 30, 0.6], [1340, 45, 0.45], [2210, 40, 0.35], [3600, 60, 0.2]], 2, 0.9);
   }
   s_glass(o, t) {
-    const out = this.out(o, 1.5, 0.5);
+    const out = this.out(o, 2, 0.5);
+    if (this.buf.glass) { this.sample(out, this.buf.glass, t, { rate: rnd(0.9, 1.12), gain: 0.75 }); return; }
     this.burst(out, t, { ftype: 'highpass', f: 2500, a: 0.001, d: 0.12, peak: 0.5 });
     for (let k = 0; k < 14; k++) {
       const tt = t + rnd(0, 0.5), f = rnd(3000, 7800), d = rnd(0.04, 0.2);
@@ -603,8 +801,11 @@ export class AudioEngine {
   }
   s_fuseInsert(o, t) {
     const out = this.out(o, 2, 0.4);
-    this.thump(out, t, 130, 60, 0.12, 0.6);
-    this.ring(out, t, [[880, 30, 0.4], [2100, 40, 0.3]], 0.8, 0.5);
+    if (this.buf.latch) this.sample(out, this.buf.latch, t, { rate: 0.8, gain: 0.7 });
+    else {
+      this.thump(out, t, 130, 60, 0.12, 0.6);
+      this.ring(out, t, [[880, 30, 0.4], [2100, 40, 0.3]], 0.8, 0.5);
+    }
     const z = this.osc('sawtooth', 1400, t + 0.25, 0.4);
     z.frequency.exponentialRampToValueAtTime(70, t + 0.6);
     z.connect(this.filt('bandpass', 900, 1)).connect(this.env(t + 0.25, 0.005, 0.35, 0.25)).connect(out);
@@ -646,7 +847,12 @@ export class AudioEngine {
     this.osc('sine', 880, t, 0.04).connect(this.env(t, 0.002, 0.04, 0.02)).connect(out);
   }
   s_wheelchair(o, t) {
-    const out = this.out({ ...o, hrtf: true }, 2.5, 0.4);
+    const out = this.out({ ...o, hrtf: true }, 4, 0.4);
+    if (this.buf.squeak) {
+      this.sample(out, this.buf.squeak, t, { rate: rnd(0.9, 1.05), gain: 0.55 });
+      this.burst(out, t, { type: 'brown', ftype: 'lowpass', f: 350, a: 0.3, d: 2.4, peak: 0.4 });
+      return;
+    }
     this.burst(out, t, { type: 'brown', ftype: 'lowpass', f: 350, a: 0.2, d: 1.6, peak: 0.6 });
     for (let k = 0; k < 5; k++) {
       const tt = t + 0.1 + k * 0.33;
@@ -719,12 +925,16 @@ export class AudioEngine {
     dl.start(t);
     this.drone.connect(this.amb);
     // 雨聲（建築物裡，悶悶的）
-    const rain = this.noise('pink');
-    const rh = this.filt('highpass', 400, 0.5), rlp = this.filt('lowpass', 2600, 0.5);
     this.rainGain = c.createGain();
     this.rainGain.gain.value = 0.11;
-    rain.connect(rh).connect(rlp).connect(this.rainGain).connect(this.amb);
+    this.rainGain.connect(this.amb);
+    const rain = this.noise('pink');
+    const rh = this.filt('highpass', 400, 0.5), rlp = this.filt('lowpass', 2600, 0.5);
+    this.rainNoiseGain = c.createGain();
+    rain.connect(rh).connect(rlp).connect(this.rainNoiseGain).connect(this.rainGain);
     rain.start(t);
+    this.rainNoise = rain;
+    this.useSampledRain();
     // 風聲
     const wind = this.noise('white');
     const wb = this.filt('bandpass', 450, 7);
@@ -853,8 +1063,15 @@ export class AudioEngine {
         const out = this.out(null, 1, 0.02);
         const lp = this.filt('lowpass', 160, 0.7);
         lp.connect(out);
-        this.thump(lp, t, 62, 36, 0.15, v);
-        this.thump(lp, t + 60 / this.hb.bpm * 0.32, 56, 34, 0.13, v * 0.65);
+        if (this.buf.heart_lub && this.buf.heart_dub) {
+          const gap = 60 / this.hb.bpm * 0.32;
+          this.sample(out, this.buf.heart_lub, t, { gain: v * 1.3 });
+          this.sample(out, this.buf.heart_dub, t + Math.min(gap, 0.3), { gain: v * 0.9 });
+          this.thump(lp, t, 60, 36, 0.12, v * 0.35);
+        } else {
+          this.thump(lp, t, 62, 36, 0.15, v);
+          this.thump(lp, t + 60 / this.hb.bpm * 0.32, 56, 34, 0.13, v * 0.65);
+        }
         this.hb.next += 60 / this.hb.bpm;
       }
     }
@@ -941,16 +1158,22 @@ export class AudioEngine {
         if (ph.next < now) ph.next = now + 0.05;
         if (ph.next < ahead) {
           const t = ph.next;
-          const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 2.5, 0.4);
-          const am = this.osc('square', 20, t, 1.6);
-          const amg = c.createGain();
-          amg.gain.value = 0.5;
-          const g = c.createGain();
-          g.gain.value = 0.5;
-          am.connect(amg).connect(g.gain);
-          for (const f of [440, 480]) this.osc('sine', f, t, 1.6).connect(g);
-          g.connect(this.env(t, 0.01, 1.6, 0.25, 'lin')).connect(out);
-          ph.next = t + 4;
+          if (this.buf.phone) {
+            const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 4, 0.4);
+            this.sample(out, this.buf.phone, t, { gain: 0.5 });
+            ph.next = t + 4.6;
+          } else {
+            const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 2.5, 0.4);
+            const am = this.osc('square', 20, t, 1.6);
+            const amg = c.createGain();
+            amg.gain.value = 0.5;
+            const g = c.createGain();
+            g.gain.value = 0.5;
+            am.connect(amg).connect(g.gain);
+            for (const f of [440, 480]) this.osc('sine', f, t, 1.6).connect(g);
+            g.connect(this.env(t, 0.01, 1.6, 0.25, 'lin')).connect(out);
+            ph.next = t + 4;
+          }
         }
       }
     }

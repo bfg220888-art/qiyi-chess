@@ -1,8 +1,10 @@
-// 打包成單一 HTML 檔（所有 JS / CSS 內嵌），可以直接丟到任何靜態主機或用手機打開。
+// 打包成單一 HTML 檔（所有 JS / CSS 內嵌），外部素材複製到 dist/assets/。
+// 部署時 index.html 與 assets/ 放在一起；素材缺少時遊戲會自動改用程序生成的版本。
 //   node scripts/build.mjs          產生 dist/index.html 與 dist/artifact.html
 //   node scripts/build.mjs --serve  監看檔案變更並在 http://localhost:8080 提供預覽
 import * as esbuild from 'esbuild';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, cp, copyFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -23,6 +25,12 @@ async function assemble(js) {
     .replace(scriptTag, () => `<script type="module">${safeJs}</script>`);
   await mkdir(dist, { recursive: true });
   await writeFile(path.join(dist, 'index.html'), out);
+  // 外部素材（寫實女鬼、照片貼圖、音效）與授權說明
+  if (existsSync(path.join(root, 'assets'))) await cp(path.join(root, 'assets'), path.join(dist, 'assets'), { recursive: true });
+  else console.warn('找不到 assets/，遊戲會全部使用程序生成的素材');
+  await copyFile(path.join(root, 'CREDITS.md'), path.join(dist, 'CREDITS.md'));
+  const threeLicense = path.join(root, 'node_modules/three/LICENSE');
+  if (existsSync(threeLicense)) await copyFile(threeLicense, path.join(dist, 'LICENSE-three.txt'));
   // Artifact 版本：只保留 <head> 與 <body> 的內容（外層骨架由平台提供）
   const head = out.match(/<head>([\s\S]*?)<\/head>/)[1].replace(/<meta charset="utf-8">\s*/, '');
   const body = out.match(/<body>([\s\S]*?)<\/body>/)[1];

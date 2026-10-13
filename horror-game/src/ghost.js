@@ -551,8 +551,25 @@ export class Ghost {
     const t = g.time;
     let jitterX = 0, jitterZ = 0;
     if (this.state === 'chase' && Math.random() < 0.03) { jitterX = (Math.random() - 0.5) * 0.12; jitterZ = (Math.random() - 0.5) * 0.12; }
-    m.root.position.set(this.pos.x + jitterX, 0.015 + Math.abs(Math.sin(this.phase)) * 0.015, this.pos.z + jitterZ);
+    const bob = m.isReal ? 0 : 0.015 + Math.abs(Math.sin(this.phase)) * 0.015;
+    m.root.position.set(this.pos.x + jitterX, bob, this.pos.z + jitterZ);
     m.root.rotation.y = this.yaw;
+    if (m.isReal) {
+      // 平常頭髮半遮著臉，盯上你時撥開
+      const rv = this.state === 'chase' ? 1 : this.seesPlayer ? 0.65 : 0.25;
+      this.reveal = (this.reveal ?? rv) + (rv - (this.reveal ?? rv)) * Math.min(1, dt * 2);
+      m.revealFace(this.reveal);
+    }
+    // 她察覺到你時，會慢慢把頭轉過來盯著你
+    if (m.setLookTarget) {
+      // 只有看得到你時才盯著你；看不到就看你最後出現的地方（不會隔著牆或櫃門洩漏她知道你在哪）
+      const w = this.seesPlayer ? (this.state === 'chase' ? 1 : dist < 12 ? Math.min(1, 0.35 + this.suspicion) : 0) : this.lastKnown && this.state !== 'wander' ? 0.5 : 0;
+      this.lookW = (this.lookW || 0) + (w - (this.lookW || 0)) * Math.min(1, dt * 3);
+      const lt = this.lookTgt || (this.lookTgt = new THREE.Vector3());
+      if (this.seesPlayer) lt.copy(g.player.camera.position);
+      else if (this.lastKnown) lt.set(this.lastKnown.x, 1.4, this.lastKnown.z);
+      m.setLookTarget(lt, this.lookW);
+    }
     m.pose(this.state, t, this.phase, this.speed);
     m.setEyes(this.state === 'chase' ? 1.4 : this.state === 'stunned' ? 0.2 : 0.55);
     if (this.emitter) this.emitter.setPosition(this.pos.x, 1.6, this.pos.z);

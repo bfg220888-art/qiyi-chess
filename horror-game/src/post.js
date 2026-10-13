@@ -1,10 +1,9 @@
-// 後製：泛光 + 恐怖濾鏡（底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、調色）
+// 後製：泛光 + 恐怖濾鏡（色調映射、底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、調色）
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const HorrorShader = {
   uniforms: {
@@ -45,6 +44,11 @@ const HorrorShader = {
       col.r = texture2D(tDiffuse, uv + dir * ab).r;
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - dir * ab).b;
+      // 色調映射與 sRGB 轉換直接在這裡做（省掉一道 OutputPass 全螢幕繪製）
+      #ifdef TONE_MAPPING
+        col = toneMapping(col);
+      #endif
+      col = linearToOutputTexel(vec4(col, 1.0)).rgb;
       float lum = dot(col, vec3(0.299, 0.587, 0.114));
       // 冷色暗部、偏黃亮部的醫院調色
       vec3 graded = col;
@@ -86,7 +90,6 @@ export class Post {
       this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0.45, 0.55, 0.88);
       this.composer.addPass(this.bloom);
     }
-    this.composer.addPass(new OutputPass());
     this.horror = new ShaderPass(HorrorShader);
     this.composer.addPass(this.horror);
     this.u = this.horror.uniforms;

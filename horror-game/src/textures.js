@@ -1,4 +1,6 @@
-// 程序化貼圖：全部用 Canvas 即時繪製（顏色 / 法線 / 粗糙度），不需要任何外部圖檔。
+// 貼圖：用 Canvas 即時繪製（顏色 / 法線 / 粗糙度）。
+// 有載入照片掃描素材（CC0，見 CREDITS.md）時，牆面、地板、金屬、木頭、布料會以照片為底，
+// 再疊上程序生成的水漬、黴菌、髒污；照片載入失敗時整套退回純程序貼圖。
 import * as THREE from 'three';
 import { RNG } from './rng.js';
 
@@ -88,6 +90,25 @@ function normalFromHeight(hgt, w, h, strength, wrap = true) {
   return c;
 }
 
+// 把照片的法線疊到程序法線上（whiteout 混合）；mask 是每個像素的照片權重
+function blendNormals(canvas, pn, mask, scale) {
+  const g = ctx2d(canvas);
+  const id = g.getImageData(0, 0, canvas.width, canvas.height), d = id.data;
+  const n = canvas.width * canvas.height;
+  for (let i = 0; i < n; i++) {
+    const m = mask ? mask[i] : 1;
+    if (m <= 0) continue;
+    const o = i * 4;
+    const ax = d[o] / 127.5 - 1, ay = d[o + 1] / 127.5 - 1, az = d[o + 2] / 127.5 - 1;
+    const bx = (pn[o] / 127.5 - 1) * m * scale, by = (pn[o + 1] / 127.5 - 1) * m * scale;
+    const bz = 1 + (pn[o + 2] / 127.5 - 2) * m;
+    const x = ax + bx, y = ay + by, z = az * Math.max(0.05, bz);
+    const l = Math.hypot(x, y, z) || 1;
+    d[o] = (x / l * 0.5 + 0.5) * 255; d[o + 1] = (y / l * 0.5 + 0.5) * 255; d[o + 2] = (z / l * 0.5 + 0.5) * 255;
+  }
+  g.putImageData(id, 0, 0);
+}
+
 function grayCanvas(vals, w, h) {
   const c = mk(w, h);
   const g = ctx2d(c);
@@ -111,13 +132,66 @@ function wrapDraw(w, fn) {
   fn(w);
 }
 
+// 照片素材：{ 名稱: { c: 顏色, n: 法線, arm: AO/粗糙/金屬 } }
+const PHOTO_FILES = {
+  paint: ['c', 'n', 'arm'], tiles: ['c', 'n', 'arm'], lino: ['c', 'n', 'arm'], metal: ['c', 'n', 'arm'],
+  wood: ['c', 'n', 'r'], fabric: ['c'],
+};
+const photoImg = new Map();
+function getPhoto(url) {
+  if (!photoImg.has(url)) {
+    photoImg.set(url, new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => { photoImg.delete(url); rej(new Error('load ' + url)); };
+      img.src = url;
+    }));
+  }
+  return photoImg.get(url);
+}
+const photoUrls = (base) => Object.entries(PHOTO_FILES).flatMap(([name, kinds]) => kinds.map((k) => [name, k, `${base}${name}_${k}.webp`]));
+export function prefetchPhotos(base = 'assets/tex/') {
+  for (const [, , url] of photoUrls(base)) getPhoto(url).catch(() => {});
+}
+// 下載逾時不會取消下載：這一局先用程序貼圖，檔案下載完留給下一局
+export async function loadPhotos(base = 'assets/tex/', timeoutMs = 20000) {
+  const out = {};
+  for (const name of Object.keys(PHOTO_FILES)) out[name] = {};
+  const all = Promise.all(photoUrls(base).map(([name, k, url]) => getPhoto(url).then((img) => { out[name][k] = img; })));
+  all.catch(() => {});
+  let timer;
+  await Promise.race([all, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), timeoutMs); })]).finally(() => clearTimeout(timer));
+  // file:// 之類的環境畫布會被污染、讀不到像素：那就不用照片
+  const c = mk(4, 4), g = ctx2d(c);
+  g.drawImage(out.paint.c, 0, 0, 4, 4);
+  g.getImageData(0, 0, 1, 1);
+  return out;
+}
+
 export class TextureFactory {
-  constructor(renderer, quality, seed = 1234) {
+  constructor(renderer, quality, seed = 1234, photos = null) {
     this.renderer = renderer;
     this.q = quality;
     this.rng = new RNG(seed);
     this.maxAniso = renderer ? renderer.capabilities.getMaxAnisotropy() : 1;
     this.cache = new Map();
+    this.photos = photos;
+  }
+  ph(name) { return this.photos && this.photos[name]; }
+  // 把照片平鋪進畫布的一個區域；fromBottom 讓磁磚列對齊區域底邊
+  tilePhoto(g, img, x, y, w, h, pw, phh = pw, fromBottom = false) {
+    g.save();
+    g.beginPath(); g.rect(x, y, w, h); g.clip();
+    const y0 = fromBottom ? y + h - Math.ceil(h / phh) * phh : y;
+    for (let yy = y0; yy < y + h; yy += phh) for (let xx = x; xx < x + w; xx += pw) g.drawImage(img, xx, yy, pw, phh);
+    g.restore();
+  }
+  // 依版面把照片畫好後回傳像素；fill 是沒有照片處的底色
+  photoPixels(W, H, layers, fill) {
+    const c = mk(W, H), g = ctx2d(c);
+    g.fillStyle = fill; g.fillRect(0, 0, W, H);
+    for (const L of layers) this.tilePhoto(g, L.img, L.x || 0, L.y || 0, L.w ?? W, L.h ?? H, L.pw ?? W, L.phh ?? L.pw ?? H, L.fromBottom);
+    return g.getImageData(0, 0, W, H).data;
   }
   tex(canvas, { srgb = false, repeat = true, aniso = true, flipY = true } = {}) {
     const t = new THREE.CanvasTexture(canvas);
@@ -129,16 +203,29 @@ export class TextureFactory {
     return t;
   }
   set(name, color, hgt, rough, w, h, strength, opts = {}) {
+    const nc = normalFromHeight(hgt, w, h, strength, opts.repeat !== false);
+    if (opts.photoN) blendNormals(nc, opts.photoN, opts.photoMask, opts.photoNScale ?? 1);
     const out = {
       map: this.tex(color, { srgb: true, ...opts }),
-      normalMap: this.tex(normalFromHeight(hgt, w, h, strength, opts.repeat !== false), opts),
+      normalMap: this.tex(nc, opts),
       roughnessMap: this.tex(grayCanvas(rough, w, h), opts),
     };
     this.cache.set(name, out);
     return out;
   }
   get(name, fn) {
-    if (!this.cache.has(name)) fn.call(this);
+    if (!this.cache.has(name)) {
+      try {
+        fn.call(this);
+      } catch (e) {
+        // 照片處理出錯（例如畫布被污染）：關掉照片，整個重畫成程序貼圖
+        if (!this.photos) throw e;
+        console.warn('照片貼圖失敗，改用程序貼圖：', e && e.message);
+        this.photos = null;
+        this.cache.delete(name);
+        fn.call(this);
+      }
+    }
     return this.cache.get(name);
   }
 
@@ -152,10 +239,26 @@ export class TextureFactory {
       const hc = mk(S, S), hg = ctx2d(hc);
       const rc = mk(S, S), rg = ctx2d(rc);
       const yRail = S - 1.12 * ppm, yRail2 = S - 1.18 * ppm, ySkirt = S - 0.12 * ppm;
+      const P = this.ph('paint') && this.ph('tiles') ? [this.ph('paint'), this.ph('tiles')] : null;
       // 上半部油漆
       g.fillStyle = '#b4b6a5'; g.fillRect(0, 0, S, yRail2);
       hg.fillStyle = '#8c8c8c'; hg.fillRect(0, 0, S, S);
       rg.fillStyle = '#d8d8d8'; rg.fillRect(0, 0, S, S);
+      // 照片：上半部剝落油漆（1.5 公尺一個循環）；下半部保留程序畫的亮面磁磚，只疊上照片磁磚的髒污與表面起伏
+      let photoArm = null, photoN = null, photoMask = null, tileC = null;
+      if (P) {
+        const tileLay = (img) => ({ img, x: 0, y: yRail, w: S, h: ySkirt - yRail, pw: S / 2, fromBottom: true });
+        const lay = (k) => [{ img: P[0][k], x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }, tileLay(P[1][k])];
+        this.tilePhoto(g, P[0].c, 0, 0, S, yRail2, S / 2);
+        photoArm = this.photoPixels(S, S, lay('arm'), 'rgb(255,200,0)');
+        photoN = this.photoPixels(S, S, lay('n'), 'rgb(128,128,255)');
+        tileC = this.photoPixels(S, S, [tileLay(P[1].c)], '#737373');
+        photoMask = new Float32Array(S * S);
+        for (let y = 0; y < S; y++) {
+          if (y < yRail2) photoMask.fill(1, y * S, y * S + S);
+          else if (y >= yRail && y < ySkirt) photoMask.fill(0.45, y * S, y * S + S);
+        }
+      }
       // 磁磚
       const ts = 0.15 * ppm;
       const nTiles = Math.round(S / ts);
@@ -231,7 +334,26 @@ export class TextureFactory {
           let r = cd.data[o] / 255, gg = cd.data[o + 1] / 255, b = cd.data[o + 2] / 255;
           let hh = hd.data[o] / 255, ro = rd.data[o] / 255;
           const dn = dirt[i], fn = fine[i];
-          if (upper) {
+          if (photoMask && photoMask[i] > 0) {
+            // 照片區：用照片的粗糙度與 AO，高度保持平整（細節交給照片法線）
+            const ao = 0.45 + 0.55 * photoArm[o] / 255;
+            if (upper) {
+              // 油漆調成偏灰的舊醫院綠，提亮到跟原本的牆差不多
+              const l = (r + gg + b) / 3;
+              r = (r * 0.65 + l * 0.35) * 1.62 * ao; gg = (gg * 0.65 + l * 0.35) * 1.55 * ao; b = (b * 0.65 + l * 0.35) * 1.5 * ao;
+              const m = mold[i] * (1.0 - yy * 3.2);
+              if (m > 0.5) { const e = smooth(0.5, 0.65, m); r *= 1 - 0.45 * e; gg *= 1 - 0.4 * e; b *= 1 - 0.42 * e; }
+              const grime = smooth(0.35, 0.62, yy) * 0.22;
+              r *= 1 - grime; gg *= 1 - grime; b *= 1 - grime * 0.9;
+              hh = 0.5;
+              ro = clamp01(0.25 + photoArm[o + 1] / 255 * 0.75);
+            } else {
+              // 磁磚：照片的明暗當髒污，磁縫與亮面保留程序版
+              const gf = Math.min(1.2, Math.max(0.6, (tileC[o] + tileC[o + 1] + tileC[o + 2]) / 336)) * (0.75 + 0.25 * ao);
+              r *= gf; gg *= gf; b *= gf;
+              ro = clamp01(ro + (photoArm[o + 1] / 255 - 0.85) * 0.6);
+            }
+          } else if (upper) {
             // 剝落油漆：只出現在某些區域，邊緣有一圈陰影
             const p = peel[i] * (0.55 + peelMask[i] * 0.6);
             const peelT = 0.74;
@@ -260,7 +382,7 @@ export class TextureFactory {
         }
       }
       g.putImageData(cd, 0, 0); hg.putImageData(hd, 0, 0); rg.putImageData(rd, 0, 0);
-      this.set('wall', c, readGray(hc), readGray(rc), S, S, S / 256 * 2.2);
+      this.set('wall', c, readGray(hc), readGray(rc), S, S, S / 256 * 2.2, { photoN, photoMask });
     });
   }
 
@@ -271,7 +393,15 @@ export class TextureFactory {
       const c = mk(S, S), g = ctx2d(c);
       const n = 6, ts = S / n, seam = Math.max(1.5, S / 600);
       const hgt = new Float32Array(S * S).fill(0.6);
-      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      // 照片：舊塑膠地磚（八角形花紋），3 公尺一個循環
+      const P = this.ph('lino');
+      let arm = null, photoN = null;
+      if (P) {
+        this.tilePhoto(g, P.c, 0, 0, S, S, S);
+        arm = this.photoPixels(S, S, [{ img: P.arm }], '#fff');
+        photoN = this.photoPixels(S, S, [{ img: P.n }], '#8080ff');
+      }
+      for (let j = 0; j < n && !P; j++) for (let i = 0; i < n; i++) {
         const dark = (i + j) % 2 === 1;
         const v = rng.range(-0.025, 0.025);
         g.fillStyle = dark ? css(0.31 + v, 0.35 + v, 0.32 + v) : css(0.55 + v, 0.53 + v, 0.46 + v);
@@ -284,7 +414,7 @@ export class TextureFactory {
         }
       }
       g.fillStyle = 'rgba(20,20,18,0.85)';
-      for (let i = 0; i <= n; i++) {
+      for (let i = 0; i <= n && !P; i++) {
         g.fillRect(i * ts - seam / 2, 0, seam, S);
         g.fillRect(0, i * ts - seam / 2, S, seam);
       }
@@ -307,10 +437,17 @@ export class TextureFactory {
       for (let i = 0; i < S * S; i++) {
         const o = i * 4;
         const x = i % S, y = (i / S) | 0;
-        const onSeam = Math.min(x % ts, ts - (x % ts), y % ts, ts - (y % ts)) < seam;
+        const onSeam = !P && Math.min(x % ts, ts - (x % ts), y % ts, ts - (y % ts)) < seam;
         const dn = dirt[i];
         let k = 0.72 + dn * 0.42;
         let ro = 0.42 + (1 - dn) * 0.25 + (fine[i] - 0.5) * 0.1;
+        if (P) {
+          k *= (0.55 + 0.45 * arm[o] / 255) * 1.05;
+          ro = 0.2 + arm[o + 1] / 255 * 0.6 + (1 - dn) * 0.12;
+          // 顏色退一點飽和
+          const l = (cd.data[o] + cd.data[o + 1] + cd.data[o + 2]) / 3;
+          cd.data[o] = cd.data[o] * 0.75 + l * 0.25; cd.data[o + 1] = cd.data[o + 1] * 0.75 + l * 0.25; cd.data[o + 2] = cd.data[o + 2] * 0.75 + l * 0.25;
+        }
         const w = smooth(0.66, 0.72, wet[i]);
         k *= 1 - w * 0.35;
         ro = ro * (1 - w) + 0.04 * w;
@@ -322,7 +459,7 @@ export class TextureFactory {
         rough[i] = ro;
       }
       g.putImageData(cd, 0, 0);
-      this.set('floorVinyl', c, hgt, rough, S, S, S / 256 * 1.6);
+      this.set('floorVinyl', c, hgt, rough, S, S, S / 256 * 1.6, { photoN });
     });
   }
 
@@ -335,6 +472,14 @@ export class TextureFactory {
       g.fillStyle = '#4a4740'; g.fillRect(0, 0, S, S);
       const hc = mk(S, S), hg = ctx2d(hc);
       hg.fillStyle = '#202020'; hg.fillRect(0, 0, S, S);
+      // 照片：髒磁磚的明暗與表面起伏疊在程序磁磚上（磁縫與亮面保留程序版）
+      const P = this.ph('tiles');
+      let arm = null, photoN = null, pc = null;
+      if (P) {
+        pc = this.photoPixels(S, S, [{ img: P.c, pw: S / 2 }], '#737373');
+        arm = this.photoPixels(S, S, [{ img: P.arm, pw: S / 2 }], '#fff');
+        photoN = this.photoPixels(S, S, [{ img: P.n, pw: S / 2 }], '#8080ff');
+      }
       for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
         const v = rng.range(-0.035, 0.03);
         g.fillStyle = css(0.74 + v, 0.73 + v, 0.69 + v);
@@ -368,12 +513,16 @@ export class TextureFactory {
         const w = smooth(0.68, 0.74, wet[i]);
         k *= 1 - w * 0.25;
         rough[i] = isGrout ? 0.92 : (0.16 + (1 - dn) * 0.35) * (1 - w) + 0.04 * w;
+        if (P) {
+          k *= Math.min(1.2, Math.max(0.6, (pc[o] + pc[o + 1] + pc[o + 2]) / 336)) * (0.75 + 0.25 * arm[o] / 255);
+          if (!isGrout) rough[i] = clamp01(rough[i] + (arm[o + 1] / 255 - 0.85) * 0.5);
+        }
         cd.data[o] = clamp01(cd.data[o] / 255 * k) * 255;
         cd.data[o + 1] = clamp01(cd.data[o + 1] / 255 * k) * 255;
         cd.data[o + 2] = clamp01(cd.data[o + 2] / 255 * k * 0.96) * 255;
       }
       g.putImageData(cd, 0, 0);
-      this.set('floorTile', c, hgt, rough, S, S, S / 256 * 1.4);
+      this.set('floorTile', c, hgt, rough, S, S, S / 256 * 1.4, { photoN, photoNScale: 0.5 });
     });
   }
 
@@ -479,13 +628,26 @@ export class TextureFactory {
       const cd = g.getImageData(0, 0, W, H), hd = hg.getImageData(0, 0, W, H), rd = rg.getImageData(0, 0, W, H);
       const chips = fbm(W, H, rng, [[6, 0.5], [18, 0.3], [54, 0.2]], 0.5);
       const dirt = fbm(W, H, rng, [[3, 0.5], [10, 0.3], [40, 0.2]], 0.5);
+      // 照片：生鏽鐵板的明暗與鏽斑疊在門的漆色上
+      const P = this.ph('metal');
+      const pc = P && this.photoPixels(W, H, [{ img: P.c, pw: W }], '#ccc');
+      const arm = P && this.photoPixels(W, H, [{ img: P.arm, pw: W }], '#fff');
+      const photoN = P && this.photoPixels(W, H, [{ img: P.n, pw: W }], '#8080ff');
+      const photoMask = P && new Float32Array(W * H);
       for (let i = 0; i < W * H; i++) {
         const o = i * 4;
         const y = (i / W) | 0;
         const inWin = (i % W) > wx - 6 && (i % W) < wx + ww + 6 && y > wy - 6 && y < wy + wh + 6;
         let r = cd.data[o] / 255, gg = cd.data[o + 1] / 255, b = cd.data[o + 2] / 255;
         let hh = hd.data[o] / 255, ro = rd.data[o] / 255;
-        if (!inWin && y < ky) {
+        if (P && !inWin) {
+          photoMask[i] = 1;
+          const r0 = pc[o] / 255, g0 = pc[o + 1] / 255, b0 = pc[o + 2] / 255;
+          const f = Math.min(1.45, (r0 * 0.3 + g0 * 0.55 + b0 * 0.15) * 1.8) * (0.65 + 0.35 * arm[o] / 255);
+          const rusty = y < ky ? smooth(0.06, 0.2, r0 - b0) * 0.8 : 0;
+          r = r * f * (1 - rusty) + r0 * 0.75 * rusty; gg = gg * f * (1 - rusty) + g0 * 0.75 * rusty; b = b * f * (1 - rusty) + b0 * 0.75 * rusty;
+          ro = clamp01(0.3 + arm[o + 1] / 255 * 0.65);
+        } else if (!inWin && y < ky) {
           const ch = chips[i];
           if (ch > 0.72) {
             const rust = ch > 0.8;
@@ -499,7 +661,7 @@ export class TextureFactory {
         rd.data[o] = rd.data[o + 1] = rd.data[o + 2] = clamp01(ro) * 255;
       }
       g.putImageData(cd, 0, 0); hg.putImageData(hd, 0, 0); rg.putImageData(rd, 0, 0);
-      this.set('door', c, readGray(hc), readGray(rc), W, H, W / 256 * 2.0, { repeat: false });
+      this.set('door', c, readGray(hc), readGray(rc), W, H, W / 256 * 2.0, { repeat: false, photoN, photoMask });
     });
   }
 
@@ -532,16 +694,28 @@ export class TextureFactory {
       const scratch = fbm(W, H, rng, [[8, 0.5], [32, 0.5]], 0.25);
       const dirt = fbm(W, H, rng, [[3, 0.6], [12, 0.4]], 0.25);
       const rough = new Float32Array(W * H);
+      const P = this.ph('metal');
+      const pc = P && this.photoPixels(W, H, [{ img: P.c, pw: W }], '#ccc');
+      const arm = P && this.photoPixels(W, H, [{ img: P.arm, pw: W }], '#fff');
+      const photoN = P && this.photoPixels(W, H, [{ img: P.n, pw: W }], '#8080ff');
       for (let i = 0; i < W * H; i++) {
         const o = i * 4;
-        const rust = scratch[i] > 0.78;
         const k = 0.72 + dirt[i] * 0.4;
+        if (P) {
+          const r0 = pc[o] / 255, g0 = pc[o + 1] / 255, b0 = pc[o + 2] / 255;
+          const f = Math.min(1.45, (r0 * 0.3 + g0 * 0.55 + b0 * 0.15) * 1.8) * (0.65 + 0.35 * arm[o] / 255);
+          const rusty = smooth(0.06, 0.2, r0 - b0) * 0.7;
+          for (let ch = 0; ch < 3; ch++) cd.data[o + ch] = clamp01(cd.data[o + ch] / 255 * f * (1 - rusty) * k + pc[o + ch] / 255 * 0.75 * rusty) * 255;
+          rough[i] = clamp01(0.3 + arm[o + 1] / 255 * 0.6);
+          continue;
+        }
+        const rust = scratch[i] > 0.78;
         if (rust) { cd.data[o] = 95; cd.data[o + 1] = 60; cd.data[o + 2] = 38; }
         cd.data[o] *= k; cd.data[o + 1] *= k; cd.data[o + 2] *= k;
         rough[i] = rust ? 0.95 : 0.45 + (1 - dirt[i]) * 0.3;
       }
       g.putImageData(cd, 0, 0);
-      this.set('lockerDoor', c, readGray(hc), rough, W, H, W / 128 * 1.8, { repeat: false });
+      this.set('lockerDoor', c, readGray(hc), rough, W, H, W / 128 * 1.8, { repeat: false, photoN, photoNScale: 0.7 });
     });
   }
 
@@ -555,8 +729,27 @@ export class TextureFactory {
       const c = mk(S, S), g = ctx2d(c);
       const id = g.createImageData(S, S);
       const hgt = new Float32Array(S * S), rough = new Float32Array(S * S);
+      // 照片：生鏽的塗漆鐵板。漆面轉成灰階（讓材質顏色去染色），鏽保留原色
+      const P = this.ph('metal');
+      const pc = P && this.photoPixels(S, S, [{ img: P.c }], '#ccc');
+      const arm = P && this.photoPixels(S, S, [{ img: P.arm }], '#fff');
+      const photoN = P && this.photoPixels(S, S, [{ img: P.n }], '#8080ff');
       for (let i = 0; i < S * S; i++) {
         const o = i * 4;
+        if (P) {
+          const r0 = pc[o] / 255, g0 = pc[o + 1] / 255, b0 = pc[o + 2] / 255;
+          const l = r0 * 0.3 + g0 * 0.55 + b0 * 0.15;
+          const rusty = smooth(0.04, 0.16, r0 - b0);
+          const ao = 0.6 + 0.4 * arm[o] / 255;
+          const v = Math.min(1, l * 1.25) * (0.85 + dirt[i] * 0.2);
+          id.data[o] = clamp01((v * (1 - rusty) + r0 * rusty) * ao) * 255;
+          id.data[o + 1] = clamp01((v * (1 - rusty) + g0 * rusty) * ao) * 255;
+          id.data[o + 2] = clamp01((v * (1 - rusty) + b0 * rusty) * ao) * 255;
+          id.data[o + 3] = 255;
+          hgt[i] = 0.5;
+          rough[i] = clamp01(0.2 + arm[o + 1] / 255 * 0.8);
+          continue;
+        }
         const chip = chips[i] > 0.76;
         const rust = chips[i] > 0.83;
         let v = 0.82 + dirt[i] * 0.25 + (fine[i] - 0.5) * 0.05;
@@ -576,7 +769,7 @@ export class TextureFactory {
         g.lineWidth = rng.range(0.6, 1.5);
         g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
       }
-      this.set('paintedMetal', c, hgt, rough, S, S, S / 256 * 1.2);
+      this.set('paintedMetal', c, hgt, rough, S, S, S / 256 * 1.2, { photoN });
     });
   }
 
@@ -605,6 +798,9 @@ export class TextureFactory {
     return this.get('fabric', () => {
       const S = this.q.propTex, rng = this.rng;
       const c = mk(S, S), g = ctx2d(c);
+      // 照片：亞麻布紋，取明暗當織紋
+      const P = this.ph('fabric');
+      const pc = P && this.photoPixels(S, S, [{ img: P.c, pw: S / 2 }], '#888');
       const weave = fbm(S, S, rng, [[256, 1]]);
       const dirt = fbm(S, S, rng, [[3, 0.4], [8, 0.3], [24, 0.3]]);
       const folds = fbm(S, S, rng, [[2, 0.4], [6, 0.6]], 0.3);
@@ -612,7 +808,7 @@ export class TextureFactory {
       const rough = new Float32Array(S * S), hgt = new Float32Array(S * S);
       for (let i = 0; i < S * S; i++) {
         const x = i % S, y = (i / S) | 0;
-        const wv = ((x % 4 < 2) !== (y % 4 < 2) ? 0.03 : -0.03) + (weave[i] - 0.5) * 0.08;
+        const wv = pc ? ((pc[i * 4] + pc[i * 4 + 1] + pc[i * 4 + 2]) / 765 - 0.45) * 0.35 : ((x % 4 < 2) !== (y % 4 < 2) ? 0.03 : -0.03) + (weave[i] - 0.5) * 0.08;
         let v = 0.8 + wv - (1 - dirt[i]) * 0.22 - folds[i] * 0.12;
         let r = v * 0.98, gg = v * 0.96, b = v * 0.9;
         const yellow = smooth(0.7, 0.85, dirt[i]);
@@ -632,6 +828,26 @@ export class TextureFactory {
   wood() {
     return this.get('wood', () => {
       const S = this.q.propTex / 2, rng = this.rng;
+      const P = this.ph('wood');
+      if (P) {
+        // 照片：磨損的舊木板
+        const c = mk(S, S), g = ctx2d(c);
+        this.tilePhoto(g, P.c, 0, 0, S, S, S);
+        const cd = g.getImageData(0, 0, S, S);
+        const rgh = this.photoPixels(S, S, [{ img: P.r }], '#999');
+        const photoN = this.photoPixels(S, S, [{ img: P.n }], '#8080ff');
+        const dirt = fbm(S, S, rng, [[3, 0.6], [12, 0.4]]);
+        const rough = new Float32Array(S * S), hgt = new Float32Array(S * S).fill(0.5);
+        for (let i = 0; i < S * S; i++) {
+          const o = i * 4, k = 0.62 + dirt[i] * 0.25;
+          // 偏暗、偏冷一點，看起來比較舊
+          cd.data[o] *= k * 0.92; cd.data[o + 1] *= k * 0.9; cd.data[o + 2] *= k * 0.92;
+          rough[i] = clamp01(rgh[o] / 255 * 0.9 + 0.08);
+        }
+        g.putImageData(cd, 0, 0);
+        this.set('wood', c, hgt, rough, S, S, 1.0, { photoN });
+        return;
+      }
       const grain = fbm(S, S, rng, [[2, 0.3], [8, 0.4], [32, 0.3]], 0.08);
       const dirt = fbm(S, S, rng, [[3, 0.6], [12, 0.4]]);
       const c = mk(S, S), g = ctx2d(c);

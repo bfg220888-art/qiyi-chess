@@ -150,6 +150,12 @@
       </span>
     </label>
     <p class="note-small" id="qualityNote">變更畫質會在下一局生效。</p>
+    <label class="row">更新率上限
+      <span class="seg small" id="fpsSeg">
+        <button type="button" data-fps="30">30 省電</button><button type="button" data-fps="60">60</button><button type="button" data-fps="0">不限</button>
+      </span>
+    </label>
+    <p class="note-small">電腦或手機發燙時，選「低」畫質與「30 省電」。</p>
     <label class="row" for="sBright">亮度 <input id="sBright" type="range" min="0.6" max="2" step="0.05"></label>
     <label class="row" for="sVolume">音量 <input id="sVolume" type="range" min="0" max="1" step="0.05"></label>
     <label class="row" for="sMouse">滑鼠靈敏度 <input id="sMouse" type="range" min="0.2" max="3" step="0.05"></label>
@@ -198,6 +204,13 @@
         </ul>
       </div>
     </div>
+    <details class="credits">
+      <summary>素材來源與授權</summary>
+      <p>女鬼人物模型、動作與表情：Microsoft Rocketbox Avatar Library（MIT）。</p>
+      <p>照片貼圖：Poly Haven（剝落油漆牆、髒磁磚、舊塑膠地磚、生鏽鐵板、磨損木地板）、ambientCG（亞麻布），皆為 CC0。</p>
+      <p>音效：Berklee College of Music sample library, OLPC Sound Library（wiki.laptop.org/go/Sound_samples），CC BY 3.0，經裁切與調整音量；Kenney（CC0）；Joseph SARDIN - BigSoundBank.com（CC0）；Freesound 上的 Nox_Sound、chewiesmissus、EcoDTR、speakwithanimals、loganzsound、Emulius（CC0）。</p>
+      <p>3D 引擎：three.js（MIT）。其餘畫面與聲音由程式即時生成。</p>
+    </details>
     <button id="btnHelpBack" class="btn primary" type="button">知道了</button>
   </div>
 </section>
