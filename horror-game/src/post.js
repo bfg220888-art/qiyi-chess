@@ -4,6 +4,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
 const HorrorShader = {
   uniforms: {
@@ -104,9 +105,51 @@ export class Post {
     this.u.uTime.value += dt;
     this.composer.render(dt);
   }
+  // 相機照片（回傳 Promise）：先渲染到跟主畫面相同格式（半浮點、線性）的目標，共用已經編譯好的著色器，
+  // 按快門時才不會因為重新編譯而卡住；再用一個小 pass 做色調映射與 sRGB，讀回 8 位元像素
+  snapshot(scene, camera, W, H) {
+    if (!this.snap) {
+      const hdr = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType });
+      const ldr = new THREE.WebGLRenderTarget(W, H);
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { tSrc: { value: hdr.texture }, uExposure: { value: 1 } },
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: `
+          uniform sampler2D tSrc; uniform float uExposure; varying vec2 vUv;
+          vec3 fit(vec3 v) { vec3 a = v * (v + 0.0245786) - 0.000090537; vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081; return a / b; }
+          void main() {
+            const mat3 inM = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+            const mat3 outM = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+            vec3 c = texture2D(tSrc, vUv).rgb * uExposure / 0.6;
+            c = clamp(outM * fit(inM * c), 0.0, 1.0);
+            c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+            gl_FragColor = vec4(c, 1.0);
+          }`,
+        toneMapped: false, depthTest: false, depthWrite: false,
+      });
+      this.snap = { hdr, ldr, mat, quad: new FullScreenQuad(mat), buf: new Uint8Array(W * H * 4) };
+    }
+    const S = this.snap, r = this.renderer, prev = r.getRenderTarget();
+    S.mat.uniforms.uExposure.value = r.toneMappingExposure;
+    // 陰影圖沿用這一格主畫面算好的，不重算一次
+    const au = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+    r.setRenderTarget(S.hdr);
+    r.clear();
+    r.render(scene, camera);
+    r.shadowMap.autoUpdate = au;
+    r.setRenderTarget(S.ldr);
+    S.quad.render(r);
+    r.setRenderTarget(prev);
+    // 非同步讀回（PBO + fence）：不必等 GPU 把前面的工作做完，按快門那一格不會頓
+    if (r.readRenderTargetPixelsAsync) return r.readRenderTargetPixelsAsync(S.ldr, 0, 0, W, H, S.buf).then(() => S.buf);
+    r.readRenderTargetPixels(S.ldr, 0, 0, W, H, S.buf);
+    return Promise.resolve(S.buf);
+  }
   dispose() {
     // EffectComposer.dispose() 不會釋放各個 pass（泛光的 mip 目標等），要自己來
     for (const p of this.composer.passes) if (p.dispose) p.dispose();
+    if (this.snap) { this.snap.hdr.dispose(); this.snap.ldr.dispose(); this.snap.mat.dispose(); this.snap.quad.dispose(); }
     this.composer.dispose();
   }
 }

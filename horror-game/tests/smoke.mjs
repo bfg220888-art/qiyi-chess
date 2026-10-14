@@ -244,6 +244,8 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
     log('flash debug', JSON.stringify(geo));
   }
   assert(afterFlash === 'stunned', 'camera flash should stun her');
+  // 照片是非同步讀回的，等它沖洗出來
+  await page.waitForFunction(() => document.getElementById('polaroid').classList.contains('show'), null, { timeout: 15000 }).catch(() => {});
   const photo = await page.evaluate(() => ({ show: document.getElementById('polaroid').classList.contains('show'), photos: window.__SW.game.stats.photos, cap: document.querySelector('#polaroid figcaption').textContent }));
   log('photo', JSON.stringify(photo));
   assert(photo.show && photo.photos === 1, 'flash photo should develop and show her');

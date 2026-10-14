@@ -686,13 +686,8 @@ export class Game {
   // 相機閃光的那一瞬間另外渲染一張小照片（只在按快門時做一次，不影響平常的效能）
   capturePhoto() {
     try {
-      const W = 256, H = 192, r = this.renderer, cam = this.player.camera;
-      if (!this.photoRT) {
-        this.photoRT = new THREE.WebGLRenderTarget(W, H);
-        this.photoRT.texture.colorSpace = THREE.SRGBColorSpace;
-        this.photoCam = new THREE.PerspectiveCamera(cam.fov, W / H, cam.near, cam.far);
-        this.photoBuf = new Uint8Array(W * H * 4);
-      }
+      const W = 256, H = 192, cam = this.player.camera;
+      if (!this.photoCam) this.photoCam = new THREE.PerspectiveCamera(cam.fov, W / H, cam.near, cam.far);
       // 照片裡拍到她了嗎？（她或幻影的臉在畫面中、沒有被牆擋住）
       const v = new THREE.Vector3();
       const inShot = (m, x, z) => {
@@ -728,16 +723,11 @@ export class Game {
       pc.position.setFromMatrixPosition(cam.matrixWorld);
       pc.quaternion.setFromRotationMatrix(cam.matrixWorld);
       pc.updateMatrixWorld();
-      // 照片沒有經過色調映射，閃光調弱一點免得臉整個過曝
+      // 閃光調弱一點，免得近距離的臉整個過曝
       const L = P.photo, li = L ? L.intensity : 0;
-      if (L) L.intensity = li * 0.3;
-      const prev = r.getRenderTarget();
-      r.setRenderTarget(this.photoRT);
-      r.clear();
-      r.render(this.scene, pc);
-      r.setRenderTarget(prev);
+      if (L) L.intensity = li * 0.5;
+      const shot = this.post.snapshot(this.scene, pc, W, H);
       if (L) L.intensity = li;
-      r.readRenderTargetPixels(this.photoRT, 0, 0, W, H, this.photoBuf);
       if (trick) {
         am.root.visible = false;
         am.revealFace(0);
@@ -747,7 +737,7 @@ export class Game {
       if (her) this.stats.photos++;
       const empty = ['（什麼也沒拍到）', '走廊空無一人……', '（模糊的一片）'];
       const caption = her ? '……她在看著鏡頭。' : trick ? '照片裡有人。可是那裡明明沒有人。' : empty[Math.floor(Math.random() * empty.length)];
-      this.ui.showPhoto(this.photoBuf, W, H, caption);
+      shot.then((buf) => { if (!this.disposed) this.ui.showPhoto(buf, W, H, caption); }).catch((e) => console.warn('拍照失敗', e && e.message));
     } catch (e) {
       console.warn('拍照失敗', e && e.message);
     }
@@ -829,7 +819,6 @@ export class Game {
     for (const v of this.tf.cache.values()) for (const t of Object.values(v)) if (t && t.isTexture) t.dispose();
     if (this.world.aoTex) this.world.aoTex.dispose();
     if (this.envRT) this.envRT.dispose();
-    if (this.photoRT) this.photoRT.dispose();
     this.ui.hidePhoto();
     this.post.dispose();
     this.renderer.renderLists.dispose();
