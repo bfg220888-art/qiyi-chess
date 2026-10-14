@@ -161,6 +161,9 @@ export class PropBuilder {
       this.box(g, M.fabric, L * 0.8, 0.3, 0.02, 0, 0.78, W / 2 + 0.02, { uvScale: 1.4, rx: -0.12 });
       const arm = this.cyl(g, M.skin, 0.03, 0.025, 0.45, -0.1, 0.62, W / 2 + 0.06, { rx: 0.15 });
       arm.rotation.z = 0.05;
+    } else if (f.body) {
+      // 屍體模型取代了白布：照樣抽掉白布會用到的亂數，後面的道具才會和沒載入模型時一樣
+      for (let i = 0; i < 4; i++) this.rng.next();
     }
     return g;
   }

@@ -2,6 +2,7 @@
 // 音檔載入失敗或還沒載完時，每個聲音都會退回合成版本。
 // 含 HRTF 3D 定位、牆壁遮蔽（悶音）、卷積殘響。
 import { assetBuffer } from './assets.js';
+import { Score, LULLABY } from './music.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -16,17 +17,11 @@ const SFX_FILES = [
   'metal0', 'metal1', 'metal2', 'metal3', 'metal4', 'bang', 'metal_reverb', 'phone', 'woosh', 'buzz', 'breath',
 ];
 
-// 原創搖籃曲旋律（MIDI 音高，-1 = 休止）
-const LULLABY = [
-  [57, 0.7], [60, 0.7], [59, 0.7], [57, 1.1], [52, 1.2], [-1, 0.6],
-  [57, 0.6], [59, 0.6], [60, 0.7], [62, 0.7], [60, 1.0], [59, 1.2], [-1, 0.7],
-  [55, 0.6], [57, 0.6], [59, 0.7], [60, 0.8], [59, 0.6], [57, 0.6], [56, 1.0], [57, 1.8], [-1, 2.2],
-];
-
 export class AudioEngine {
   constructor() {
     this.ctx = null;
     this.volume = 0.85;
+    this.musicVolume = 0.8;
     this.emitters = new Set();
     this.occlusionFn = null;
     this.listener = { x: 0, y: 0, z: 0 };
@@ -63,6 +58,7 @@ export class AudioEngine {
     this.sfx = c.createGain();
     this.sfx.connect(this.master);
     this.music = c.createGain();
+    this.music.gain.value = this.musicVolume;
     this.music.connect(this.master);
     this.amb = c.createGain();
     this.amb.gain.value = 0;
@@ -84,9 +80,11 @@ export class AudioEngine {
       last = (last + 0.02 * x) / 1.02;
       br[i] = last * 3.5;
     }
+    this.score = new Score(this);
     this.tick = this.tick.bind(this);
     this.timer = setInterval(this.tick, 50);
     this.loadSamples();
+    this.score.load();
   }
 
   // ---- 實錄音效
@@ -201,6 +199,14 @@ export class AudioEngine {
     this.volume = v;
     if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
+  setMusicVolume(v) {
+    this.musicVolume = v;
+    if (this.music) this.music.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+    if (this.score) this.score.setVolume(v);
+  }
+  // 配樂模式：menu / explore / win / lose / off
+  setMusic(mode) { if (this.score) this.score.setMode(mode); }
+  setMusicState(tension, chase, hiding) { if (this.score) this.score.setState(tension, chase, hiding); }
 
   makeIR(dur, decay) {
     const c = this.ctx, n = Math.floor(c.sampleRate * dur);
@@ -869,9 +875,13 @@ export class AudioEngine {
   s_musicBox(o, t) {
     const out = this.out({ ...o, hrtf: true }, 12, 0.5);
     let tt = t;
+    const real = this.score && this.score.has('glk');
     for (const [m, d] of LULLABY) {
       if (tt > t + (o.dur || 10)) break;
-      if (m > 0) {
+      if (m > 0 && real) {
+        // 真的鐘琴錄音，放在房間裡的某個位置
+        this.score.play('glk', m + 24 + rnd(-0.06, 0.06) - (tt - t) * 0.02, tt, { vel: 0.45, dest: out, rel: 0.5 });
+      } else if (m > 0) {
         const f = mtof(m + 24) * (1 + rnd(-0.006, 0.006));
         this.osc('sine', f, tt, 1.2).connect(this.env(tt, 0.002, 1.1, 0.12)).connect(out);
         this.osc('sine', f * 3.01, tt, 0.4).connect(this.env(tt, 0.002, 0.35, 0.03)).connect(out);
@@ -1136,9 +1146,11 @@ export class AudioEngine {
           s.connect(this.env(t, 0.2, 0.7, 0.025)).connect(g);
         }
         setTimeout(() => { try { g.disconnect(); } catch (e) { /* 已斷開 */ } }, 3000);
+        if (this.score) this.score.chaseHit(t, b, lv);
         this.chase.next += beat;
       }
     }
+    if (this.score) this.score.tick(now);
     // 漏水滴答
     if (this.ambStarted) {
       if (this.drips.next < now) this.drips.next = now + rnd(0.8, 4);
@@ -1237,6 +1249,7 @@ export class AudioEngine {
     this.alarmOn = false;
     this.stopPhone();
     this.last = {};
+    if (this.score) this.score.stop();
     if (this.amb) this.amb.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
     for (const em of [...this.emitters]) em.dispose();
   }

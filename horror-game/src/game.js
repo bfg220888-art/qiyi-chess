@@ -135,6 +135,7 @@ export class Game {
   start() {
     this.audio.startAmbience();
     this.audio.setRain(0.1);
+    this.audio.setMusic('explore');
     this.ui.updateHud();
     // 開場：身後的大門砰一聲關上
     this.later(() => {
@@ -279,6 +280,7 @@ export class Game {
     this.fear = (this.fear || 0) + (fear - (this.fear || 0)) * Math.min(1, dt * 2);
     A.setHeartbeat(62 + this.fear * 85, Math.max(0, this.fear - 0.2) * 0.7);
     A.setChase(chase);
+    A.setMusicState(Math.max(this.fear, this.phase === 'escape' ? 0.5 : 0), chase, !!P.hiding);
     const st = gh.state === 'dormant' ? 0 : Math.max(0, 1 - this.ghostDist / 10);
     this.staticBoost = Math.max(0, this.staticBoost - dt * 1.5);
     A.setStatic(Math.min(1, st * 0.7 + this.staticBoost));
@@ -654,6 +656,7 @@ export class Game {
     this.over = true;
     this.post.u.uFade.value = 1;
     this.audio.stopAll();
+    this.audio.setMusic('lose');
     const texts = [
       '你的直播帳號再也沒有更新過。',
       '隔天早上，警衛在走廊盡頭找到你的攝影機。最後一格畫面是一團黑色的頭髮。',
@@ -668,6 +671,7 @@ export class Game {
     this.over = true;
     this.audio.stopAll();
     this.audio.play('thunder', { near: 0.3 });
+    this.audio.setMusic('win');
     this.input.exitLock();
     this.ui.prompt('');
     this.ui.fade(1, 1.6);

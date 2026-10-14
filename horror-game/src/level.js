@@ -1,7 +1,7 @@
 // 醫院樓層程序生成：走廊網格、房間、門、家具、道具、燈具、血跡。
 // 這個模組不碰 DOM / three.js，可以在 Node 裡測試。
 import { RNG } from './rng.js';
-import { CORPSE_POSES } from './corpse-poses.js';
+import { CORPSE_POSES, corpseShift } from './corpse-poses.js';
 import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
@@ -709,7 +709,7 @@ function furnish(lv, rng) {
             const [fx, fz] = frontVec(bed.rot);
             const sx = fz, sz = -fx;
             const side = rng.chance(0.5) ? 1 : -1;
-            lv.decals.push({ kind: 'curtain', x: bed.x + sx * side * 0.68, z: bed.z + fz * 0.1, rot: bed.rot, len: 2.0 });
+            lv.decals.push({ kind: 'curtain', x: bed.x + sx * side * 0.68 + fx * 0.1, z: bed.z + sz * side * 0.68 + fz * 0.1, rot: bed.rot, len: 2.0 });
           }
         }
         if (rng.chance(0.6)) P.againstWall('cabinet', room);
@@ -1076,8 +1076,31 @@ function assignCorpses(lv) {
       for (const [ox, oz] of [[0, 0], [0.25, 0], [-0.25, 0], [0, 0.25], [0, -0.25]]) if (roomOf(x + ox, z + oz) !== room) return false;
       const box = { minX: x - 0.12, maxX: x + 0.12, minZ: z - 0.12, maxZ: z + 0.12 };
       for (const o of lv.furniture) if (o !== f && overlaps(box, o.box)) return false;
+      // 門打開時掃過的範圍、床邊的隔簾
+      for (const o of lv.blockers) if (o.clearance && overlaps(box, o)) return false;
+      for (const c of curtains) if (segDist(x, z, c) < 0.2) return false;
     }
     return true;
+  };
+  const curtains = lv.decals.filter((d) => d.kind === 'curtain');
+  const segDist = (x, z, c) => {
+    const dx = Math.sin(c.rot), dz = Math.cos(c.rot);
+    const t = Math.max(-c.len / 2, Math.min(c.len / 2, (x - c.x) * dx + (z - c.z) * dz));
+    return Math.hypot(x - c.x - dx * t, z - c.z - dz * t);
+  };
+  // 滑到床外的上半身要擋住玩家（只在不會把房間隔斷時才擺這個姿勢）
+  const overhang = (f, side) => {
+    const half = f.kind === 'gurney' ? 0.31 : 0.46;
+    const pts = [[half, -0.75], [half + 0.85, -0.75], [half, 0.55], [half + 0.85, 0.55]].map(([a, b]) => toWorld(f, side * a, b));
+    return { minX: Math.min(...pts.map((p) => p[0])), maxX: Math.max(...pts.map((p) => p[0])), minZ: Math.min(...pts.map((p) => p[1])), maxZ: Math.max(...pts.map((p) => p[1])) };
+  };
+  const hangOk = (f, side, name) => {
+    if (!sideFree(f, side, CORPSE_POSES[name].hang)) return false;
+    if (name !== 'halfoff') return true;
+    const o = overhang(f, side);
+    // 地上已經擺好的道具不能被擋住
+    for (const it of lv.items) if (it.y <= 0.01 && overlaps(o, { minX: it.x, maxX: it.x, minZ: it.z, maxZ: it.z }, 0.2)) return false;
+    return roomStaysConnected(lv, lv.rooms[f.room], o);
   };
   const cands = lv.furniture.filter((f) => (f.kind === 'bed' && (f.variant || 0) !== 2 && r.chance(0.42)) || (f.kind === 'gurney' && f.body && r.chance(0.75)));
   let n = 0;
@@ -1089,18 +1112,20 @@ function assignCorpses(lv) {
       if (f.kind === 'gurney' && !p.gurney) continue;
       if (!p.hang) { opts.push([name, r.chance(0.5), p.w]); continue; }
       // 預設垂向 -X 側；翻轉後垂向 +X 側
-      if (sideFree(f, -1, p.hang)) opts.push([name, false, p.w]);
-      else if (sideFree(f, 1, p.hang)) opts.push([name, true, p.w]);
+      if (hangOk(f, -1, name)) opts.push([name, false, p.w]);
+      else if (hangOk(f, 1, name)) opts.push([name, true, p.w]);
     }
     if (!opts.length) continue;
     const [pose, mirror] = r.weighted(opts.map((o) => [o, o[2]]));
     const avatar = r.pick(CORPSE_POSES[pose].avatars);
     f.corpse = { name: `${avatar}_${pose}`, pose, mirror };
+    // 碰撞箱等真的擺出模型時才加上（world.js），模型沒載入就不會有看不見的牆
+    if (pose === 'halfoff') f.corpse.overhang = overhang(f, mirror ? 1 : -1);
     n++;
     // 地上的血：垂下來的手或頭底下一灘，其他的有時候從床底滲出來
     const side = mirror ? 1 : -1, half = f.kind === 'gurney' ? 0.31 : 0.46;
     let spot = null, size = r.range(0.6, 1.0);
-    if (pose === 'dangle') spot = toWorld(f, side * (half + 0.12), 0.05);
+    if (pose === 'dangle') spot = toWorld(f, side * (half + 0.12), -0.18 + corpseShift(f.corpse.name, f.kind)); // 垂下來的手底下
     else if (pose === 'halfoff') { spot = toWorld(f, side * (half + 0.55), 0.25); size = r.range(1.0, 1.5); }
     else if (r.chance(0.45)) spot = toWorld(f, r.range(-0.2, 0.2), r.range(-0.2, 0.4));
     if (spot) lv.decals.push({ kind: 'blood', x: spot[0], z: spot[1], rot: r.range(0, 6.28), size, variant: r.int(0, 3) });

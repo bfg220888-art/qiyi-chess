@@ -290,6 +290,9 @@ try {
   const cols = Math.min(all.length, 4);
   const skin = new THREE.MeshStandardMaterial({ color: 0xd8c0b0 }), cloth = new THREE.MeshStandardMaterial({ color: 0x7088a0 }), other = new THREE.MeshStandardMaterial({ color: 0x202020 });
   all.forEach((b, i) => {
+    b.geometry.computeBoundingBox();
+    const bb = b.geometry.boundingBox;
+    log.push(`${b.name} x ${bb.min.x.toFixed(2)}..${bb.max.x.toFixed(2)} y ${bb.min.y.toFixed(2)}..${bb.max.y.toFixed(2)} z ${bb.min.z.toFixed(2)}..${bb.max.z.toFixed(2)}`);
     const x = (i % cols) * 1.6, z = Math.floor(i / cols) * 2.8;
     const bed = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.13, 2.0), new THREE.MeshStandardMaterial({ color: 0xb0b0a8 }));
     bed.position.set(x, -0.065, z); scene.add(bed);
@@ -300,7 +303,7 @@ try {
       const tl = new THREE.TextureLoader();
       mats = b.mats.map((n) => {
         const part = n.replace(/^[mf]\d+_/, ''), id = b.name.split('_')[0];
-        const t = tl.load(`/c/tex/${id}_${part}.${part === 'opacity' ? 'png' : 'jpg'}`);
+        const t = tl.load(`/c/tex/${id}_${part}.${part === 'opacity' ? 'webp' : 'jpg'}`);
         t.colorSpace = THREE.SRGBColorSpace;
         return new THREE.MeshStandardMaterial({ map: t, roughness: 0.75, alphaTest: part === 'opacity' ? 0.4 : 0, side: part === 'opacity' ? THREE.DoubleSide : THREE.FrontSide });
       });

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { sightClear } from './nav.js';
 import { WALL_WRITINGS } from './level.js';
-import { makeCorpse } from './corpses.js';
+import { makeCorpse, placeCorpse } from './corpses.js';
 import { CORPSE_POSES } from './corpse-poses.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -157,7 +157,7 @@ export class Director {
         this.startRush();
         break;
       case 'corpse':
-        this.moveCorpse();
+        if (!this.moveCorpse()) this.trigger('distant');
         break;
       case 'phone':
         if (lv.phone && g.world.phone) {
@@ -178,8 +178,9 @@ export class Director {
     const fr = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
     const sphere = new THREE.Sphere();
     const cands = W.corpseMeshes.filter((c) => {
+      if (c.userData.furn.corpse.pose === 'halfoff') return false; // 床邊有擋路的碰撞箱，換姿勢會留下看不見的牆
       const d = Math.hypot(c.position.x - P.pos.x, c.position.z - P.pos.z);
-      sphere.set(c.position, 1.3);
+      sphere.set(c.position, 1.7); // 滑到床外的姿勢離中心可達 1.5 公尺
       return d > 2.5 && d < 14 && !fr.intersectsSphere(sphere);
     });
     if (!cands.length) return false;
@@ -194,9 +195,7 @@ export class Director {
     const name = opts[Math.floor(Math.random() * opts.length)];
     const c = makeCorpse(W.corpses, name, f.corpse.mirror);
     if (!c) return false;
-    c.position.copy(old.position);
-    c.rotation.copy(old.rotation);
-    c.userData.furn = f;
+    placeCorpse(c, f);
     old.parent.add(c);
     old.removeFromParent();
     W.corpseMeshes[W.corpseMeshes.indexOf(old)] = c;

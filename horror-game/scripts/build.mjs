@@ -61,7 +61,7 @@ async function embedAssets() {
 // 單一檔案版本沒有附帶授權檔，把 MIT 授權全文放進 HTML 註解
 async function licenseNotices() {
   const parts = [];
-  for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼模型）', 'assets/ghost/LICENSE-Rocketbox.md']]) {
+  for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼與屍體模型）', 'assets/ghost/LICENSE-Rocketbox.md']]) {
     const f = path.join(root, file);
     if (existsSync(f)) parts.push(`${name}\n\n${(await readFile(f, 'utf8')).replace(/-(?=-)/g, '- ')}`);
   }

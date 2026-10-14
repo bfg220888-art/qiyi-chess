@@ -37,12 +37,12 @@ class App {
   constructor() {
     this.canvas = $('game');
     const defaults = {
-      volume: 0.85, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
+      volume: 0.85, music: 0.8, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
       quality: null, difficulty: 'normal', fpsCap: 60,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
-    clampNum('volume', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
+    clampNum('volume', 0, 1); clampNum('music', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
     this.settings.invertY = this.settings.invertY === true;
     this.settings.showFps = this.settings.showFps === true;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
@@ -60,6 +60,7 @@ class App {
     this.ui = new UI();
     this.audio = new AudioEngine();
     this.audio.volume = this.settings.volume;
+    this.audio.musicVolume = this.settings.music;
     try {
       this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
     } catch (e) {
@@ -239,6 +240,14 @@ class App {
     };
     bindRange('sBright', 'brightness', () => { this.renderer.toneMappingExposure = this.settings.brightness; });
     bindRange('sVolume', 'volume', () => this.audio.setVolume(this.settings.volume));
+    bindRange('sMusic', 'music', () => this.audio.setMusicVolume(this.settings.music));
+    // 瀏覽器要等玩家第一次點擊或按鍵才能出聲：一碰到選單就開始放音樂盒
+    const wake = () => {
+      if (this.state !== 'menu') return;
+      this.audio.resume().then(() => { if (this.state === 'menu') this.audio.setMusic('menu'); });
+    };
+    addEventListener('pointerdown', wake, true);
+    addEventListener('keydown', wake, true);
     bindRange('sMouse', 'mouseSens');
     bindRange('sTouch', 'touchSens');
     const bindCheck = (id, key, fn) => {
@@ -360,7 +369,7 @@ class App {
     this.ui.damage(0);
     this.ui.setFps(false);
     this.ui.setHiding(false);
-    this.audio.resume();
+    this.audio.resume().then(() => { if (this.state === 'menu') this.audio.setMusic('menu'); });
     $('menu').hidden = false;
     // 更新最佳紀錄顯示
     const k = this.settings.difficulty;

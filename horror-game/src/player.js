@@ -6,6 +6,16 @@ import { FURN } from './level.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
+// 射線對一個軸的區間 [-h, h] 做 slab 測試，結果累積在 RAY（每格呼叫很多次，不配置陣列）
+const RAY = { t0: 0, t1: 0 };
+function slab(p, v, h) {
+  if (Math.abs(v) < 1e-6) { if (p < -h || p > h) RAY.t0 = Infinity; return; }
+  let a = (-h - p) / v, b = (h - p) / v;
+  if (a > b) { const t = a; a = b; b = t; }
+  if (a > RAY.t0) RAY.t0 = a;
+  if (b < RAY.t1) RAY.t1 = b;
+}
+
 export class Player {
   constructor(game) {
     this.game = game;
@@ -242,21 +252,20 @@ export class Player {
   }
 
   // 射線打到家具外框（地面到家具高度的方盒）的距離
+  // 手電筒前方最近的家具（照家具實際的方向算，斜放的推床不會多出空角落）
   rayFurniture(o, d, maxD) {
     let best = maxD;
     for (const f of this.game.lv.furniture) {
-      const b = f.box, def = FURN[f.kind];
-      if (!b || !def) continue;
-      if (Math.abs(b.minX + b.maxX - 2 * o.x) > 2 * maxD + 4 || Math.abs(b.minZ + b.maxZ - 2 * o.z) > 2 * maxD + 4) continue;
-      let t0 = 0, t1 = best;
-      for (const [p, v, lo, hi] of [[o.x, d.x, b.minX, b.maxX], [o.y, d.y, 0, def.h], [o.z, d.z, b.minZ, b.maxZ]]) {
-        if (Math.abs(v) < 1e-6) { if (p < lo || p > hi) { t0 = Infinity; break; } continue; }
-        let a = (lo - p) / v, c = (hi - p) / v;
-        if (a > c) [a, c] = [c, a];
-        t0 = Math.max(t0, a); t1 = Math.min(t1, c);
-        if (t0 > t1) break;
-      }
-      if (t0 <= t1 && t0 > 0.15 && t0 < best) best = t0;
+      const def = FURN[f.kind];
+      if (!def || !f.w) continue;
+      const rx = o.x - f.x, rz = o.z - f.z, R = best + (f.w + f.d) / 2;
+      if (rx * rx + rz * rz > R * R) continue;
+      const c = Math.cos(f.rot), s = Math.sin(f.rot);
+      RAY.t0 = 0; RAY.t1 = best;
+      slab(rx * c - rz * s, d.x * c - d.z * s, f.w / 2);
+      slab(o.y - def.h / 2, d.y, def.h / 2);
+      slab(rx * s + rz * c, d.x * s + d.z * c, f.d / 2);
+      if (RAY.t0 <= RAY.t1 && RAY.t0 > 0.15 && RAY.t0 < best) best = RAY.t0;
     }
     return best;
   }

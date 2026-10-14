@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { assetUrl, assetBuffer } from './assets.js';
+import { corpseShift } from './corpse-poses.js';
 
 const BASE = 'assets/corpses/';
 const PARTS = { m021: ['body', 'head'], f002: ['body', 'head', 'opacity'], m162: ['body', 'head', 'protection'] };
@@ -45,8 +46,9 @@ export async function loadCorpses(renderer, quality, timeoutMs = 20000) {
         src.width = src.height = limit;
         src.getContext('2d').drawImage(img, 0, 0, limit, limit);
       }
+      // 烘焙工具輸出的是 FBX 原本的 UV（原點在左下），所以跟一般 three.js 貼圖一樣要上下翻轉
       const t = new THREE.Texture(src);
-      t.flipY = false;
+      t.flipY = true;
       t.colorSpace = THREE.SRGBColorSpace;
       t.anisotropy = aniso;
       t.needsUpdate = true;
@@ -97,4 +99,13 @@ export function makeCorpse(assets, name, mirror) {
   if (mirror) g.scale.x = -1;
   g.userData.corpse = name;
   return g;
+}
+
+// 擺到病床或推床上（沿著床的方向挪一點，讓頭和腳都在床頭板與床尾板之間）
+export function placeCorpse(c, f) {
+  const gurney = f.kind === 'gurney';
+  const shift = corpseShift(c.userData.corpse, f.kind);
+  c.position.set(f.x + Math.sin(f.rot) * shift, gurney ? 0.895 : 0.64, f.z + Math.cos(f.rot) * shift);
+  c.rotation.y = f.rot + (gurney ? Math.PI / 2 : 0);
+  c.userData.furn = f;
 }

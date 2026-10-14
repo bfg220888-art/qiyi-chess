@@ -5,7 +5,7 @@ import { CELL, WALL_H, WALL_T, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.j
 import { VOID, FURN, WALL_WRITINGS } from './level.js';
 import { PropBuilder, mergeLocal } from './props.js';
 import { createMaterials, drawFloorPlan } from './materials.js';
-import { makeCorpse } from './corpses.js';
+import { makeCorpse, placeCorpse } from './corpses.js';
 
 const HT = WALL_T / 2;
 const CHUNK = 6;
@@ -416,10 +416,10 @@ export class World {
       const corpse = f.corpse && this.corpses ? makeCorpse(this.corpses, f.corpse.name, f.corpse.mirror) : null;
       f.hideBody = !!corpse;
       if (corpse) {
-        const gurney = f.kind === 'gurney';
-        corpse.position.set(f.x, gurney ? 0.895 : 0.64, f.z);
-        corpse.rotation.y = f.rot + (gurney ? Math.PI / 2 : 0);
-        corpse.userData.furn = f;
+        placeCorpse(corpse, f);
+        // 滑到床外的上半身要擋路（在碰撞與導航建立之前併進家具的範圍）
+        const o = f.corpse.overhang;
+        if (o) { const b = f.box; f.box = { minX: Math.min(b.minX, o.minX), maxX: Math.max(b.maxX, o.maxX), minZ: Math.min(b.minZ, o.minZ), maxZ: Math.max(b.maxZ, o.maxZ) }; }
         this.root.add(corpse);
         this.corpseMeshes.push(corpse);
       }
