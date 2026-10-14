@@ -69,6 +69,7 @@ export class Game {
     this.scene.environmentIntensity = 0.035;
     // 外部素材（照片貼圖、寫實女鬼）同時下載；失敗都有程序生成的備援
     const ghostP = this.app.ghostAssets();
+    const corpseP = this.app.corpseAssets();
     progress(0.18, '正在下載照片材質……');
     const photos = await this.app.photoAssets();
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
@@ -77,6 +78,7 @@ export class Game {
     this.tf.ceiling(); this.tf.door(); this.tf.lockerDoor(); progress(0.45, '正在搬進病床……'); await nextFrame();
     this.tf.paintedMetal(); this.tf.steel(); this.tf.fabric(); this.tf.wood(); this.tf.grime(); progress(0.55, '正在灑上血跡……'); await nextFrame();
     this.world = new World(this.renderer, this.scene, this.lv, this.tf, this.quality);
+    this.world.corpses = await corpseP;
     this.world.build();
     progress(0.7, '她正在醒來……');
     await nextFrame();

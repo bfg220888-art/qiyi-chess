@@ -7,6 +7,7 @@
 | 檔案 | 來源 | 授權 | 修改 |
 |---|---|---|---|
 | `assets/ghost/ghost.glb` 與貼圖 | [Microsoft Rocketbox Avatar Library](https://github.com/microsoft/Microsoft-Rocketbox) — `Medical_Female_01` 與 6 段動作 | MIT（`assets/ghost/LICENSE-Rocketbox.md`） | 轉成 glTF、精簡臉部表情與動作、重畫貼圖（見 `tools/ghost/`） |
+| `assets/corpses/` 病床上的屍體 | Microsoft Rocketbox — `Sports_Male_01`、`Female_Adult_02`、`Medical_Male_04` | MIT（`assets/corpses/LICENSE-Rocketbox.md`） | 擺成各種躺姿、套用臉部表情後烘成靜態網格並簡化面數；貼圖重畫成屍體、加上傷口與血跡（見 `tools/corpse/`） |
 
 ## 照片貼圖（`assets/tex/`）
 

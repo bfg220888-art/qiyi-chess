@@ -149,7 +149,7 @@ export class PropBuilder {
     this.box(g, M.steel, L, 0.04, W, 0, 0.8, 0);
     this.box(g, M.steel, L * 0.9, 0.02, W * 0.8, 0, 0.3, 0);
     this.box(g, M.mattress, L - 0.05, 0.07, W - 0.06, 0, 0.855, 0);
-    if (f.body) {
+    if (f.body && !f.hideBody) {
       // 蓋著白布的屍體
       const c = this.sphere(g, M.fabric, 0.5, -0.05, 0.98, 0, 1.05, 0.22, 0.42, 14);
       c.rotation.y = 0.02;

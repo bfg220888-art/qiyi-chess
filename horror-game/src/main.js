@@ -7,6 +7,7 @@ import { UI, fmtTime } from './ui.js';
 import { Game } from './game.js';
 import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
+import { loadCorpses, prefetchCorpses } from './corpses.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -83,6 +84,7 @@ class App {
     this.frameTimes = [];
     this.lastRender = 0;
     this.ghostTries = 0;
+    this.corpseTries = 0;
     this.photoTries = 0;
     this.bindMenu();
     this.resize();
@@ -112,6 +114,16 @@ class App {
     }
   }
 
+  async corpseAssets() {
+    const wait = this.corpseTries++ ? 3000 : 20000;
+    try {
+      return await loadCorpses(this.renderer, this.quality, wait);
+    } catch (e) {
+      console.warn('屍體素材還沒準備好，這一局先不放：', e && e.message);
+      return null;
+    }
+  }
+
   async photoAssets() {
     const wait = this.photoTries++ ? 3000 : 20000;
     try {
@@ -126,6 +138,7 @@ class App {
     try {
       prefetchGhost(this.quality);
       prefetchPhotos();
+      prefetchCorpses();
     } catch (e) { /* 預先下載失敗沒關係，開局時會再試 */ }
   }
 

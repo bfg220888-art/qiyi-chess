@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { EYE_H, CROUCH_H, PLAYER_R, CELL } from './config.js';
 import { sightClear, rayWallDistance } from './nav.js';
+import { FURN } from './level.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -229,6 +230,8 @@ export class Player {
     let near = rayWallDistance(g.lv, c.position.x, c.position.z, this.aim.x, this.aim.z, 20) / Math.max(0.05, hz);
     if (this.aim.y < -0.05) near = Math.min(near, c.position.y / -this.aim.y);
     if (this.aim.y > 0.05) near = Math.min(near, (3 - c.position.y) / this.aim.y);
+    // 家具（病床、桌子……）也算：照近處的白床單時才不會整團過曝
+    near = Math.min(near, this.rayFurniture(c.position, this.aim, near));
     // 光照 ∝ I / d²：讓 I ∝ d² 就能在近距離保持差不多的亮度
     const expo = Math.min(1, Math.max(0.07, (near / 2.6) ** 2));
     this.expo = (this.expo ?? 1) + (expo - (this.expo ?? 1)) * Math.min(1, dt * 6);
@@ -236,6 +239,26 @@ export class Player {
     L.intensity = strength * 120 * this.expo;
     L.visible = strength > 0.001;
     if (this.photo.intensity > 0) this.photo.position.copy(c.position).addScaledVector(fwd, 0.4);
+  }
+
+  // 射線打到家具外框（地面到家具高度的方盒）的距離
+  rayFurniture(o, d, maxD) {
+    let best = maxD;
+    for (const f of this.game.lv.furniture) {
+      const b = f.box, def = FURN[f.kind];
+      if (!b || !def) continue;
+      if (Math.abs(b.minX + b.maxX - 2 * o.x) > 2 * maxD + 4 || Math.abs(b.minZ + b.maxZ - 2 * o.z) > 2 * maxD + 4) continue;
+      let t0 = 0, t1 = best;
+      for (const [p, v, lo, hi] of [[o.x, d.x, b.minX, b.maxX], [o.y, d.y, 0, def.h], [o.z, d.z, b.minZ, b.maxZ]]) {
+        if (Math.abs(v) < 1e-6) { if (p < lo || p > hi) { t0 = Infinity; break; } continue; }
+        let a = (lo - p) / v, c = (hi - p) / v;
+        if (a > c) [a, c] = [c, a];
+        t0 = Math.max(t0, a); t1 = Math.min(t1, c);
+        if (t0 > t1) break;
+      }
+      if (t0 <= t1 && t0 > 0.15 && t0 < best) best = t0;
+    }
+    return best;
   }
 
   toggleFlash() {

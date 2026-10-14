@@ -1,0 +1,341 @@
+<!doctype html><meta charset="utf-8"><title>bake</title>
+<script type="importmap">{"imports":{"three":"/three/build/three.module.js","three/addons/":"/three/examples/jsm/"}}</script>
+<script type="module">
+// 把 Rocketbox 人物擺成各種躺姿，烘成靜態網格（套用骨架與臉部表情），簡化面數後輸出 GLB。
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshoptSimplifier } from '/meshopt/meshopt_simplifier.module.js';
+import { POSES, AVATARS } from './poses.js';
+
+const log = []; window.__out = { log, files: {} };
+const qs = new URLSearchParams(location.search);
+const KEEP = Number(qs.get('keep') || 0.3);       // 簡化後保留的三角形比例
+const ONLY = qs.get('only');                        // 只烘某個人物（除錯用）
+const CURLSIGN = Number(qs.get('curlsign') || 1);
+const B = (n) => 'Bip01_' + n;
+const CHILD = {
+  Spine: 'Spine1', Spine1: 'Spine2', Spine2: 'Neck', Neck: 'Head',
+  L_UpperArm: 'L_Forearm', L_Forearm: 'L_Hand', L_Hand: 'L_Finger2', L_Thigh: 'L_Calf', L_Calf: 'L_Foot', L_Foot: 'L_Toe0',
+  R_UpperArm: 'R_Forearm', R_Forearm: 'R_Hand', R_Hand: 'R_Finger2', R_Thigh: 'R_Calf', R_Calf: 'R_Foot', R_Foot: 'R_Toe0',
+};
+const ORDER = ['Spine', 'Spine1', 'Spine2', 'Neck', 'HEAD', 'L_UpperArm', 'L_Forearm', 'L_Hand', 'R_UpperArm', 'R_Forearm', 'R_Hand',
+  'L_Thigh', 'L_Calf', 'L_Foot', 'R_Thigh', 'R_Calf', 'R_Foot', 'FINGERS'];
+const TORSO = ['Pelvis', 'Spine', 'Spine1', 'Spine2'];
+// 姿勢放到床上的位置（骨盆的 x、z，單位公尺；床面中心是原點）
+const PLACE = { supine: [0, 0.12], dangle: [0.04, 0.12], curled: [0.12, 0.2], prone: [0, -0.06], rigor: [0, 0.12], halfoff: [-0.4, 0.15], slumped: [0, -0.5] };
+
+const V = () => new THREE.Vector3(), Q = () => new THREE.Quaternion();
+
+function aim(bone, child, want) {
+  const p = bone.getWorldPosition(V()), c = child.getWorldPosition(V());
+  const cur = c.sub(p).normalize();
+  const d = Q().setFromUnitVectors(cur, want);
+  const wq = d.multiply(bone.getWorldQuaternion(Q()));
+  const pq = bone.parent.getWorldQuaternion(Q()).invert();
+  bone.quaternion.copy(pq.multiply(wq));
+  bone.updateMatrixWorld(true);
+}
+function basis(face, up) {
+  const f = face.clone().normalize();
+  const u = up.clone().sub(f.clone().multiplyScalar(up.dot(f))).normalize();
+  const l = new THREE.Vector3().crossVectors(u, f);
+  return new THREE.Matrix4().makeBasis(l, u, f);
+}
+
+async function bakeAvatar(cfg) {
+  const obj = await new FBXLoader().loadAsync('/c/' + cfg.id + '.fbx');
+  let mesh = null;
+  obj.traverse((o) => { if (o.isSkinnedMesh) mesh = o; });
+  const bone = (n) => obj.getObjectByName(B(n));
+  obj.updateMatrixWorld(true);
+  // 綁定姿勢下頭的「臉朝向」與「頭頂方向」（換到頭骨座標）
+  const head = bone('Head');
+  const hq0 = head.getWorldQuaternion(Q()).invert();
+  const faceLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(hq0), upLocal = new THREE.Vector3(0, 1, 0).applyQuaternion(hq0);
+  // 表情名稱對照
+  const morphIdx = {};
+  for (const [k, i] of Object.entries(mesh.morphTargetDictionary || {})) { const m = k.match(/AK_\d+_(\w+)$/); if (m) morphIdx[m[1]] = i; }
+  const g0 = mesh.geometry;
+  const pos = g0.attributes.position, nor = g0.attributes.normal, uv = g0.attributes.uv;
+  const si = g0.attributes.skinIndex, sw = g0.attributes.skinWeight;
+  const morphs = g0.morphAttributes.position || [];
+  // 每個頂點的主要骨頭（用來找軀幹貼床的點）
+  const bones = mesh.skeleton.bones;
+  const domBone = new Int32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) { let best = 0, bw = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; best = si.getComponent(i, k); } } domBone[i] = best; }
+  const isBone = (names) => { const set = new Set(names.map((n) => bones.indexOf(bone(n)))); return (i) => set.has(domBone[i]); };
+  const out = [];
+  for (const poseName of cfg.poses) {
+    const P = POSES[poseName];
+    mesh.skeleton.pose();
+    obj.position.set(0, 0, 0);
+    const up = new THREE.Vector3(...P.up), front = new THREE.Vector3(...P.front);
+    obj.quaternion.setFromRotationMatrix(basis(front, up));
+    obj.updateMatrixWorld(true);
+    const rq = obj.quaternion.clone();
+    for (const step of ORDER) {
+      if (step === 'HEAD') {
+        const hq = head.getWorldQuaternion(Q());
+        const cur = basis(faceLocal.clone().applyQuaternion(hq), upLocal.clone().applyQuaternion(hq));
+        const want = basis(new THREE.Vector3(...P.head.face), new THREE.Vector3(...P.head.up));
+        const d = Q().setFromRotationMatrix(want.multiply(cur.transpose()));
+        const wq = d.multiply(hq);
+        head.quaternion.copy(head.parent.getWorldQuaternion(Q()).invert().multiply(wq));
+        head.updateMatrixWorld(true);
+        continue;
+      }
+      if (step === 'FINGERS') {
+        // 手指往掌心彎：繞著「食指根部→小指根部」的軸轉
+        for (const s of ['L', 'R']) {
+          const across = bone(s + '_Finger4').getWorldPosition(V()).sub(bone(s + '_Finger1').getWorldPosition(V())).normalize();
+          const sign = (s === 'L' ? 1 : -1) * CURLSIGN;
+          for (const f of [1, 2, 3, 4]) for (const [seg, k] of [['', 0.55], ['1', 0.85], ['2', 0.6]]) {
+            const b = bone(`${s}_Finger${f}${seg}`);
+            if (!b) continue;
+            const wq = Q().setFromAxisAngle(across, sign * P.curl * k).multiply(b.getWorldQuaternion(Q()));
+            b.quaternion.copy(b.parent.getWorldQuaternion(Q()).invert().multiply(wq));
+            b.updateMatrixWorld(true);
+          }
+        }
+        continue;
+      }
+      const dir = P.dirs[step];
+      if (!dir) continue;
+      aim(bone(step), bone(CHILD[step]), new THREE.Vector3(...dir));
+    }
+    obj.updateMatrixWorld(true);
+    // --- 烘焙：表情 + 骨架蒙皮 → 世界座標（公分）
+    const infl = new Float32Array(morphs.length);
+    for (const [k, v] of Object.entries(P.morphs || {})) if (morphIdx[k] !== undefined) infl[morphIdx[k]] = v;
+    const active = [...infl.keys()].filter((k) => infl[k] > 0);
+    const boneMats = bones.map((b, i) => new THREE.Matrix4().multiplyMatrices(b.matrixWorld, mesh.skeleton.boneInverses[i]));
+    const bm = mesh.bindMatrix;
+    const P3 = new Float32Array(pos.count * 3), N3 = new Float32Array(pos.count * 3);
+    const tmp = V(), acc = V(), nacc = V(), base = V(), nb = V(), m3 = new THREE.Matrix3();
+    for (let i = 0; i < pos.count; i++) {
+      base.fromBufferAttribute(pos, i);
+      for (const k of active) base.addScaledVector(tmp.fromBufferAttribute(morphs[k], i), infl[k]);
+      base.applyMatrix4(bm);
+      nb.fromBufferAttribute(nor, i).transformDirection(bm);
+      acc.set(0, 0, 0); nacc.set(0, 0, 0);
+      for (let k = 0; k < 4; k++) {
+        const w = sw.getComponent(i, k);
+        if (!w) continue;
+        const M = boneMats[si.getComponent(i, k)];
+        acc.addScaledVector(tmp.copy(base).applyMatrix4(M), w);
+        nacc.addScaledVector(tmp.copy(nb).applyMatrix3(m3.setFromMatrix4(M)), w);
+      }
+      nacc.normalize();
+      P3[i * 3] = acc.x * 0.01; P3[i * 3 + 1] = acc.y * 0.01; P3[i * 3 + 2] = acc.z * 0.01;
+      N3[i * 3] = nacc.x; N3[i * 3 + 1] = nacc.y; N3[i * 3 + 2] = nacc.z;
+    }
+    // --- 放到床上：骨盆對齊指定位置，指定的部位貼著床面（y = 0）
+    const pelvis = bone('Pelvis').getWorldPosition(V()).multiplyScalar(0.01);
+    const restOn = isBone(P.rest === 'legs' ? ['L_Thigh', 'R_Thigh', 'L_Calf', 'R_Calf'] : P.rest === 'pelvis' ? ['Pelvis', 'L_Thigh', 'R_Thigh'] : TORSO);
+    let minY = Infinity;
+    for (let i = 0; i < pos.count; i++) if (restOn(i)) minY = Math.min(minY, P3[i * 3 + 1]);
+    const [px, pz] = PLACE[poseName] || [0, 0];
+    for (let i = 0; i < pos.count; i++) { P3[i * 3] += px - pelvis.x; P3[i * 3 + 1] -= minY; P3[i * 3 + 2] += pz - pelvis.z; }
+    let g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(P3, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(N3, 3));
+    g.setAttribute('uv', uv.clone());
+    for (const gr of g0.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
+    g = mergeVertices(g, 1e-5);
+    g = simplify(g, KEEP);
+    g.computeBoundingBox();
+    const bb = g.boundingBox;
+    log.push(`${cfg.id}/${poseName}: tris ${g.index.count / 3} verts ${g.attributes.position.count} box y ${bb.min.y.toFixed(2)}..${bb.max.y.toFixed(2)} x ${bb.min.x.toFixed(2)}..${bb.max.x.toFixed(2)} z ${bb.min.z.toFixed(2)}..${bb.max.z.toFixed(2)}`);
+    out.push({ name: `${cfg.id}_${poseName}`, geometry: g, mats: (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map((m) => m.name) });
+  }
+  return out;
+}
+
+function simplify(g, keep) {
+  const idx = g.index.array, P = g.attributes.position.array;
+  const parts = [];
+  for (const gr of g.groups) {
+    const sub = new Uint32Array(idx.subarray(gr.start, gr.start + gr.count));
+    const target = Math.max(3, Math.floor(sub.length * keep / 3) * 3);
+    const [res] = MeshoptSimplifier.simplify(sub, P, 3, target, 0.02, ['LockBorder']);
+    parts.push({ res, mi: gr.materialIndex });
+  }
+  // 收掉沒用到的頂點
+  const used = new Int32Array(g.attributes.position.count).fill(-1);
+  let nv = 0;
+  for (const p of parts) for (const i of p.res) if (used[i] < 0) used[i] = nv++;
+  const out = new THREE.BufferGeometry();
+  for (const name of ['position', 'normal', 'uv']) {
+    const a = g.attributes[name], arr = new Float32Array(nv * a.itemSize);
+    for (let i = 0; i < used.length; i++) if (used[i] >= 0) for (let k = 0; k < a.itemSize; k++) arr[used[i] * a.itemSize + k] = a.array[i * a.itemSize + k];
+    out.setAttribute(name, new THREE.BufferAttribute(arr, a.itemSize));
+  }
+  // 同一個材質的段落併成一組（少一些繪製呼叫）
+  parts.sort((a, b) => a.mi - b.mi);
+  const total = parts.reduce((s, p) => s + p.res.length, 0);
+  const ni = new Uint32Array(total);
+  let o = 0;
+  for (const p of parts) {
+    const last = out.groups[out.groups.length - 1];
+    if (last && last.materialIndex === p.mi) last.count += p.res.length; else out.addGroup(o, p.res.length, p.mi);
+    for (const i of p.res) ni[o++] = used[i];
+  }
+  out.setIndex(new THREE.BufferAttribute(nv < 65536 ? Uint16Array.from(ni) : ni, 1));
+  return out;
+}
+
+// 貼圖上的身體部位圖：R＝部位代碼、G＝朝前(255)/側面(128)/朝後(0)。給 corpse_tex.py 決定傷口畫在哪
+const REGION = { Pelvis: 10, Spine: 20, Spine1: 30, Spine2: 40, Neck: 50, Head: 60, L_UpperArm: 70, L_Forearm: 80, L_Hand: 90, R_UpperArm: 100, R_Forearm: 110, R_Hand: 120, L_Thigh: 130, L_Calf: 140, L_Foot: 150, R_Thigh: 160, R_Calf: 170, R_Foot: 180 };
+async function uvMaps(cfg) {
+  const obj = await new FBXLoader().loadAsync('/c/' + cfg.id + '.fbx');
+  let mesh = null;
+  obj.traverse((o) => { if (o.isSkinnedMesh) mesh = o; });
+  const g = mesh.geometry, uv = g.attributes.uv, nor = g.attributes.normal, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+  const code = mesh.skeleton.bones.map((b) => {
+    let n = b.name.replace('Bip01_', '');
+    if (/Finger/.test(n)) n = n.slice(0, 2) + 'Hand';
+    if (/Toe/.test(n)) n = n.slice(0, 2) + 'Foot';
+    if (/Clavicle/.test(n)) n = 'Spine2';
+    // 臉部：眼睛 61（左）/62（右）、嘴 63、鼻 64
+    if (/^LEye/.test(n)) return 61;
+    if (/^REye/.test(n)) return 62;
+    if (/Lip|Mouth|MJaw|Tongue|Caninus/.test(n)) return 63;
+    if (/Nose/.test(n)) return 64;
+    return REGION[n] || (n.startsWith('L_') || n.startsWith('R_') ? 200 : 60);
+  });
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const canv = {}, tv = new THREE.Vector3();
+  for (const gr of g.groups) {
+    const S = 1024;
+    if (!canv[gr.materialIndex]) { const cc = document.createElement('canvas'); cc.width = cc.height = S; canv[gr.materialIndex] = cc; }
+    const c = canv[gr.materialIndex], x = c.getContext('2d');
+    for (let t = gr.start; t < gr.start + gr.count; t += 3) {
+      let best = 0, bw = -1, nz = 0;
+      for (let v = t; v < t + 3; v++) { nz += tv.fromBufferAttribute(nor, v).transformDirection(mesh.bindMatrix).z; for (let k = 0; k < 4; k++) { const w = sw.getComponent(v, k); if (w > bw) { bw = w; best = si.getComponent(v, k); } } }
+      nz /= 3;
+      x.fillStyle = `rgb(${code[best]},${nz > 0.3 ? 255 : nz < -0.3 ? 0 : 128},255)`;
+      x.beginPath();
+      for (let v = t; v < t + 3; v++) { const px = uv.getX(v) * S, py = (1 - uv.getY(v)) * S; if (v === t) x.moveTo(px, py); else x.lineTo(px, py); }
+      x.closePath(); x.fill();
+    }
+  }
+  for (const [mi, c] of Object.entries(canv)) window.__out.files[`uv-${cfg.id}-${mats[mi].name}.png`] = c.toDataURL('image/png').split(',')[1];
+  // 骨頭在綁定姿勢的位置（公分），給貼圖腳本定位手腕、脖子
+  obj.updateMatrixWorld(true);
+  const bj = {};
+  for (const b of mesh.skeleton.bones) bj[b.name.replace('Bip01_', '')] = b.getWorldPosition(new THREE.Vector3()).toArray();
+  window.__out.files[`bones-${cfg.id}.json`] = btoa(JSON.stringify(bj));
+  // 位置圖與法線圖：把網格攤平到 UV 空間渲染，每個像素記下它在綁定姿勢下的 3D 位置（公分）與法線
+  // 位置編碼：x ∈ [-70,70]、y ∈ [0,185]、z ∈ [-25,25] 對應到 0..255
+  const R = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+  R.setSize(1024, 1024);
+  const camO = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
+  for (const [mode, file] of [['pos', 'uvpos'], ['nrm', 'uvnrm']]) {
+    for (const gr of g.groups) {
+      // 同一個材質的群組一起畫
+    }
+    const byMat = {};
+    for (const gr of g.groups) (byMat[gr.materialIndex] || (byMat[gr.materialIndex] = [])).push(gr);
+    for (const [mi, grs] of Object.entries(byMat)) {
+      const n = grs.reduce((a, gg) => a + gg.count, 0);
+      const P = new Float32Array(n * 3), A = new Float32Array(n * 3);
+      let o = 0;
+      const bm = mesh.bindMatrix, wv = new THREE.Vector3();
+      for (const gr of grs) for (let i = gr.start; i < gr.start + gr.count; i++, o++) {
+        P[o * 3] = uv.getX(i); P[o * 3 + 1] = uv.getY(i); P[o * 3 + 2] = 0;
+        if (mode === 'pos') {
+          wv.fromBufferAttribute(g.attributes.position, i).applyMatrix4(bm);
+          A[o * 3] = (wv.x + 70) / 140; A[o * 3 + 1] = wv.y / 185; A[o * 3 + 2] = (wv.z + 25) / 50;
+        } else {
+          wv.fromBufferAttribute(nor, i).transformDirection(bm);
+          A[o * 3] = wv.x * 0.5 + 0.5; A[o * 3 + 1] = wv.y * 0.5 + 0.5; A[o * 3 + 2] = wv.z * 0.5 + 0.5;
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+      geo.setAttribute('attr', new THREE.BufferAttribute(A, 3));
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: 'attribute vec3 attr; varying vec3 vA; void main() { vA = attr; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'varying vec3 vA; void main() { gl_FragColor = vec4(clamp(vA, 0.0, 1.0), 1.0); }',
+        side: THREE.DoubleSide,
+      });
+      const sc = new THREE.Scene();
+      sc.background = new THREE.Color(0, 0, 0);
+      sc.add(new THREE.Mesh(geo, mat));
+      R.setRenderTarget(null);
+      R.render(sc, camO);
+      window.__out.files[`${file}-${cfg.id}-${mats[mi].name}.png`] = R.domElement.toDataURL('image/png').split(',')[1];
+    }
+  }
+}
+
+try {
+  await MeshoptSimplifier.ready;
+  if (qs.get('uvmap')) {
+    for (const cfg of AVATARS) await uvMaps(cfg);
+    throw 'uvmap done';
+  }
+  const all = [];
+  for (const cfg of AVATARS) if (!ONLY || cfg.id === ONLY) all.push(...await bakeAvatar(cfg));
+  // --- 預覽圖：每個姿勢放在一張床上
+  const R = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  R.setSize(1600, 900);
+  document.body.append(R.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x30343a);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 4); scene.add(sun);
+  const cols = Math.min(all.length, 4);
+  const skin = new THREE.MeshStandardMaterial({ color: 0xd8c0b0 }), cloth = new THREE.MeshStandardMaterial({ color: 0x7088a0 }), other = new THREE.MeshStandardMaterial({ color: 0x202020 });
+  all.forEach((b, i) => {
+    const x = (i % cols) * 1.6, z = Math.floor(i / cols) * 2.8;
+    const bed = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.13, 2.0), new THREE.MeshStandardMaterial({ color: 0xb0b0a8 }));
+    bed.position.set(x, -0.065, z); scene.add(bed);
+    const legs = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 1.9), new THREE.MeshStandardMaterial({ color: 0x555555 }));
+    legs.position.set(x, -0.38, z); scene.add(legs);
+    let mats = b.mats.map((n) => (/head/.test(n) ? skin : /body/.test(n) ? cloth : other));
+    if (qs.get('tex')) {
+      const tl = new THREE.TextureLoader();
+      mats = b.mats.map((n) => {
+        const part = n.replace(/^[mf]\d+_/, ''), id = b.name.split('_')[0];
+        const t = tl.load(`/c/tex/${id}_${part}.${part === 'opacity' ? 'png' : 'jpg'}`);
+        t.colorSpace = THREE.SRGBColorSpace;
+        return new THREE.MeshStandardMaterial({ map: t, roughness: 0.75, alphaTest: part === 'opacity' ? 0.4 : 0, side: part === 'opacity' ? THREE.DoubleSide : THREE.FrontSide });
+      });
+    }
+    const m = new THREE.Mesh(b.geometry, mats);
+    m.position.set(x, 0, z); scene.add(m);
+  });
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x3a3a3a }));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -0.62; scene.add(floor);
+  if (qs.get('tex')) await new Promise((r) => setTimeout(r, 4000));
+  const rows = Math.ceil(all.length / cols);
+  const cam = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 100);
+  const cx = (cols - 1) * 1.6 / 2, cz = (rows - 1) * 2.8 / 2;
+  const view = qs.get('view') || 'iso';
+  if (view === 'top') { cam.position.set(cx, 4 + rows * 2.5, cz + 0.01); cam.lookAt(cx, 0, cz); }
+  else if (view === 'close') { const k = Number(qs.get('i') || 0), x = (k % cols) * 1.6, z = Math.floor(k / cols) * 2.8; cam.position.set(x - 0.9, 1.0, z - 0.2); cam.lookAt(x, 0.1, z - 0.2); }
+  else { cam.position.set(cx - 2.5, 2.2 + rows * 1.2, cz + 3.5 + rows * 1.6); cam.lookAt(cx, 0, cz); }
+  R.render(scene, cam);
+  window.__out.files['preview-' + (ONLY || 'all') + '-' + view + '.png'] = R.domElement.toDataURL('image/png').split(',')[1];
+  // --- 輸出 GLB（材質只留名稱，貼圖在遊戲裡載入）
+  if (qs.get('export')) {
+    const exp = new THREE.Scene();
+    for (const b of all) {
+      const mats = b.mats.map((n) => new THREE.MeshStandardMaterial({ name: n.replace(/^[mf]\d+_/, '') }));
+      const m = new THREE.Mesh(b.geometry, mats);
+      m.name = b.name;
+      exp.add(m);
+    }
+    const glb = await new GLTFExporter().parseAsync(exp, { binary: true });
+    const bytes = new Uint8Array(glb);
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    window.__out.files['corpses.glb'] = btoa(s);
+    log.push('glb bytes ' + bytes.length);
+  }
+} catch (e) { if (e !== 'uvmap done') window.__out.error = String(e.stack || e); }
+document.title = 'done';
+</script>

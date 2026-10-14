@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { sightClear } from './nav.js';
 import { WALL_WRITINGS } from './level.js';
+import { makeCorpse } from './corpses.js';
+import { CORPSE_POSES } from './corpse-poses.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 
@@ -66,6 +68,7 @@ export class Director {
       ['musicBox', 1.2], ['wheelchair', 1.5], ['thunder', 2], ['peek', 1.5], ['writing', this.writings < 3 ? 1.2 : 0],
       ['lightsOut', g.fusesInserted > 0 ? 1.5 : 0], ['breath', low ? 2 : 0.3], ['rush', P.sanity < 0.3 ? 2 : 0],
       ['phone', g.lv.phone && !this.used.has('phone') && g.time > 60 ? 2.5 : 0],
+      ['corpse', g.world.corpseMeshes && g.world.corpseMeshes.length && (this.corpseMoves || 0) < 2 && g.time > 75 ? 2 : 0],
     ];
     let total = 0;
     for (const o of opts) total += o[1];
@@ -153,6 +156,9 @@ export class Director {
       case 'rush':
         this.startRush();
         break;
+      case 'corpse':
+        this.moveCorpse();
+        break;
       case 'phone':
         if (lv.phone && g.world.phone) {
           this.used.add('phone');
@@ -162,6 +168,42 @@ export class Director {
         }
         break;
     }
+  }
+
+  // 趁你沒在看的時候，床上的屍體換了一個姿勢（床架吱的一聲）
+  moveCorpse() {
+    const g = this.game, W = g.world, P = g.player, cam = P.camera;
+    if (!W.corpses) return false;
+    cam.updateMatrixWorld();
+    const fr = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const sphere = new THREE.Sphere();
+    const cands = W.corpseMeshes.filter((c) => {
+      const d = Math.hypot(c.position.x - P.pos.x, c.position.z - P.pos.z);
+      sphere.set(c.position, 1.3);
+      return d > 2.5 && d < 14 && !fr.intersectsSphere(sphere);
+    });
+    if (!cands.length) return false;
+    const old = cands[Math.floor(Math.random() * cands.length)];
+    const f = old.userData.furn, [avatar, pose] = f.corpse.name.split('_');
+    // 只換成不會垂到床外的姿勢（不用檢查床邊空間）
+    const opts = Object.keys(W.corpses.meshes).filter((n) => {
+      const [a, p] = n.split('_');
+      return a === avatar && p !== pose && CORPSE_POSES[p] && !CORPSE_POSES[p].hang && (f.kind !== 'gurney' || CORPSE_POSES[p].gurney);
+    });
+    if (!opts.length) return false;
+    const name = opts[Math.floor(Math.random() * opts.length)];
+    const c = makeCorpse(W.corpses, name, f.corpse.mirror);
+    if (!c) return false;
+    c.position.copy(old.position);
+    c.rotation.copy(old.rotation);
+    c.userData.furn = f;
+    old.parent.add(c);
+    old.removeFromParent();
+    W.corpseMeshes[W.corpseMeshes.indexOf(old)] = c;
+    f.corpse = { ...f.corpse, name, pose: name.split('_')[1] };
+    this.corpseMoves = (this.corpseMoves || 0) + 1;
+    g.audio.play('doorCreak', { pos: { x: c.position.x, y: 0.7, z: c.position.z }, short: true });
+    return true;
   }
 
   answerPhone() {

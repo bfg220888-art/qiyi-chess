@@ -139,10 +139,10 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   const assets = await page.evaluate(async () => {
     const g = window.__SW.game;
     if (g.audio.samplesLoading) await g.audio.samplesLoading;
-    return { real: !!g.ghost.model.isReal, photos: !!g.tf.photos, sfx: Object.keys(g.audio.buf || {}).length };
+    return { real: !!g.ghost.model.isReal, photos: !!g.tf.photos, sfx: Object.keys(g.audio.buf || {}).length, corpses: g.world.corpseMeshes.length };
   });
   log('assets', JSON.stringify(assets));
-  assert(assets.real && assets.photos && assets.sfx >= 40, 'external assets should load');
+  assert(assets.real && assets.photos && assets.sfx >= 40 && assets.corpses > 0, 'external assets should load');
   const before = await sim(page, 0.05);
   const after = await sim(page, 3, { my: 1 });
   log('walk', before.x.toFixed(2), before.z.toFixed(2), '->', after.x.toFixed(2), after.z.toFixed(2), `update ${after.ms.toFixed(2)}ms`);

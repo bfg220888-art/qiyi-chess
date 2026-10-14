@@ -1,6 +1,7 @@
 // 醫院樓層程序生成：走廊網格、房間、門、家具、道具、燈具、血跡。
 // 這個模組不碰 DOM / three.js，可以在 Node 裡測試。
 import { RNG } from './rng.js';
+import { CORPSE_POSES } from './corpse-poses.js';
 import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
@@ -440,6 +441,9 @@ function buildLevel(seed, diff) {
 
   // --- 血跡、字跡、紙張
   placeDecals(lv, rng);
+
+  // --- 床上與推床上的屍體（另一個亂數來源，不影響其他生成結果）
+  assignCorpses(lv);
 
   // --- 牆體幾何
   buildWallPieces(lv);
@@ -1049,6 +1053,57 @@ function wallDecalPose(s, along, y) {
     case 'S': return { x: along, y, z: s.wall - off, rot: Math.PI };
     case 'W': return { x: s.wall + off, y, z: along, rot: Math.PI / 2 };
     default:  return { x: s.wall - off, y, z: along, rot: -Math.PI / 2 };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 屍體：挑一些病床與推床，決定姿勢、人物、要不要左右翻轉（垂下來的那一側要有空位），再在地上加一灘血
+function assignCorpses(lv) {
+  const r = new RNG((lv.seed ^ 0xc0a75e) >>> 0);
+  const poseNames = Object.keys(CORPSE_POSES);
+  // 家具的局部座標（橫向 a、縱向 b）轉成世界座標
+  const toWorld = (f, a, b) => {
+    const c = Math.cos(f.rot), s = Math.sin(f.rot);
+    return f.kind === 'gurney' ? [f.x + b * c - a * s, f.z - b * s - a * c] : [f.x + a * c + b * s, f.z - a * s + b * c];
+  };
+  const roomOf = (x, z) => lv.cellAt(Math.floor(x / CELL), Math.floor(z / CELL));
+  // 床的某一側（-1 / +1）往外 d 公尺的地方是不是空的
+  const sideFree = (f, side, d) => {
+    const half = f.kind === 'gurney' ? 0.31 : 0.46;
+    const room = roomOf(f.x, f.z);
+    for (const dd of [0.2, d * 0.6, d]) for (const b of [-0.6, 0, 0.5]) {
+      const [x, z] = toWorld(f, side * (half + dd), b);
+      for (const [ox, oz] of [[0, 0], [0.25, 0], [-0.25, 0], [0, 0.25], [0, -0.25]]) if (roomOf(x + ox, z + oz) !== room) return false;
+      const box = { minX: x - 0.12, maxX: x + 0.12, minZ: z - 0.12, maxZ: z + 0.12 };
+      for (const o of lv.furniture) if (o !== f && overlaps(box, o.box)) return false;
+    }
+    return true;
+  };
+  const cands = lv.furniture.filter((f) => (f.kind === 'bed' && (f.variant || 0) !== 2 && r.chance(0.42)) || (f.kind === 'gurney' && f.body && r.chance(0.75)));
+  let n = 0;
+  for (const f of r.shuffle(cands)) {
+    if (n >= 7) break;
+    const opts = [];
+    for (const name of poseNames) {
+      const p = CORPSE_POSES[name];
+      if (f.kind === 'gurney' && !p.gurney) continue;
+      if (!p.hang) { opts.push([name, r.chance(0.5), p.w]); continue; }
+      // 預設垂向 -X 側；翻轉後垂向 +X 側
+      if (sideFree(f, -1, p.hang)) opts.push([name, false, p.w]);
+      else if (sideFree(f, 1, p.hang)) opts.push([name, true, p.w]);
+    }
+    if (!opts.length) continue;
+    const [pose, mirror] = r.weighted(opts.map((o) => [o, o[2]]));
+    const avatar = r.pick(CORPSE_POSES[pose].avatars);
+    f.corpse = { name: `${avatar}_${pose}`, pose, mirror };
+    n++;
+    // 地上的血：垂下來的手或頭底下一灘，其他的有時候從床底滲出來
+    const side = mirror ? 1 : -1, half = f.kind === 'gurney' ? 0.31 : 0.46;
+    let spot = null, size = r.range(0.6, 1.0);
+    if (pose === 'dangle') spot = toWorld(f, side * (half + 0.12), 0.05);
+    else if (pose === 'halfoff') { spot = toWorld(f, side * (half + 0.55), 0.25); size = r.range(1.0, 1.5); }
+    else if (r.chance(0.45)) spot = toWorld(f, r.range(-0.2, 0.2), r.range(-0.2, 0.4));
+    if (spot) lv.decals.push({ kind: 'blood', x: spot[0], z: spot[1], rot: r.range(0, 6.28), size, variant: r.int(0, 3) });
   }
 }
 

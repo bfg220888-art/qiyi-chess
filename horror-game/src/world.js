@@ -5,6 +5,7 @@ import { CELL, WALL_H, WALL_T, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.j
 import { VOID, FURN, WALL_WRITINGS } from './level.js';
 import { PropBuilder, mergeLocal } from './props.js';
 import { createMaterials, drawFloorPlan } from './materials.js';
+import { makeCorpse } from './corpses.js';
 
 const HT = WALL_T / 2;
 const CHUNK = 6;
@@ -408,8 +409,20 @@ export class World {
     this.root.add(this.lockerMesh);
     this.interactables.push(this.lockerMesh);
     this.dynamicProps = [];
+    this.corpseMeshes = [];
     for (const f of lv.furniture) {
       let g = null;
+      // 有寫實屍體素材時：推床就不畫原本蓋白布的人形
+      const corpse = f.corpse && this.corpses ? makeCorpse(this.corpses, f.corpse.name, f.corpse.mirror) : null;
+      f.hideBody = !!corpse;
+      if (corpse) {
+        const gurney = f.kind === 'gurney';
+        corpse.position.set(f.x, gurney ? 0.895 : 0.64, f.z);
+        corpse.rotation.y = f.rot + (gurney ? Math.PI / 2 : 0);
+        corpse.userData.furn = f;
+        this.root.add(corpse);
+        this.corpseMeshes.push(corpse);
+      }
       switch (f.kind) {
         case 'bed': g = P.bed(f); break;
         case 'gurney': g = P.gurney(f); break;

@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "esbuild": "0.25.10",
+    "meshoptimizer": "^0.22.0",
     "playwright-core": "1.64.0"
   }
 }
