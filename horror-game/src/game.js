@@ -38,7 +38,7 @@ export class Game {
     this.staticBoost = 0;
     this.damage = 0;
     this.notesRead = new Set();
-    this.stats = { stuns: 0, hides: 0, caught: 0 };
+    this.stats = { stuns: 0, hides: 0, caught: 0, photos: 0 };
     this.raycaster = new THREE.Raycaster();
     this.raycaster.far = 2.4;
     this.target = null;
@@ -681,6 +681,76 @@ export class Game {
     this.timers.add(id);
   }
 
+  // 相機閃光的那一瞬間另外渲染一張小照片（只在按快門時做一次，不影響平常的效能）
+  capturePhoto() {
+    try {
+      const W = 256, H = 192, r = this.renderer, cam = this.player.camera;
+      if (!this.photoRT) {
+        this.photoRT = new THREE.WebGLRenderTarget(W, H);
+        this.photoRT.texture.colorSpace = THREE.SRGBColorSpace;
+        this.photoCam = new THREE.PerspectiveCamera(cam.fov, W / H, cam.near, cam.far);
+        this.photoBuf = new Uint8Array(W * H * 4);
+      }
+      // 照片裡拍到她了嗎？（她或幻影的臉在畫面中、沒有被牆擋住）
+      const v = new THREE.Vector3();
+      const inShot = (m, x, z) => {
+        if (!m || !m.root.visible) return false;
+        if (m.faceWorld) m.faceWorld(v); else v.set(x, 1.5, z);
+        if (v.distanceTo(cam.position) > 14) return false;
+        if (!sightClear(this.lv, this.player.pos.x, this.player.pos.z, v.x, v.z)) return false;
+        v.project(cam);
+        return v.z < 1 && Math.abs(v.x) < 0.85 && Math.abs(v.y) < 0.85;
+      };
+      const gh = this.ghost;
+      const her = (gh.state !== 'dormant' && inShot(gh.model, gh.pos.x, gh.pos.z)) ||
+        (this.director.apparition && this.director.apparition.visible && inShot(this.director.appModel, this.director.apparition.position.x, this.director.apparition.position.z));
+      // 偶爾（一局最多一次）：照片裡出現一個現場根本不存在的她
+      const D = this.director, am = D.appModel, P = this.player;
+      let trick = false;
+      if (!her && !this.photoTrick && this.time > 90 && am && !D.apparition.visible && Math.random() < 0.18) {
+        const fwd = P.forward(new THREE.Vector3());
+        for (let d = 7; d >= 3.5 && !trick; d -= 0.5) {
+          const x = P.pos.x + fwd.x * d, z = P.pos.z + fwd.z * d;
+          if (!this.ghostNav.isFree(x, z) || !sightClear(this.lv, P.pos.x, P.pos.z, x, z)) continue;
+          am.root.position.set(x, 0, z);
+          am.root.rotation.set(0, Math.atan2(P.pos.x - x, P.pos.z - z), 0);
+          if (am.setLookTarget) am.setLookTarget(cam.position, 1);
+          am.revealFace(1);
+          am.pose('idle', this.time, 0, 0);
+          am.root.visible = true;
+          trick = true;
+        }
+      }
+      const pc = this.photoCam;
+      cam.updateMatrixWorld();
+      pc.position.setFromMatrixPosition(cam.matrixWorld);
+      pc.quaternion.setFromRotationMatrix(cam.matrixWorld);
+      pc.updateMatrixWorld();
+      // 照片沒有經過色調映射，閃光調弱一點免得臉整個過曝
+      const L = P.photo, li = L ? L.intensity : 0;
+      if (L) L.intensity = li * 0.3;
+      const prev = r.getRenderTarget();
+      r.setRenderTarget(this.photoRT);
+      r.clear();
+      r.render(this.scene, pc);
+      r.setRenderTarget(prev);
+      if (L) L.intensity = li;
+      r.readRenderTargetPixels(this.photoRT, 0, 0, W, H, this.photoBuf);
+      if (trick) {
+        am.root.visible = false;
+        am.revealFace(0);
+        this.photoTrick = true;
+        this.later(() => this.audio.play('stinger', { vol: 0.45 }), 900);
+      }
+      if (her) this.stats.photos++;
+      const empty = ['（什麼也沒拍到）', '走廊空無一人……', '（模糊的一片）'];
+      const caption = her ? '……她在看著鏡頭。' : trick ? '照片裡有人。可是那裡明明沒有人。' : empty[Math.floor(Math.random() * empty.length)];
+      this.ui.showPhoto(this.photoBuf, W, H, caption);
+    } catch (e) {
+      console.warn('拍照失敗', e && e.message);
+    }
+  }
+
   statRows() {
     return [
       ['難度', this.diff.label],
@@ -688,6 +758,7 @@ export class Game {
       ['保險絲', `${this.fusesInserted}/3`],
       ['讀過的紀錄', `${this.notesRead.size}/${NOTES.length}`],
       ['用閃光定住她', `${this.stats.stuns} 次`],
+      ['拍到她的臉', `${this.stats.photos} 張`],
       ['躲進鐵櫃', `${this.stats.hides} 次`],
       ['被抓到', `${this.stats.caught} 次`],
     ];
@@ -756,6 +827,8 @@ export class Game {
     for (const v of this.tf.cache.values()) for (const t of Object.values(v)) if (t && t.isTexture) t.dispose();
     if (this.world.aoTex) this.world.aoTex.dispose();
     if (this.envRT) this.envRT.dispose();
+    if (this.photoRT) this.photoRT.dispose();
+    this.ui.hidePhoto();
     this.post.dispose();
     this.renderer.renderLists.dispose();
   }

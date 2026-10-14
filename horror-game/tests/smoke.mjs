@@ -244,6 +244,9 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
     log('flash debug', JSON.stringify(geo));
   }
   assert(afterFlash === 'stunned', 'camera flash should stun her');
+  const photo = await page.evaluate(() => ({ show: document.getElementById('polaroid').classList.contains('show'), photos: window.__SW.game.stats.photos, cap: document.querySelector('#polaroid figcaption').textContent }));
+  log('photo', JSON.stringify(photo));
+  assert(photo.show && photo.photos === 1, 'flash photo should develop and show her');
   // 2. 長時間 AI 模擬：玩家站著不動，鬼魂遊蕩，不能出錯
   await page.evaluate(() => { const g = window.__SW.game; g.player.lives = 99; });
   const states = new Set();

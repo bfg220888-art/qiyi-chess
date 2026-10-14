@@ -12,6 +12,7 @@ export class UI {
       hide: $('hideOverlay'), damage: $('damage'), fade: $('fade'), note: $('note'), noteTitle: $('noteTitle'), noteBody: $('noteBody'),
       map: $('mapView'), mapCanvas: $('mapCanvas'), tInteract: $('tInteract'), tInteractLabel: $('tInteractLabel'), touch: $('touch'),
       fps: $('fps'), bottles: $('bottleCount'), bottleStat: $('bottleStat'), tThrow: $('tThrow'), tBreath: $('tBreath'),
+      polaroid: $('polaroid'),
     };
     this.hintT = 0;
     this.subT = 0;
@@ -118,6 +119,41 @@ export class UI {
     this.el.stamina.classList.toggle('show', st < 0.98);
     this.el.stamina.classList.toggle('ex', exhausted);
     this.setBar(st);
+  }
+
+  // 閃光拍下的照片（像素來自 render target，由下往上排）：加上暖色、暗角、顆粒與日期戳記
+  showPhoto(px, W, H, caption) {
+    const el = this.el.polaroid;
+    if (!el) return;
+    const cv = el.firstElementChild, g = cv.getContext('2d');
+    const img = g.createImageData(W, H), d = img.data;
+    for (let y = 0; y < H; y++) {
+      const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+      for (let x = 0; x < W; x++) {
+        const i = src + x * 4, o = dst + x * 4;
+        const dx = x / W - 0.5, dy = y / H - 0.5;
+        const vig = 1 - Math.min(0.75, (dx * dx + dy * dy) * 1.9);
+        const n = (Math.random() - 0.5) * 26;
+        d[o] = Math.min(255, px[i] * 1.08 * vig + 10 + n);
+        d[o + 1] = Math.min(255, px[i + 1] * 1.0 * vig + 6 + n);
+        d[o + 2] = Math.min(255, px[i + 2] * 0.86 * vig + n);
+        d[o + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    // 老相機的橘色日期戳記
+    g.font = 'bold 13px monospace';
+    g.fillStyle = 'rgba(255,140,40,0.9)';
+    g.textAlign = 'right';
+    g.fillText("'99 8 13", W - 8, H - 9);
+    el.lastElementChild.textContent = caption;
+    el.classList.add('show');
+    clearTimeout(this.photoTimer);
+    this.photoTimer = setTimeout(() => el.classList.remove('show'), 4500);
+  }
+  hidePhoto() {
+    clearTimeout(this.photoTimer);
+    if (this.el.polaroid) this.el.polaroid.classList.remove('show');
   }
 
   showNote(note) {

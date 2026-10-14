@@ -119,6 +119,11 @@ html, body {
 .prompt kbd { font-family: var(--mono); border: 1px solid var(--ink); padding: 0 5px; margin-right: 8px; border-radius: 2px; }
 .subtitle-line { position: absolute; left: 50%; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 70px); transform: translateX(-50%); width: min(90vw, 680px); text-align: center; font-family: var(--display); font-size: clamp(15px, 2.2vw, 19px); color: #f0e6d0; text-shadow: 0 0 6px #000, 0 2px 3px #000; opacity: 0; transition: opacity 0.5s; line-height: 1.6; }
 .subtitle-line.show { opacity: 1; }
+/* 相機拍下的照片：像拍立得一樣從右上角滑進來 */
+#polaroid { position: absolute; top: calc(max(14px, env(safe-area-inset-top)) + 52px); right: calc(max(14px, env(safe-area-inset-right)) + 16px); width: min(30vw, 190px); margin: 0; padding: 7px 7px 0; background: #e9e4d6; box-shadow: 0 6px 18px rgba(0,0,0,0.7); transform: translateX(130%) rotate(6deg); opacity: 0; transition: transform 0.5s cubic-bezier(.2,.8,.2,1), opacity 0.5s; pointer-events: none; }
+#polaroid.show { transform: translateX(0) rotate(-3deg); opacity: 1; }
+#polaroid canvas { display: block; width: 100%; height: auto; background: #111; }
+#polaroid figcaption { font-family: var(--body); font-size: 12px; color: #2a2620; text-align: center; padding: 6px 2px 8px; min-height: 1.5em; }
 .hint { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); width: min(88vw, 560px); text-align: center; font-family: var(--body); font-size: 15px; color: var(--ink); text-shadow: 0 0 6px #000, 0 1px 2px #000; opacity: 0; transition: opacity 0.4s; line-height: 1.6; }
 .hint.show { opacity: 1; }
 

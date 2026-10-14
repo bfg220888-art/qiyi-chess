@@ -284,6 +284,7 @@ export class Player {
       const a = g.director.apparition.position;
       if (tryStun(a.x, a.z)) g.director.vanishApparition(true);
     }
+    g.capturePhoto();
   }
 
   // --- 躲藏
