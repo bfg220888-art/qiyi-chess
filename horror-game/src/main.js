@@ -81,7 +81,7 @@ class App {
     this.paused = false;
     this.state = 'menu';
     this.frameTimes = [];
-    this.vsyncCount = 0;
+    this.lastRender = 0;
     this.ghostTries = 0;
     this.photoTries = 0;
     this.bindMenu();
@@ -371,19 +371,21 @@ class App {
 
   loop(now) {
     requestAnimationFrame((t) => this.loop(t));
-    // 量測螢幕的更新間隔（指數平均）
+    // 螢幕更新間隔：畫得慢的那格會跨過好幾次更新，先除以跨過的次數再平均，
+    // 估計值就不會被拉高；量到明顯更短的間隔時直接採用（例如剛換到高更新率螢幕）
     const raw = now - (this.lastRaf || now);
     this.lastRaf = now;
-    if (raw > 3 && raw < 50) this.vsync = this.vsync ? this.vsync + (raw - this.vsync) * 0.05 : raw;
-    // 更新率上限：每 N 次螢幕更新才畫一次（N 取最接近上限的整數），
-    // 144 / 90 Hz 螢幕也能維持穩定的間隔，不會一快一慢地頓
+    if (raw > 3 && raw < 100) {
+      if (!this.vsync || raw < this.vsync * 0.7) this.vsync = raw;
+      else this.vsync += (raw / Math.max(1, Math.round(raw / this.vsync)) - this.vsync) * 0.05;
+    }
+    // 更新率上限：每 N 次螢幕更新畫一次，144 / 90 Hz 螢幕也維持穩定間隔；
+    // 剛好卡在一半時（90 Hz 配 60）選比較省電的那邊。再加時間保護，兩次繪製至少隔 N 格
     const cap = this.settings.fpsCap;
     if (cap > 0 && this.state === 'playing' && this.vsync) {
-      // 有遲滯：比例剛好卡在中間（例如 90 Hz 配 60）時不會在 1、2 之間跳來跳去
-      const ratio = 1000 / cap / this.vsync;
-      if (!this.vsyncN || Math.abs(ratio - this.vsyncN) > 0.6) this.vsyncN = Math.max(1, Math.round(ratio));
-      if (++this.vsyncCount < this.vsyncN) return;
-      this.vsyncCount = 0;
+      this.vsyncN = Math.max(1, Math.round(1000 / cap / this.vsync + 0.05));
+      if (now - this.lastRender < this.vsyncN * this.vsync - this.vsync / 2) return;
+      this.lastRender = now;
     }
     let dt = (now - this.last) / 1000;
     this.last = now;
@@ -405,14 +407,15 @@ class App {
 
   // 動態解析度：掉幀就降低渲染解析度
   adaptResolution(dt) {
+    // 目標是實際做得到的更新率（例如 90 Hz 螢幕配 60 上限 → 45），偶爾一格卡頓不算太重
+    const target = this.settings.fpsCap && this.vsyncN && this.vsync ? 1000 / (this.vsyncN * this.vsync) : 60;
     const ft = this.frameTimes;
-    ft.push(dt);
+    ft.push(Math.min(dt, 2 / target));
     if (ft.length < 90) return;
     const avg = ft.reduce((a, b) => a + b, 0) / ft.length;
     ft.length = 0;
     if (this.settings.showFps) this.ui.setFps(true, `${(1 / avg).toFixed(0)} FPS・${this.quality.label}・${(this.pixelRatio()).toFixed(2)}x`);
     let changed = false;
-    const target = this.settings.fpsCap || 60;
     if (avg > 1.45 / target && this.resScale > 0.6) { this.resScale = Math.max(0.6, this.resScale - 0.1); changed = true; }
     else if (avg < 1.08 / target && this.resScale < 1) { this.resScale = Math.min(1, this.resScale + 0.05); changed = true; }
     if (changed && this.game) this.game.resize();

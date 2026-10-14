@@ -133,14 +133,17 @@ export class Post {
     S.mat.uniforms.uExposure.value = r.toneMappingExposure;
     // 陰影圖沿用這一格主畫面算好的，不重算一次
     const au = r.shadowMap.autoUpdate;
-    r.shadowMap.autoUpdate = false;
-    r.setRenderTarget(S.hdr);
-    r.clear();
-    r.render(scene, camera);
-    r.shadowMap.autoUpdate = au;
-    r.setRenderTarget(S.ldr);
-    S.quad.render(r);
-    r.setRenderTarget(prev);
+    try {
+      r.shadowMap.autoUpdate = false;
+      r.setRenderTarget(S.hdr);
+      r.clear();
+      r.render(scene, camera);
+      r.setRenderTarget(S.ldr);
+      S.quad.render(r);
+    } finally {
+      r.shadowMap.autoUpdate = au;
+      r.setRenderTarget(prev);
+    }
     // 非同步讀回（PBO + fence）：不必等 GPU 把前面的工作做完，按快門那一格不會頓
     if (r.readRenderTargetPixelsAsync) return r.readRenderTargetPixelsAsync(S.ldr, 0, 0, W, H, S.buf).then(() => S.buf);
     r.readRenderTargetPixels(S.ldr, 0, 0, W, H, S.buf);

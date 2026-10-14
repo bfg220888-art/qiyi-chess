@@ -110,6 +110,8 @@ export class Game {
       else this.renderer.compile(this.scene, this.player.camera);
     } catch (e) { /* 舊瀏覽器 */ }
     this.post.render(0);
+    // 先建好拍照用的目標與色調映射著色器，第一次按快門才不會頓
+    this.post.snapshot(this.scene, this.player.camera, 256, 192).catch(() => {});
     this.ghost.model.root.visible = false;
     this.director.apparition.visible = false;
     progress(1, '');
@@ -685,61 +687,71 @@ export class Game {
 
   // 相機閃光的那一瞬間另外渲染一張小照片（只在按快門時做一次，不影響平常的效能）
   capturePhoto() {
+    const W = 256, H = 192, cam = this.player.camera, P = this.player, D = this.director, am = D.appModel;
+    const L = P.photo, li = L ? L.intensity : 0;
+    let trick = false;
     try {
-      const W = 256, H = 192, cam = this.player.camera;
-      if (!this.photoCam) this.photoCam = new THREE.PerspectiveCamera(cam.fov, W / H, cam.near, cam.far);
-      // 照片裡拍到她了嗎？（她或幻影的臉在畫面中、沒有被牆擋住）
-      const v = new THREE.Vector3();
-      const inShot = (m, x, z) => {
-        if (!m || !m.root.visible) return false;
-        if (m.faceWorld) m.faceWorld(v); else v.set(x, 1.5, z);
-        if (v.distanceTo(cam.position) > 14) return false;
-        if (!sightClear(this.lv, this.player.pos.x, this.player.pos.z, v.x, v.z)) return false;
-        v.project(cam);
-        return v.z < 1 && Math.abs(v.x) < 0.85 && Math.abs(v.y) < 0.85;
-      };
-      const gh = this.ghost;
-      const her = (gh.state !== 'dormant' && inShot(gh.model, gh.pos.x, gh.pos.z)) ||
-        (this.director.apparition && this.director.apparition.visible && inShot(this.director.appModel, this.director.apparition.position.x, this.director.apparition.position.z));
-      // 偶爾（一局最多一次）：照片裡出現一個現場根本不存在的她
-      const D = this.director, am = D.appModel, P = this.player;
-      let trick = false;
-      if (!her && !this.photoTrick && this.time > 90 && am && !D.apparition.visible && Math.random() < 0.18) {
-        const fwd = P.forward(new THREE.Vector3());
-        for (let d = 7; d >= 3.5 && !trick; d -= 0.5) {
-          const x = P.pos.x + fwd.x * d, z = P.pos.z + fwd.z * d;
-          if (!this.ghostNav.isFree(x, z) || !sightClear(this.lv, P.pos.x, P.pos.z, x, z)) continue;
-          am.root.position.set(x, 0, z);
-          am.root.rotation.set(0, Math.atan2(P.pos.x - x, P.pos.z - z), 0);
-          if (am.setLookTarget) am.setLookTarget(cam.position, 1);
-          am.revealFace(1);
-          am.pose('idle', this.time, 0, 0);
-          am.root.visible = true;
-          trick = true;
-        }
-      }
-      const pc = this.photoCam;
+      // 照片相機：每次都跟著主相機（位置、視角、跑步時的 FOV）
+      const pc = this.photoCam || (this.photoCam = new THREE.PerspectiveCamera());
       cam.updateMatrixWorld();
+      pc.fov = cam.fov; pc.near = cam.near; pc.far = cam.far; pc.aspect = W / H;
+      pc.updateProjectionMatrix();
       pc.position.setFromMatrixPosition(cam.matrixWorld);
       pc.quaternion.setFromRotationMatrix(cam.matrixWorld);
       pc.updateMatrixWorld();
-      // 閃光調弱一點，免得近距離的臉整個過曝
-      const L = P.photo, li = L ? L.intensity : 0;
-      if (L) L.intensity = li * 0.5;
+      // 照片裡有沒有她的臉：在 4:3 的照片框內、沒被牆擋住、而且臉朝著鏡頭
+      const v = new THREE.Vector3(), f = new THREE.Vector3(), q = new THREE.Quaternion();
+      const inShot = (m, x, z, yaw) => {
+        if (!m || !m.root.visible) return 0;
+        if (m.faceWorld) m.faceWorld(v); else v.set(x, 1.5, z);
+        if (v.distanceTo(pc.position) > 14) return 0;
+        if (!sightClear(this.lv, P.pos.x, P.pos.z, v.x, v.z)) return 0;
+        if (m.headBone && m.faceLocal) f.copy(m.faceLocal).applyQuaternion(m.headBone.getWorldQuaternion(q));
+        else f.set(Math.sin(yaw), 0, Math.cos(yaw));
+        const toCam = pc.position.clone().sub(v).normalize();
+        const facing = f.dot(toCam) > 0.3;
+        v.project(pc);
+        if (!(v.z < 1 && Math.abs(v.x) < 0.9 && Math.abs(v.y) < 0.9)) return 0;
+        return facing ? 2 : 1;
+      };
+      const gh = this.ghost;
+      const shotHer = Math.max(gh.state !== 'dormant' ? inShot(gh.model, gh.pos.x, gh.pos.z, gh.yaw) : 0,
+        D.apparition && D.apparition.visible ? inShot(am, D.apparition.position.x, D.apparition.position.z, D.apparition.rotation.y) : 0);
+      // 偶爾（一局最多一次）：照片裡出現一個現場根本不存在的她（用水平方向找位置，確定臉會在照片裡才算數）
+      if (!shotHer && !this.photoTrick && this.time > 90 && am && !D.apparition.visible && Math.random() < 0.18) {
+        const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw);
+        for (let d = 7; d >= 3.5 && !trick; d -= 0.5) {
+          const x = P.pos.x + fx * d, z = P.pos.z + fz * d;
+          if (!this.ghostNav.isFree(x, z) || !sightClear(this.lv, P.pos.x, P.pos.z, x, z)) continue;
+          am.root.position.set(x, 0, z);
+          am.root.rotation.set(0, Math.atan2(P.pos.x - x, P.pos.z - z), 0);
+          am.root.visible = true;
+          if (am.play) am.play('look', 0);
+          if (am.setLookTarget) am.setLookTarget(pc.position, 1);
+          am.revealFace(1);
+          for (let k = 0; k < 4; k++) am.pose('idle', this.time + k * 0.1, 0, 0);
+          am.root.updateMatrixWorld(true);
+          if (inShot(am, x, z, am.root.rotation.y) === 2) trick = true;
+          else { am.root.visible = false; am.revealFace(0); }
+        }
+      }
+      // 照片的曝光：閃光強度約為遊戲畫面閃白時的 3.5%，近處清楚、遠處暗下去，臉不會過曝
+      if (L) L.intensity = li * 0.035;
       const shot = this.post.snapshot(this.scene, pc, W, H);
-      if (L) L.intensity = li;
       if (trick) {
-        am.root.visible = false;
-        am.revealFace(0);
         this.photoTrick = true;
         this.later(() => this.audio.play('stinger', { vol: 0.45 }), 900);
       }
-      if (her) this.stats.photos++;
+      if (shotHer === 2) this.stats.photos++;
       const empty = ['（什麼也沒拍到）', '走廊空無一人……', '（模糊的一片）'];
-      const caption = her ? '……她在看著鏡頭。' : trick ? '照片裡有人。可是那裡明明沒有人。' : empty[Math.floor(Math.random() * empty.length)];
+      const caption = shotHer === 2 ? '……她在看著鏡頭。' : shotHer === 1 ? '……拍到了一個背影。' : trick ? '照片裡有人。可是那裡明明沒有人。' : empty[Math.floor(Math.random() * empty.length)];
       shot.then((buf) => { if (!this.disposed) this.ui.showPhoto(buf, W, H, caption); }).catch((e) => console.warn('拍照失敗', e && e.message));
     } catch (e) {
       console.warn('拍照失敗', e && e.message);
+    } finally {
+      // 不管成功與否都要把借用的東西還原
+      if (L) L.intensity = li;
+      if (trick) { am.root.visible = false; am.revealFace(0); }
     }
   }
 

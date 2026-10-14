@@ -260,12 +260,17 @@ export class Player {
 
   firePhoto() {
     const g = this.game;
+    const fwd = this.forward(new THREE.Vector3());
     this.photo.intensity = 900;
+    // 閃光燈要先移到相機前面，拍照那一張才會被照亮
+    this.camera.updateMatrixWorld();
+    this.photo.position.copy(this.camera.position).addScaledVector(fwd, 0.4);
     g.post.u.uFlash.value = 1;
     g.makeNoise(this.pos.x, this.pos.z, 10);
+    // 先拍照（被閃到的幻影接著才會消失）
+    g.capturePhoto();
     // 閃光擊中她嗎？
     const gh = g.ghost;
-    const fwd = this.forward(new THREE.Vector3());
     const tryStun = (x, z, y = 1.5) => {
       const to = new THREE.Vector3(x - this.camera.position.x, y - this.camera.position.y, z - this.camera.position.z);
       const d = to.length();
@@ -284,7 +289,6 @@ export class Player {
       const a = g.director.apparition.position;
       if (tryStun(a.x, a.z)) g.director.vanishApparition(true);
     }
-    g.capturePhoto();
   }
 
   // --- 躲藏

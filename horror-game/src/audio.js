@@ -1178,7 +1178,10 @@ export class AudioEngine {
             this.sample(g, this.buf.phone, t, { gain: 0.5 });
             ph.next = t + 4.6;
           } else {
-            const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 2.5, 0.4);
+            const out0 = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 2.5, 0.4);
+            const out = c.createGain();
+            out.connect(out0);
+            this.phoneGain = out;
             const am = this.osc('square', 20, t, 1.6);
             const amg = c.createGain();
             amg.gain.value = 0.5;

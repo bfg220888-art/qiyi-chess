@@ -135,7 +135,7 @@ function wrapDraw(w, fn) {
 
 // 照片素材：{ 名稱: { c: 顏色, n: 法線, arm: AO/粗糙/金屬 } }
 const PHOTO_FILES = {
-  paint: ['c', 'n', 'arm'], tiles: ['c', 'n', 'arm'], lino: ['c', 'n', 'arm'], metal: ['c', 'n', 'arm'],
+  paint: ['c', 'n', 'arm'], tiles: ['c', 'arm'], lino: ['c', 'n', 'arm'], metal: ['c', 'n', 'arm'],
   wood: ['c', 'n', 'r'], fabric: ['c'], leak: ['c', 'o', 'n'], smear: ['o'],
 };
 const photoImg = new Map();
@@ -212,13 +212,18 @@ export class TextureFactory {
     g.fillStyle = fill; g.fillRect(0, 0, W, H);
     for (const L of layers) this.tilePhoto(g, L.img, L.x || 0, L.y || 0, L.w ?? W, L.h ?? H, L.pw ?? W, L.phh ?? L.pw ?? H, L.fromBottom);
     if (blur > 1) {
-      const sw = Math.max(1, Math.round(W / blur)), sh = Math.max(1, Math.round(H / blur));
-      const sm = mk(sw, sh), sg = ctx2d(sm);
-      sg.imageSmoothingQuality = 'high';
-      sg.drawImage(c, 0, 0, sw, sh);
+      // 每次縮一半（各瀏覽器的縮圖品質不一，一次縮很多倍會有雜訊）
+      let src = c, w = W, h = H;
+      while (w > W / blur * 1.01 && w > 2 && h > 2) {
+        const nw = Math.max(1, Math.round(w / 2)), nh = Math.max(1, Math.round(h / 2));
+        const sm = mk(nw, nh), sg = ctx2d(sm);
+        sg.imageSmoothingEnabled = true;
+        sg.drawImage(src, 0, 0, nw, nh);
+        src = sm; w = nw; h = nh;
+      }
       g.imageSmoothingEnabled = true;
       g.imageSmoothingQuality = 'high';
-      g.drawImage(sm, 0, 0, W, H);
+      g.drawImage(src, 0, 0, W, H);
     }
     return g.getImageData(0, 0, W, H).data;
   }
@@ -277,9 +282,8 @@ export class TextureFactory {
       let photoArm = null, photoN = null, photoMask = null, tileC = null;
       if (P) {
         const tileLay = (img) => ({ img, x: 0, y: yRail, w: S, h: ySkirt - yRail, pw: S / 2, fromBottom: true });
-        const lay = (k) => [{ img: P[0][k], x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }, tileLay(P[1][k])];
         this.tilePhoto(g, P[0].c, 0, 0, S, yRail2, S / 2);
-        photoArm = this.photoPixels(S, S, lay('arm'), 'rgb(255,200,0)');
+        photoArm = this.photoPixels(S, S, [{ img: P[0].arm, x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }], 'rgb(255,200,0)');
         photoN = this.photoPixels(S, S, [{ img: P[0].n, x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }], 'rgb(128,128,255)');
         tileC = this.photoPixels(S, S, [tileLay(P[1].c)], '#737373', 24);
         photoMask = new Float32Array(S * S);

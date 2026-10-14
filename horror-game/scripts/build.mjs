@@ -63,7 +63,7 @@ async function licenseNotices() {
   const parts = [];
   for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼模型）', 'assets/ghost/LICENSE-Rocketbox.md']]) {
     const f = path.join(root, file);
-    if (existsSync(f)) parts.push(`${name}\n\n${(await readFile(f, 'utf8')).replace(/--/g, '- -')}`);
+    if (existsSync(f)) parts.push(`${name}\n\n${(await readFile(f, 'utf8')).replace(/-(?=-)/g, '- ')}`);
   }
   return parts.length ? `<!--\n${parts.join('\n\n----\n\n')}\n-->\n` : '';
 }

@@ -248,7 +248,8 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   await page.waitForFunction(() => document.getElementById('polaroid').classList.contains('show'), null, { timeout: 15000 }).catch(() => {});
   const photo = await page.evaluate(() => ({ show: document.getElementById('polaroid').classList.contains('show'), photos: window.__SW.game.stats.photos, cap: document.querySelector('#polaroid figcaption').textContent }));
   log('photo', JSON.stringify(photo));
-  assert(photo.show && photo.photos === 1, 'flash photo should develop and show her');
+  // 測試裡她是背對玩家的：照片要拍到她（背影），但不算「拍到她的臉」
+  assert(photo.show && photo.photos === 0 && photo.cap.includes('背影'), 'flash photo should develop and show her back');
   // 2. 長時間 AI 模擬：玩家站著不動，鬼魂遊蕩，不能出錯
   await page.evaluate(() => { const g = window.__SW.game; g.player.lives = 99; });
   const states = new Set();
