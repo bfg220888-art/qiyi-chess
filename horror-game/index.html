@@ -145,17 +145,17 @@
 <section id="settings" class="overlay" hidden>
   <div class="panel wide">
     <h2>設定</h2>
-    <label class="row">畫質
-      <span class="seg small" id="qualitySeg">
+    <div class="row">畫質
+      <span class="seg small" id="qualitySeg" role="group" aria-label="畫質">
         <button type="button" data-q="low">低</button><button type="button" data-q="medium">中</button><button type="button" data-q="high">高</button>
       </span>
-    </label>
+    </div>
     <p class="note-small" id="qualityNote">變更畫質會在下一局生效。</p>
-    <label class="row">更新率上限
-      <span class="seg small" id="fpsSeg">
+    <div class="row">更新率上限
+      <span class="seg small" id="fpsSeg" role="group" aria-label="更新率上限">
         <button type="button" data-fps="30">30 省電</button><button type="button" data-fps="60">60</button><button type="button" data-fps="0">不限</button>
       </span>
-    </label>
+    </div>
     <p class="note-small">電腦或手機發燙時，選「低」畫質與「30 省電」。</p>
     <label class="row" for="sBright">亮度 <input id="sBright" type="range" min="0.6" max="2" step="0.05"></label>
     <label class="row" for="sVolume">音量 <input id="sVolume" type="range" min="0" max="1" step="0.05"></label>
@@ -209,7 +209,7 @@
       <summary>素材來源與授權</summary>
       <p>女鬼人物模型、動作與表情：Microsoft Rocketbox Avatar Library（MIT）。</p>
       <p>照片貼圖：Poly Haven（剝落油漆牆、髒磁磚、舊塑膠地磚、生鏽鐵板、磨損木地板）、ambientCG（亞麻布、牆面水痕與抹痕），皆為 CC0。</p>
-      <p>音效：Berklee College of Music sample library, OLPC Sound Library（wiki.laptop.org/go/Sound_samples），CC BY 3.0，經裁切與調整音量；Kenney（CC0）；Joseph SARDIN - BigSoundBank.com（CC0）；Freesound 上的 Nox_Sound、chewiesmissus、EcoDTR、speakwithanimals、loganzsound、Emulius 與 #777053、#574208（CC0）。</p>
+      <p>音效：Berklee College of Music sample library, OLPC Sound Library（wiki.laptop.org/go/Sound_samples），CC BY 3.0（creativecommons.org/licenses/by/3.0/），經裁切與調整音量；Kenney（CC0）；Joseph SARDIN - BigSoundBank.com（CC0）；Freesound 上的 Nox_Sound、chewiesmissus、EcoDTR、speakwithanimals、loganzsound、Emulius 與 #777053、#574208（CC0）。</p>
       <p>3D 引擎：three.js（MIT）。其餘畫面與聲音由程式即時生成。</p>
     </details>
     <button id="btnHelpBack" class="btn primary" type="button">知道了</button>

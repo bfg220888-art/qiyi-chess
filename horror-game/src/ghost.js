@@ -360,6 +360,8 @@ export class Ghost {
       if (door.angle > 0.9) continue;
       if (Math.abs(door.cx - this.pos.x) < 1.3 && Math.abs(door.cz - this.pos.z) < 1.3) {
         const fast = this.state === 'chase';
+        // 已經在開了：只在追逐時把速度加快，不要每格都重播開門聲
+        if (door.target >= 1.4) { if (fast && door.speed < 7) g.world.setDoor(door, door.target, 7); continue; }
         g.world.setDoor(door, 1.45, fast ? 7 : 1.4);
         g.audio.play(fast ? 'doorBang' : 'doorCreak', { pos: { x: door.cx, y: 1.2, z: door.cz } });
       }

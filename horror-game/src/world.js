@@ -646,9 +646,9 @@ export class World {
       } else if (d.kind === 'leak') {
         if (leakTex) sets.leak.push(wallDecal(plane(d.w, d.h, d.flip ? 1 : 0, 0, d.flip ? 0 : 1, 1), d));
       } else if (d.kind === 'smear') {
-        // 抹痕貼圖裡只有幾條橫帶有痕跡，挑那幾段來用
-        const [v0, v1] = [[0.625, 0.75], [0.25, 0.375], [0.375, 0.5], [0.75, 0.875]][d.band % 4];
-        if (smearTex) sets.smear.push(wallDecal(plane(d.w, d.h, 0, v0, 1, v1), d));
+        // 抹痕貼圖裡只有幾條橫帶有痕跡：上下邊界都落在空白列上，才不會切出直線；高度依那一段的比例
+        const [v0, v1] = [[0.605, 0.775], [0.412, 0.468], [0.339, 0.408], [0.125, 0.326]][d.band % 4];
+        if (smearTex) sets.smear.push(wallDecal(plane(d.w, d.w * (v1 - v0), 0, v0, 1, v1), d));
       } else if (d.kind === 'curtain') {
         const g = P.curtain(d.len);
         g.position.set(d.x, 0, d.z);

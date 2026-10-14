@@ -28,7 +28,7 @@ async function assemble(js) {
   // 外部素材（寫實女鬼、照片貼圖、音效）與授權說明
   if (existsSync(path.join(root, 'assets'))) await cp(path.join(root, 'assets'), path.join(dist, 'assets'), { recursive: true });
   else console.warn('找不到 assets/，遊戲會全部使用程序生成的素材');
-  await copyFile(path.join(root, 'CREDITS.md'), path.join(dist, 'CREDITS.md'));
+  if (existsSync(path.join(root, 'CREDITS.md'))) await copyFile(path.join(root, 'CREDITS.md'), path.join(dist, 'CREDITS.md'));
   const threeLicense = path.join(root, 'node_modules/three/LICENSE');
   if (existsSync(threeLicense)) await copyFile(threeLicense, path.join(dist, 'LICENSE-three.txt'));
   // Artifact 版本：只保留 <head> 與 <body> 的內容（外層骨架由平台提供），
@@ -36,7 +36,7 @@ async function assemble(js) {
   const head = out.match(/<head>([\s\S]*?)<\/head>/)[1].replace(/<meta charset="utf-8">\s*/, '');
   const body = out.match(/<body>([\s\S]*?)<\/body>/)[1];
   const embedded = await embedAssets();
-  await writeFile(path.join(dist, 'artifact.html'), head.trim() + '\n' + body.trim() + '\n' + embedded);
+  await writeFile(path.join(dist, 'artifact.html'), head.trim() + '\n' + body.trim() + '\n' + embedded + await licenseNotices());
   return out.length;
 }
 
@@ -54,7 +54,18 @@ async function embedAssets() {
       map[`assets/${sub.name}/${f}`] = `data:${mime};base64,${data.toString('base64')}`;
     }
   }
-  return `<script>window.__SW_ASSETS=${JSON.stringify(map)};</script>\n`;
+  // 跳脫 < 避免 JSON 內容提早結束 <script>
+  return `<script>window.__SW_ASSETS=${JSON.stringify(map).replace(/</g, '\\u003c')};</script>\n`;
+}
+
+// 單一檔案版本沒有附帶授權檔，把 MIT 授權全文放進 HTML 註解
+async function licenseNotices() {
+  const parts = [];
+  for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼模型）', 'assets/ghost/LICENSE-Rocketbox.md']]) {
+    const f = path.join(root, file);
+    if (existsSync(f)) parts.push(`${name}\n\n${(await readFile(f, 'utf8')).replace(/--/g, '- -')}`);
+  }
+  return parts.length ? `<!--\n${parts.join('\n\n----\n\n')}\n-->\n` : '';
 }
 
 const options = {
@@ -64,7 +75,7 @@ const options = {
   target: ['es2020', 'safari15'],
   minify: !serve,
   write: false,
-  legalComments: 'none',
+  legalComments: 'eof',
   logLevel: 'warning',
 };
 

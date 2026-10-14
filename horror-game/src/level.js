@@ -989,19 +989,29 @@ function placeDecals(lv, rng) {
   // 天花板滲水流下的水痕、牆上抹開的血（照片貼花；沒有照片素材時不畫）。
   // 用另一個亂數來源，不影響後面關卡生成的結果
   const r2 = new RNG((lv.seed ^ 0x1eaf5) >>> 0);
+  // 已經佔用的牆面（字跡、手印），新的貼花不要蓋上去
+  const spans = lv.decals.filter((d) => d.kind === 'writing' || d.kind === 'hand').map((d) => ({ rot: d.rot, x: d.x, z: d.z, half: d.size / 2 }));
+  const clashes = (p, w) => spans.some((q) => Math.abs(q.rot - p.rot) < 0.01 && Math.hypot(q.x - p.x, q.z - p.z) < w / 2 + q.half + 0.15);
   let leaks = 0, smears = 0;
   for (const s of r2.shuffle(wallSlotsClean.slice())) {
     if (leaks >= 18 && smears >= 7) break;
     const leak = leaks < 18 && (smears >= 7 || r2.chance(0.72));
     const w = leak ? r2.range(0.45, 0.8) : r2.range(0.8, 1.3);
     const along = s.a0 + r2.range(w / 2 + 0.15, CELL - w / 2 - 0.15);
+    // 被高櫃子擋住就白畫了
+    if (!wallDecalFree(lv, s, along, w)) continue;
     if (leak) {
       const h = Math.min(2.6, w * 4);
-      lv.decals.push({ kind: 'leak', ...wallDecalPose(s, along, WALL_H - h / 2 - 0.02), w, h, flip: r2.chance(0.5) });
+      const p = wallDecalPose(s, along, WALL_H - h / 2 - 0.02);
+      if (clashes(p, w)) continue;
+      lv.decals.push({ kind: 'leak', ...p, w, h, flip: r2.chance(0.5) });
+      spans.push({ rot: p.rot, x: p.x, z: p.z, half: w / 2 });
       leaks++;
     } else {
-      if (!wallDecalFree(lv, s, along, w)) continue;
-      lv.decals.push({ kind: 'smear', ...wallDecalPose(s, along, r2.range(0.7, 1.45)), w, h: w * 0.2, rotZ: r2.range(-0.2, 0.2), band: r2.int(0, 3) });
+      const p = wallDecalPose(s, along, r2.range(0.7, 1.45));
+      if (clashes(p, w)) continue;
+      lv.decals.push({ kind: 'smear', ...p, w, rotZ: r2.range(-0.2, 0.2), band: r2.int(0, 3) });
+      spans.push({ rot: p.rot, x: p.x, z: p.z, half: w / 2 });
       smears++;
     }
   }

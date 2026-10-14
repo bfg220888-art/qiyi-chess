@@ -81,7 +81,7 @@ class App {
     this.paused = false;
     this.state = 'menu';
     this.frameTimes = [];
-    this.lastFrame = 0;
+    this.vsyncCount = 0;
     this.ghostTries = 0;
     this.photoTries = 0;
     this.bindMenu();
@@ -212,6 +212,7 @@ class App {
     const fs = $('fpsSeg');
     const setFps = (v) => {
       this.settings.fpsCap = v;
+      this.vsyncN = 0;
       for (const b of fs.querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.fps) === v);
       this.frameTimes.length = 0;
       this.saveSettings();
@@ -370,16 +371,24 @@ class App {
 
   loop(now) {
     requestAnimationFrame((t) => this.loop(t));
-    // 更新率上限：高更新率螢幕（120/144 Hz）不必每格都畫，省電也比較不燙
+    // 量測螢幕的更新間隔（指數平均）
+    const raw = now - (this.lastRaf || now);
+    this.lastRaf = now;
+    if (raw > 3 && raw < 50) this.vsync = this.vsync ? this.vsync + (raw - this.vsync) * 0.05 : raw;
+    // 更新率上限：每 N 次螢幕更新才畫一次（N 取最接近上限的整數），
+    // 144 / 90 Hz 螢幕也能維持穩定的間隔，不會一快一慢地頓
     const cap = this.settings.fpsCap;
-    if (cap > 0 && this.state === 'playing') {
-      const iv = 1000 / cap;
-      if (now - this.lastFrame < iv - 2) return;
-      this.lastFrame = Math.max(this.lastFrame + iv, now - iv);
+    if (cap > 0 && this.state === 'playing' && this.vsync) {
+      // 有遲滯：比例剛好卡在中間（例如 90 Hz 配 60）時不會在 1、2 之間跳來跳去
+      const ratio = 1000 / cap / this.vsync;
+      if (!this.vsyncN || Math.abs(ratio - this.vsyncN) > 0.6) this.vsyncN = Math.max(1, Math.round(ratio));
+      if (++this.vsyncCount < this.vsyncN) return;
+      this.vsyncCount = 0;
     }
     let dt = (now - this.last) / 1000;
     this.last = now;
     if (!(dt > 0)) return;
+    const frameDt = Math.min(dt, 0.25);
     dt = Math.min(dt, 0.05);
     this.ui.update(dt);
     const g = this.game;
@@ -388,7 +397,7 @@ class App {
       const inp = this.input.poll();
       g.update(dt, inp);
       g.render(dt);
-      this.adaptResolution(dt);
+      this.adaptResolution(frameDt);
     } else if (this.state === 'over' || this.state === 'intro') {
       // 結束畫面背後仍顯示最後一格
     }

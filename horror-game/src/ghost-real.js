@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
-import { assetUrl } from './assets.js';
+import { assetUrl, assetBuffer } from './assets.js';
 
 const BASE = 'assets/ghost/';
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -14,7 +14,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 let glbP = null;
 const imgP = new Map();
 function getGlb() {
-  if (!glbP) glbP = new GLTFLoader().loadAsync(assetUrl(BASE + 'ghost.glb')).catch((e) => { glbP = null; throw e; });
+  if (!glbP) glbP = assetBuffer(BASE + 'ghost.glb').then((buf) => new GLTFLoader().parseAsync(buf, '')).catch((e) => { glbP = null; throw e; });
   return glbP;
 }
 function getImage(name) {
@@ -121,6 +121,8 @@ export class RealGhostModel {
     this.faceLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.headBone.getWorldQuaternion(q).invert());
     this.neckLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.neckBone.getWorldQuaternion(q).invert());
     this.eyeLocal = this.eyeBones.map((b) => new THREE.Vector3(0, 0, 1).applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion()).invert()));
+    // 眼球骨頭沒有動畫軌道：每格先回到原位再轉，否則轉動會一直累積
+    this.eyeRest = this.eyeBones.map((b) => b.quaternion.clone());
     const headBox = this.measureHead();
     this.headCenter = headBox.getCenter(new THREE.Vector3());
     this.headSize = headBox.getSize(new THREE.Vector3());
@@ -305,6 +307,7 @@ export class RealGhostModel {
     }
     if (this.current) this.current.setEffectiveTimeScale(ts);
     this.mixer.update(dt);
+    this.eyeBones.forEach((b, i) => b.quaternion.copy(this.eyeRest[i]));
     this.body.updateMatrixWorld(true);
     // --- 程序化疊加
     if (state === 'stunned') {

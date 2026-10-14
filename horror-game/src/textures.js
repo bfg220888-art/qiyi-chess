@@ -205,11 +205,21 @@ export class TextureFactory {
     for (let yy = y0; yy < y + h; yy += phh) for (let xx = x; xx < x + w; xx += pw) g.drawImage(img, xx, yy, pw, phh);
     g.restore();
   }
-  // 依版面把照片畫好後回傳像素；fill 是沒有照片處的底色
-  photoPixels(W, H, layers, fill) {
+  // 依版面把照片畫好後回傳像素；fill 是沒有照片處的底色。
+  // blur > 1 時先縮小再放大，只留下大塊的明暗（例如磁磚照片的髒污，去掉跟程序磁縫對不齊的照片磁縫）
+  photoPixels(W, H, layers, fill, blur = 1) {
     const c = mk(W, H), g = ctx2d(c);
     g.fillStyle = fill; g.fillRect(0, 0, W, H);
     for (const L of layers) this.tilePhoto(g, L.img, L.x || 0, L.y || 0, L.w ?? W, L.h ?? H, L.pw ?? W, L.phh ?? L.pw ?? H, L.fromBottom);
+    if (blur > 1) {
+      const sw = Math.max(1, Math.round(W / blur)), sh = Math.max(1, Math.round(H / blur));
+      const sm = mk(sw, sh), sg = ctx2d(sm);
+      sg.imageSmoothingQuality = 'high';
+      sg.drawImage(c, 0, 0, sw, sh);
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(sm, 0, 0, W, H);
+    }
     return g.getImageData(0, 0, W, H).data;
   }
   tex(canvas, { srgb = false, repeat = true, aniso = true, flipY = true } = {}) {
@@ -270,12 +280,12 @@ export class TextureFactory {
         const lay = (k) => [{ img: P[0][k], x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }, tileLay(P[1][k])];
         this.tilePhoto(g, P[0].c, 0, 0, S, yRail2, S / 2);
         photoArm = this.photoPixels(S, S, lay('arm'), 'rgb(255,200,0)');
-        photoN = this.photoPixels(S, S, lay('n'), 'rgb(128,128,255)');
-        tileC = this.photoPixels(S, S, [tileLay(P[1].c)], '#737373');
+        photoN = this.photoPixels(S, S, [{ img: P[0].n, x: 0, y: 0, w: S, h: yRail2, pw: S / 2 }], 'rgb(128,128,255)');
+        tileC = this.photoPixels(S, S, [tileLay(P[1].c)], '#737373', 24);
         photoMask = new Float32Array(S * S);
         for (let y = 0; y < S; y++) {
           if (y < yRail2) photoMask.fill(1, y * S, y * S + S);
-          else if (y >= yRail && y < ySkirt) photoMask.fill(0.45, y * S, y * S + S);
+          else if (y >= yRail && y < ySkirt) photoMask.fill(0.001, y * S, y * S + S);
         }
       }
       // 磁磚
@@ -368,9 +378,9 @@ export class TextureFactory {
               ro = clamp01(0.25 + photoArm[o + 1] / 255 * 0.75);
             } else {
               // 磁磚：照片的明暗當髒污，磁縫與亮面保留程序版
-              const gf = Math.min(1.2, Math.max(0.6, (tileC[o] + tileC[o + 1] + tileC[o + 2]) / 336)) * (0.75 + 0.25 * ao);
+              const gf = Math.min(1.2, Math.max(0.6, (tileC[o] + tileC[o + 1] + tileC[o + 2]) / 336));
               r *= gf; gg *= gf; b *= gf;
-              ro = clamp01(ro + (photoArm[o + 1] / 255 - 0.85) * 0.6);
+              ro = clamp01(ro + (1.05 - gf) * 0.5);
             }
           } else if (upper) {
             // 剝落油漆：只出現在某些區域，邊緣有一圈陰影
@@ -495,9 +505,8 @@ export class TextureFactory {
       const P = this.ph('tiles');
       let arm = null, photoN = null, pc = null;
       if (P) {
-        pc = this.photoPixels(S, S, [{ img: P.c, pw: S / 2 }], '#737373');
-        arm = this.photoPixels(S, S, [{ img: P.arm, pw: S / 2 }], '#fff');
-        photoN = this.photoPixels(S, S, [{ img: P.n, pw: S / 2 }], '#8080ff');
+        pc = this.photoPixels(S, S, [{ img: P.c, pw: S / 2 }], '#737373', 24);
+        arm = this.photoPixels(S, S, [{ img: P.arm, pw: S / 2 }], '#fff', 24);
       }
       for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
         const v = rng.range(-0.035, 0.03);
@@ -541,7 +550,7 @@ export class TextureFactory {
         cd.data[o + 2] = clamp01(cd.data[o + 2] / 255 * k * 0.96) * 255;
       }
       g.putImageData(cd, 0, 0);
-      this.set('floorTile', c, hgt, rough, S, S, S / 256 * 1.4, { photoN, photoNScale: 0.5 });
+      this.set('floorTile', c, hgt, rough, S, S, S / 256 * 1.4);
     });
   }
 

@@ -1,7 +1,7 @@
 // 音效引擎（Web Audio）：實錄音效（CC0 / CC BY，見 CREDITS.md）＋即時合成。
 // 音檔載入失敗或還沒載完時，每個聲音都會退回合成版本。
 // 含 HRTF 3D 定位、牆壁遮蔽（悶音）、卷積殘響。
-import { assetUrl } from './assets.js';
+import { assetBuffer } from './assets.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -99,13 +99,13 @@ export class AudioEngine {
     });
     this.samplesLoading = Promise.all(SFX_FILES.map(async (n) => {
       try {
-        const r = await fetch(assetUrl(base + n + '.mp3'));
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        this.buf[n] = await decode(await r.arrayBuffer());
+        let b = await decode(await assetBuffer(base + n + '.mp3'));
+        // 循環用的聲音先做成無縫循環再放進去，避免還沒處理就被拿去用
+        if (n === 'rain') b = this.makeLoop(b, 1.5);
+        else if (n === 'buzz') b = this.makeLoop(b, 0.5);
+        this.buf[n] = b;
       } catch (e) { /* 這個聲音就用合成的 */ }
     })).then(() => {
-      if (this.buf.rain) this.buf.rain = this.makeLoop(this.buf.rain, 1.5);
-      if (this.buf.buzz) this.buf.buzz = this.makeLoop(this.buf.buzz, 0.5);
       const groups = {};
       for (const n of Object.keys(this.buf)) {
         const k = n.replace(/\d+$/, '');
@@ -178,7 +178,9 @@ export class AudioEngine {
     if (this.rainNoise) {
       this.rainNoiseGain.gain.setTargetAtTime(0, t, 0.6);
       const n = this.rainNoise;
-      setTimeout(() => { try { n.stop(); n.disconnect(); } catch (e) { /* 已停止 */ } }, 4000);
+      // 用音訊時鐘停掉合成雨聲（暫停時不會先停掉，避免雨聲中斷）
+      n.onended = () => { try { n.disconnect(); } catch (e) { /* 已斷開 */ } };
+      n.stop(t + 4);
       this.rainNoise = null;
     }
   }
@@ -629,7 +631,8 @@ export class AudioEngine {
     this.burst(out, t + 1.0, { type: 'pink', f: 1200, q: 0.8, a: 0.05, d: 0.25, peak: 0.35 });
   }
   s_cameraEmpty(o, t) {
-    const out = this.out(null, 0.3, 0.1);
+    const out = this.out(null, 0.8, 0.1);
+    if (this.buf.click) { this.sample(out, this.buf.click, t, { rate: 1.3, gain: 0.4 }); return; }
     this.burst(out, t, { f: 2000, q: 2, a: 0.001, d: 0.02, peak: 0.25 });
   }
   voiceScream(dest, t, freqs, dur, peak, chop = 0) {
@@ -1169,7 +1172,10 @@ export class AudioEngine {
           const t = ph.next;
           if (this.buf.phone) {
             const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 4, 0.4);
-            this.sample(out, this.buf.phone, t, { gain: 0.5 });
+            const g = c.createGain();
+            g.connect(out);
+            this.phoneGain = g;
+            this.sample(g, this.buf.phone, t, { gain: 0.5 });
             ph.next = t + 4.6;
           } else {
             const out = this.out({ pos: ph.pos, hrtf: true, ref: 2 }, 2.5, 0.4);
@@ -1210,7 +1216,12 @@ export class AudioEngine {
   }
 
   startPhone(pos) { this.phone = { pos, next: 0 }; }
-  stopPhone() { this.phone = null; }
+  stopPhone() {
+    this.phone = null;
+    // 接起電話：正在響的那一聲也要馬上收掉
+    if (this.phoneGain && this.ctx) this.phoneGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+    this.phoneGain = null;
+  }
 
   stopAll() {
     this.hums.clear();
@@ -1221,7 +1232,7 @@ export class AudioEngine {
     this.setStatic(0);
     this.setTinnitus(0);
     this.alarmOn = false;
-    this.phone = null;
+    this.stopPhone();
     this.last = {};
     if (this.amb) this.amb.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
     for (const em of [...this.emitters]) em.dispose();

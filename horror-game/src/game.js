@@ -69,6 +69,7 @@ export class Game {
     this.scene.environmentIntensity = 0.035;
     // 外部素材（照片貼圖、寫實女鬼）同時下載；失敗都有程序生成的備援
     const ghostP = this.app.ghostAssets();
+    progress(0.18, '正在下載照片材質……');
     const photos = await this.app.photoAssets();
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
     this.tf.wall(); progress(0.25, '正在鋪地磚……'); await nextFrame();
@@ -90,6 +91,7 @@ export class Game {
     this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
     this.player = new Player(this);
     // 寫實女鬼模型（下載失敗就用程序化的備援）
+    progress(0.72, '她正在醒來……（下載她的模型）');
     this.ghostAssets = await ghostP;
     this.ghost = new Ghost(this, this.makeGhostModel());
     this.director = new Director(this);

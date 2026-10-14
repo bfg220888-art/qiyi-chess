@@ -28,7 +28,7 @@
 
 | 檔案 | 原始錄音 | 授權 |
 |---|---|---|
-| `door_creak`、`door_slam`、`locker`、`scream0`、`scream1`、`pills`、`squeak`、`bang`、`metal_reverb`、`phone` | Sound effects from the Berklee College of Music sample library, OLPC Sound Library（<http://wiki.laptop.org/go/Sound_samples>），經由 [Tonejs/audio](https://github.com/Tonejs/audio) | **CC BY 3.0**（已修改：裁切、調整音量、淡出） |
+| `door_creak`、`door_slam`、`locker`、`scream0`、`scream1`、`pills`、`squeak`、`bang`、`metal_reverb`、`phone` | Sound effects from the Berklee College of Music sample library, OLPC Sound Library（<http://wiki.laptop.org/go/Sound_samples>），經由 [Tonejs/audio](https://github.com/Tonejs/audio) | **[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)**（已修改：裁切、調整音量、淡出） |
 | `step0`–`step7` | Nox_Sound — [Freesound #558472](https://freesound.org/s/558472/)，經由 AnthonE/Gates | CC0 |
 | `door_open*`、`door_close*`、`creak*`、`latch`、`click` | [Kenney](https://kenney.nl) — RPG Audio | CC0 |
 | `metal0`–`metal4`、`glass_hit*` | Kenney — Impact Sounds | CC0 |

@@ -130,7 +130,7 @@ const faceThing = (page, kind, idx = 0) => page.evaluate(([kind, idx]) => {
 }, [kind, idx]);
 
 // ---------------------------------------------------------------------------
-await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'high' }, async (page) => {
+await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'high', qualityChosen: true, cfgVer: 2 }, async (page) => {
   await startGame(page, { menuShot: 'menu-desktop' });
   const r0 = await render(page);
   log('render', JSON.stringify(r0));
