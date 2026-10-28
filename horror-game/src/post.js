@@ -1,4 +1,4 @@
-// 後製：泛光 + 恐怖濾鏡（色調映射、底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、調色）
+// 後製：泛光 + 恐怖濾鏡（抗鋸齒、色調映射、底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、調色）
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -31,6 +31,38 @@ const HorrorShader = {
     uniform vec2 uRes;
     varying vec2 vUv;
     float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    // 柔和的顆粒：在比像素稍大的格子上做平滑插值，不會變成一粒一粒刺眼的白點
+    float grainNoise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float a = hash(i), b = hash(i + vec2(1.0, 0.0)), c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    #ifdef FXAA
+      // 快速抗鋸齒（FXAA，簡化版）：直接在這一道 pass 裡做，不多一次全螢幕繪製。
+      // 輸入還是線性 HDR，所以先把亮度壓到 0..1 再比較對比
+      float aaLuma(vec3 c) { float l = dot(c, vec3(0.299, 0.587, 0.114)); return sqrt(l / (1.0 + l)); }
+      vec3 fxaa(vec2 uv, vec3 rgbM) {
+        vec2 px = 1.0 / uRes;
+        vec3 rgbNW = texture2D(tDiffuse, uv + vec2(-1.0, -1.0) * px).rgb;
+        vec3 rgbNE = texture2D(tDiffuse, uv + vec2(1.0, -1.0) * px).rgb;
+        vec3 rgbSW = texture2D(tDiffuse, uv + vec2(-1.0, 1.0) * px).rgb;
+        vec3 rgbSE = texture2D(tDiffuse, uv + vec2(1.0, 1.0) * px).rgb;
+        float lNW = aaLuma(rgbNW), lNE = aaLuma(rgbNE), lSW = aaLuma(rgbSW), lSE = aaLuma(rgbSE), lM = aaLuma(rgbM);
+        float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+        float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+        // 對比太低（平坦區域）就不處理，省下後面的取樣
+        if (lMax - lMin < max(0.04, lMax * 0.14)) return rgbM;
+        vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+        float reduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+        float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+        dir = clamp(dir * rcp, vec2(-6.0), vec2(6.0)) * px;
+        vec3 rgbA = 0.5 * (texture2D(tDiffuse, uv - dir * 0.1667).rgb + texture2D(tDiffuse, uv + dir * 0.1667).rgb);
+        vec3 rgbB = rgbA * 0.5 + 0.25 * (texture2D(tDiffuse, uv - dir * 0.5).rgb + texture2D(tDiffuse, uv + dir * 0.5).rgb);
+        float lB = aaLuma(rgbB);
+        return (lB < lMin || lB > lMax) ? rgbA : rgbB;
+      }
+    #endif
     void main() {
       vec2 uv = vUv;
       // 理智扭曲：緩慢的波動
@@ -40,11 +72,19 @@ const HorrorShader = {
       uv.x += band * (hash(vec2(uTime, uv.y)) - 0.5) * 0.06 * uStatic;
       vec2 dir = uv - 0.5;
       float d = length(dir);
-      float ab = uAberr * (0.0015 + d * d * 0.02);
-      vec3 col;
-      col.r = texture2D(tDiffuse, uv + dir * ab).r;
-      col.g = texture2D(tDiffuse, uv).g;
-      col.b = texture2D(tDiffuse, uv - dir * ab).b;
+      vec3 base = texture2D(tDiffuse, uv).rgb;
+      #ifdef FXAA
+        vec3 col = fxaa(uv, base);
+      #else
+        vec3 col = base;
+      #endif
+      // 色差：只在畫面邊緣、而且偏移超過約半個像素時才多取樣（平常幾乎看不出來，理智崩潰時才明顯）
+      float ab = uAberr * d * d * 0.014;
+      if (ab * uRes.x > 0.5) {
+        col.r += texture2D(tDiffuse, uv + dir * ab).r - base.r;
+        col.b += texture2D(tDiffuse, uv - dir * ab).b - base.b;
+        col = max(col, vec3(0.0));
+      }
       // 色調映射與 sRGB 轉換直接在這裡做（省掉一道 OutputPass 全螢幕繪製）
       #ifdef TONE_MAPPING
         col = toneMapping(col);
@@ -62,9 +102,10 @@ const HorrorShader = {
       // 暗角（心跳時收縮）
       float vig = smoothstep(0.85 - uPulse * 0.12, 0.25, d);
       col *= mix(1.0, vig, uVignette);
-      // 底片顆粒（暗部比較明顯）
-      float g = hash(uv * uRes + fract(uTime * 7.13) * 100.0) - 0.5;
-      col += g * uGrain * (1.2 - lum);
+      // 底片顆粒（暗部比較明顯）：顆粒大小跟著解析度走（720p 約 1.4 像素），一秒換 24 次，不會滿畫面閃爍
+      vec2 gp = uv * uRes / max(1.0, uRes.y / 720.0 * 1.4) + floor(mod(uTime * 24.0, 97.0)) * vec2(17.3, 41.9);
+      float g = grainNoise(gp) - 0.5;
+      col += g * uGrain * 0.9 * (1.1 - lum);
       // 雜訊雪花
       col = mix(col, vec3(hash(uv * uRes * 0.5 + uTime)), uStatic * 0.22);
       // 掃描線
@@ -82,7 +123,8 @@ export class Post {
     const size = renderer.getSize(new THREE.Vector2());
     const rt = new THREE.WebGLRenderTarget(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio(), {
       type: THREE.HalfFloatType,
-      samples: quality.msaa,
+      // 高畫質用 4 倍多重取樣；關掉「抗鋸齒」時連多重取樣也不做（下一局生效）
+      samples: quality.aa === false ? 0 : quality.msaa,
     });
     this.composer = new EffectComposer(renderer, rt);
     this.renderPass = new RenderPass(scene, camera);
@@ -94,6 +136,15 @@ export class Post {
     this.horror = new ShaderPass(HorrorShader);
     this.composer.addPass(this.horror);
     this.u = this.horror.uniforms;
+    this.setAA(quality.aa !== false);
+  }
+  // 低 / 中畫質沒有多重取樣：用最後一道 pass 裡的 FXAA 把鋸齒邊緣柔化
+  setAA(on) {
+    const want = on && !(this.q.msaa > 0 && this.q.aa !== false);
+    const m = this.horror.material;
+    if (('FXAA' in m.defines) === want) return;
+    if (want) m.defines.FXAA = ''; else delete m.defines.FXAA;
+    m.needsUpdate = true;
   }
   setCamera(cam) { this.renderPass.camera = cam; }
   setSize(w, h, pr) {

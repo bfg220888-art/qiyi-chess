@@ -12,9 +12,10 @@ export const PLAYER_R = 0.3;
 export const GHOST_R = 0.25;
 export const NAV_RES = 0.5;     // 鬼魂尋路網格解析度
 
+// 中畫質最高 1.25 倍像素（高 DPI 筆電不會一次畫兩倍多的像素而發燙），鋸齒交給 FXAA 柔化
 export const QUALITY = {
-  low:    { label: '低', maxDpr: 1,   scale: 0.8, tex: 512,  propTex: 256, shadow: 512,  bloom: false, msaa: 0, lights: 3, dust: false, aniso: 2 },
-  medium: { label: '中', maxDpr: 1.5, scale: 1,   tex: 1024, propTex: 512, shadow: 1024, bloom: true,  msaa: 0, lights: 4, dust: true,  aniso: 4 },
+  low:    { label: '低', maxDpr: 1,   scale: 0.8, tex: 512,  propTex: 256, shadow: 512,  bloom: false, msaa: 0, lights: 3, dust: false, aniso: 4 },
+  medium: { label: '中', maxDpr: 1.25, scale: 1,   tex: 1024, propTex: 512, shadow: 1024, bloom: true,  msaa: 0, lights: 4, dust: true,  aniso: 8 },
   high:   { label: '高', maxDpr: 2,   scale: 1,   tex: 1024, propTex: 1024, shadow: 2048, bloom: true, msaa: 4, lights: 6, dust: true,  aniso: 8 },
 };
 

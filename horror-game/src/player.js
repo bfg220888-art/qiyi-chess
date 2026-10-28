@@ -58,6 +58,7 @@ export class Player {
     L.shadow.camera.far = 26;
     L.shadow.bias = -0.0004;
     L.shadow.normalBias = 0.035;
+    L.shadow.focus = 1.08; // 投射貼圖稍大於光錐，光圈邊緣不會出現方形的切邊
     L.map = game.tf.flashlightCookie().map;
     this.flash = L;
     this.aim = new THREE.Vector3(0, 0, -1);
@@ -243,7 +244,8 @@ export class Player {
     // 家具（病床、桌子……）也算：照近處的白床單時才不會整團過曝
     near = Math.min(near, this.rayFurniture(c.position, this.aim, near));
     // 光照 ∝ I / d²：讓 I ∝ d² 就能在近距離保持差不多的亮度
-    const expo = Math.min(1, Math.max(0.07, (near / 2.6) ** 2));
+    // 很近的表面（尤其正對著的白牆）再暗一點，中心才不會整團過曝
+    const expo = Math.min(1, Math.max(0.045, (near / 2.6) ** 2 * (0.6 + 0.4 * Math.min(1, near / 2.6))));
     this.expo = (this.expo ?? 1) + (expo - (this.expo ?? 1)) * Math.min(1, dt * 6);
     const strength = on ? (0.35 + Math.min(1, bat * 4) * 0.65) * this.flicker : 0;
     L.intensity = strength * 120 * this.expo;

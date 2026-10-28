@@ -481,11 +481,12 @@ export class TextureFactory {
           const l = (cd.data[o] + cd.data[o + 1] + cd.data[o + 2]) / 3;
           cd.data[o] = cd.data[o] * 0.75 + l * 0.25; cd.data[o + 1] = cd.data[o + 1] * 0.75 + l * 0.25; cd.data[o + 2] = cd.data[o + 2] * 0.75 + l * 0.25;
         }
-        const w = smooth(0.66, 0.72, wet[i]);
-        k *= 1 - w * 0.35;
-        ro = ro * (1 - w) + 0.04 * w;
+        // 積水：顏色變深、邊緣漸變，粗糙度不要低到像鏡子——環境反射在斜角會把它照成一塊塊刺眼的白斑，遠處還會閃爍
+        const w = smooth(0.62, 0.76, wet[i]);
+        k *= 1 - w * 0.42;
+        ro = ro * (1 - w) + 0.34 * w;
         if (onSeam) { ro = 0.9; hgt[i] = 0.25; }
-        else hgt[i] = 0.6 + (fine[i] - 0.5) * 0.05;
+        else hgt[i] = 0.6 + (fine[i] - 0.5) * 0.05 * (1 - w);
         cd.data[o] = clamp01(cd.data[o] / 255 * k) * 255;
         cd.data[o + 1] = clamp01(cd.data[o + 1] / 255 * k) * 255;
         cd.data[o + 2] = clamp01(cd.data[o + 2] / 255 * k * 0.97) * 255;
@@ -542,12 +543,12 @@ export class TextureFactory {
         const isGrout = hgt[i] < 0.5;
         const dn = dirt[i];
         let k = 0.66 + dn * 0.45;
-        const w = smooth(0.68, 0.74, wet[i]);
-        k *= 1 - w * 0.25;
-        rough[i] = isGrout ? 0.92 : (0.16 + (1 - dn) * 0.35) * (1 - w) + 0.04 * w;
+        const w = smooth(0.64, 0.78, wet[i]);
+        k *= 1 - w * 0.35;
+        rough[i] = isGrout ? 0.92 : (0.22 + (1 - dn) * 0.32) * (1 - w) + 0.32 * w;
         if (P) {
           k *= Math.min(1.2, Math.max(0.6, (pc[o] + pc[o + 1] + pc[o + 2]) / 336)) * (0.75 + 0.25 * arm[o] / 255);
-          if (!isGrout) rough[i] = clamp01(rough[i] + (arm[o + 1] / 255 - 0.85) * 0.5);
+          if (!isGrout) rough[i] = Math.max(0.18, clamp01(rough[i] + (arm[o + 1] / 255 - 0.85) * 0.5));
         }
         cd.data[o] = clamp01(cd.data[o] / 255 * k) * 255;
         cd.data[o + 1] = clamp01(cd.data[o + 1] / 255 * k) * 255;
@@ -1138,10 +1139,12 @@ export class TextureFactory {
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
         const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
         const r = Math.hypot(dx, dy);
-        let v = 0.18 + 0.82 * (1 - smooth(0.0, 0.5, r));
-        v += 0.22 * Math.exp(-((r - 0.42) ** 2) / 0.003);
-        v -= 0.1 * Math.exp(-((r - 0.6) ** 2) / 0.004);
-        v *= 1 - smooth(0.82, 1.0, r);
+        // 中心亮斑放寬、壓低（近距離照白牆不會整團過曝），外圈的亮環也柔一點；
+        // 邊緣在貼圖範圍內就完全淡出，投射範圍的方形邊界才不會露出來
+        let v = 0.2 + 0.62 * (1 - smooth(0.0, 0.62, r));
+        v += 0.12 * Math.exp(-((r - 0.44) ** 2) / 0.006);
+        v -= 0.06 * Math.exp(-((r - 0.62) ** 2) / 0.006);
+        v *= 1 - smooth(0.7, 0.93, r);
         v *= 0.88 + smudge[y * S + x] * 0.12;
         const o = (y * S + x) * 4;
         id.data[o] = clamp01(v) * 255; id.data[o + 1] = clamp01(v * 0.97) * 255; id.data[o + 2] = clamp01(v * 0.9) * 255; id.data[o + 3] = 255;
@@ -1225,7 +1228,10 @@ export class TextureFactory {
       g.lineCap = 'round';
       for (let k = 0; k < 520; k++) {
         const x = rng.range(-4, W + 4);
-        const len = H * rng.range(0.55, 1.0);
+        // 靠近兩側邊緣的髮絲比較短、比較稀：髮簾的側邊才不會是一條筆直的切邊（遠處看起來像一塊黑板）
+        const edge = Math.min(1, Math.min(x, W - x) / (W * 0.16));
+        if (edge < 1 && rng.chance(0.35 * (1 - edge))) continue;
+        const len = H * rng.range(0.55, 1.0) * (0.45 + 0.55 * Math.max(0, edge));
         const shade = rng.range(0.0, 0.07);
         g.strokeStyle = css(shade, shade * 0.95, shade * 1.1, rng.range(0.75, 1));
         g.lineWidth = rng.range(1.0, 3.2);
@@ -1236,7 +1242,10 @@ export class TextureFactory {
         g.stroke();
       }
       // 頂端完整覆蓋
-      g.fillStyle = '#040404'; g.fillRect(0, 0, W, H * 0.08);
+      g.fillStyle = '#040404'; g.fillRect(W * 0.1, 0, W * 0.8, H * 0.08);
+      // 兩側的頂端收成斜角，不要露出方形的角
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(W * 0.1, 0); g.lineTo(W * 0.1, H * 0.08); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(W, 0); g.lineTo(W * 0.9, 0); g.lineTo(W * 0.9, H * 0.08); g.closePath(); g.fill();
       this.cache.set('ghostHair', { map: this.tex(c, { srgb: true, repeat: true }) });
     });
   }
