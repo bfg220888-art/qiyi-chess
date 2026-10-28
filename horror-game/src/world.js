@@ -495,7 +495,7 @@ export class World {
         case 'counter': g = P.counter(); break;
         case 'bench': g = P.bench(); break;
         case 'morgue': g = P.morgue(); break;
-        case 'optable': g = P.optable(); break;
+        case 'optable': g = P.optable(f); break;
         case 'trolley': g = P.trolley(); break;
         case 'boxes': g = P.boxes(); break;
         case 'bin': g = P.bin(); break;
@@ -516,7 +516,8 @@ export class World {
         case 'ectchair': g = P.ectchair(); break;
         case 'ectmachine': g = P.ectmachine(); break;
         case 'table': g = P.table(); break;
-        default: continue;
+        // 其他主題道具（手術部、燒毀的舊院區……）：PropBuilder 裡同名的建構函式
+        default: if (typeof P[f.kind] !== 'function') continue; g = P[f.kind](f);
       }
       g.position.set(f.x, 0, f.z);
       g.rotation.y = f.rot;
@@ -707,7 +708,7 @@ export class World {
   // ---------------------------------------------------------------------
   buildDecals() {
     const lv = this.lv, M = this.M, P = this.props;
-    const sets = { blood: [], drag: [], paper: [], writing: [], hand: [], signs: [], leak: [], smear: [], drawing: [], drain: [] };
+    const sets = { blood: [], drag: [], paper: [], writing: [], hand: [], signs: [], leak: [], smear: [], drawing: [], drain: [], soot: [] };
     const toys = new THREE.Group();
     const leakTex = this.tf.photoDecal('leak'), smearTex = this.tf.photoDecal('smear');
     const plane = (w, h, u0, v0, u1, v1) => {
@@ -767,6 +768,19 @@ export class World {
         t.position.set(d.x, 0, d.z);
         t.rotation.y = d.rot;
         toys.add(t);
+      } else if (d.kind === 'soot') {
+        // 煙燻圖集 2 × 2：0、1 = 牆上的黑煙，2 = 門楣上方，3 = 地上的焦痕
+        const v = d.variant % 3, u0 = (v % 2) * 0.5, v0 = 0.5 - Math.floor(v / 2) * 0.5;
+        sets.soot.push(wallDecal(plane(d.w, d.h, d.flip ? u0 + 0.5 : u0, v0, d.flip ? u0 : u0 + 0.5, v0 + 0.5), d));
+      } else if (d.kind === 'scorch') {
+        sets.soot.push(floorDecal(plane(d.size, d.size, 0.5, 0, 1, 0.5), d));
+      } else if (d.kind === 'prop') {
+        // 不擋路的主題裝飾（無影燈、塑膠條門簾、天花板破洞、窗上的木板……）
+        if (typeof P[d.prop] !== 'function') continue;
+        const g = P[d.prop](d);
+        g.position.set(d.x, 0, d.z);
+        g.rotation.y = d.rot || 0;
+        this.bakeGroup(g, { noCast: true });
       } else if (d.kind === 'surgicalLamp') {
         const g = P.surgicalLamp();
         g.position.set(d.x, 0, d.z);
@@ -816,6 +830,10 @@ export class World {
     if (sets.drawing.length) {
       M.drawing = new THREE.MeshStandardMaterial({ map: this.tf.drawingAtlas().map, roughness: 0.85, metalness: 0, side: THREE.DoubleSide, ...M.decalBase });
       add(sets.drawing, M.drawing);
+    }
+    if (sets.soot.length) {
+      M.soot = new THREE.MeshStandardMaterial({ map: this.tf.sootAtlas().map, roughness: 1, metalness: 0, ...M.decalBase, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      add(sets.soot, M.soot);
     }
     if (sets.drain.length) {
       M.drain = new THREE.MeshStandardMaterial({ map: this.tf.drainTex().map, roughness: 0.5, metalness: 0.4, ...M.decalBase });

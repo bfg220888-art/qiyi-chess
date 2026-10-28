@@ -52,6 +52,14 @@ export const FURN = {
   ectchair:   { w: 0.74, d: 0.92, h: 1.38 },
   ectmachine: { w: 0.64, d: 0.5,  h: 1.15 },
   table:      { w: 1.3, d: 0.86,  h: 0.75, surf: { y: 0.76, hx: 0.5, hz: 0.25 } },
+  // 手術部
+  anesthesia: { w: 0.72, d: 0.62, h: 1.55, surf: { y: 0.93, hx: 0.22, hz: 0.1, oz: 0.1 } }, // 麻醉機
+  monitor:    { w: 0.5,  d: 0.5,  h: 1.65 },             // 推車上的生理監視器
+  scrubsink:  { w: 2.1,  d: 0.66, h: 1.15 },             // 刷手槽（一長排、膝控水龍頭）
+  autoclave:  { w: 1.1,  d: 0.85, h: 1.7, tall: true },  // 高壓蒸氣滅菌鍋
+  // 燒毀的舊院區
+  rubble:     { w: 1.5,  d: 1.3,  h: 0.8 },              // 塌下來的天花板、水泥塊與燒焦的木樑
+  beam:       { w: 2.3,  d: 0.55, h: 1.5 },              // 斜靠在牆上的斷樑
 };
 
 export const ROOM_NAMES = {
@@ -59,6 +67,7 @@ export const ROOM_NAMES = {
   morgue: '太平間', nurse: '護理站', generator: '發電機房', lobby: '大廳', corridor: '走廊',
   autopsy: '解剖室', coldstore: '屍袋冷藏室', kidward: '兒童病房', nursery: '嬰兒室', playroom: '遊戲室',
   cell: '隔離室', therapy: '電療室', dayroom: '交誼廳',
+  icu: '加護病房', recovery: '恢復室', scrub: '刷手間', sterile: '無菌器械室', collapsed: '坍塌病房',
 };
 
 export class Level {
@@ -230,6 +239,150 @@ function segmentLengths(rng, L, pref = { p3: 0.3, p1: 0.12 }) {
   return rng.shuffle(out);
 }
 
+// ---------------------------------------------------------------------------
+// 走廊拓樸：在 nC × nR 條走廊格線上決定哪幾段走廊存在。
+// hs[j][i] = 第 j 列橫走廊在第 i、i+1 條直走廊之間那一段；vs[i][j] = 第 i 條直走廊在第 j、j+1 列之間那一段。
+// lobbyK = 大廳接的那一條直走廊（-1 = 只有兩欄，大廳在最下面一排走廊的中間）
+function corridorPlan(rng, LY, nC, nR, lobbyK) {
+  let topo = rng.weighted(LY.topo || [['grid', 1]]);
+  if ((topo === 'ring' || topo === 'atrium') && nC < 3 && nR < 3) topo = 'grid';
+  if (topo === 'H' && (nC < 3 || nR < 3)) topo = 'spine';
+  const hs = Array.from({ length: nR }, () => new Array(nC - 1).fill(true));
+  const vs = Array.from({ length: nC }, () => new Array(nR - 1).fill(true));
+  const bottomK = lobbyK >= 0 ? lobbyK : 0;
+  if (topo === 'ring' || topo === 'atrium') {
+    // 只留最外圈；環狀走廊有時候往中央街區伸出一小段死路
+    for (let j = 1; j < nR - 1; j++) hs[j].fill(false);
+    for (let i = 1; i < nC - 1; i++) vs[i].fill(false);
+    if (topo === 'ring' && rng.chance(0.6)) {
+      if (nC >= 3 && (nR < 3 || rng.chance(0.5))) vs[rng.int(1, nC - 2)][rng.chance(0.5) ? 0 : nR - 2] = true;
+      else if (nR >= 3) hs[rng.int(1, nR - 2)][rng.chance(0.5) ? 0 : nC - 2] = true;
+    }
+  } else if (topo === 'H') {
+    // 左右兩條直走廊＋中間一條橫走廊，再從橫走廊往下接到大廳；有時候也往上長出一段死路
+    const jm = rng.int(1, nR - 2);
+    for (let j = 0; j < nR; j++) hs[j].fill(j === jm);
+    for (let i = 1; i < nC - 1; i++) vs[i].fill(false);
+    for (let j = jm; j < nR - 1; j++) vs[lobbyK][j] = true;
+    if (rng.chance(0.5)) {
+      const i = rng.int(1, nC - 2), top = rng.int(0, jm - 1);
+      for (let j = top; j < jm; j++) vs[i][j] = true;
+    }
+  } else if (topo === 'spine') {
+    // 一條橫向主走廊（常常靠在一側），兩旁長出長短不一的側翼，很多死路
+    const js = lobbyK < 0 ? nR - 1 : rng.int(0, nR - 1);
+    for (let j = 0; j < nR; j++) hs[j].fill(j === js);
+    for (let i = 0; i < nC; i++) {
+      vs[i].fill(false);
+      const side = i === 0 || i === nC - 1;
+      // 往上
+      if (js > 0 && rng.chance(side ? 0.75 : 0.6)) {
+        const end = rng.chance(0.6) ? 0 : rng.int(0, js - 1);
+        for (let j = end; j < js; j++) vs[i][j] = true;
+      }
+      // 往下（大廳那一條一定要通到最下面）
+      if (js < nR - 1 && (i === lobbyK || rng.chance(side ? 0.75 : 0.6))) {
+        const end = i === lobbyK || rng.chance(0.6) ? nR - 1 : rng.int(js + 1, nR - 1);
+        for (let j = js; j < end; j++) vs[i][j] = true;
+      }
+    }
+  } else if (topo === 'broken') {
+    // 完整棋盤格拆掉三到四成的走廊段：街區合併成大小不一的形狀，路口變成死路
+    const segs = [];
+    for (let j = 0; j < nR; j++) for (let i = 0; i < nC - 1; i++) segs.push(['h', j, i]);
+    for (let i = 0; i < nC; i++) for (let j = 0; j < nR - 1; j++) segs.push(['v', i, j]);
+    const want = Math.round(segs.length * rng.range(0.25, 0.42));
+    const get = ([o, a, b]) => (o === 'h' ? hs[a][b] : vs[a][b]);
+    const put = ([o, a, b], v) => { if (o === 'h') hs[a][b] = v; else vs[a][b] = v; };
+    const connected = () => {
+      // 路口圖：每個有走廊接到的路口都要從大廳那個路口走得到
+      const id = (i, j) => j * nC + i, seen = new Uint8Array(nC * nR), deg = new Uint8Array(nC * nR);
+      const nb = (i, j) => {
+        const out = [];
+        if (i > 0 && hs[j][i - 1]) out.push([i - 1, j]);
+        if (i < nC - 1 && hs[j][i]) out.push([i + 1, j]);
+        if (j > 0 && vs[i][j - 1]) out.push([i, j - 1]);
+        if (j < nR - 1 && vs[i][j]) out.push([i, j + 1]);
+        return out;
+      };
+      for (let j = 0; j < nR; j++) for (let i = 0; i < nC; i++) deg[id(i, j)] = nb(i, j).length;
+      const q = [[bottomK, nR - 1]];
+      seen[id(bottomK, nR - 1)] = 1;
+      for (let k = 0; k < q.length; k++) for (const [i, j] of nb(...q[k])) if (!seen[id(i, j)]) { seen[id(i, j)] = 1; q.push([i, j]); }
+      for (let k = 0; k < nC * nR; k++) if (deg[k] && !seen[k]) return false;
+      return deg[id(bottomK, nR - 1)] > 0;
+    };
+    let removed = 0;
+    for (const s of rng.shuffle(segs)) {
+      if (removed >= want) break;
+      // 大廳上方那一段不拆
+      if (lobbyK >= 0 && s[0] === 'v' && s[1] === lobbyK && s[2] === nR - 2) continue;
+      if (lobbyK < 0 && s[0] === 'h' && s[1] === nR - 1) continue;
+      put(s, false);
+      if (connected()) removed++;
+      else put(s, true);
+    }
+  }
+  return { topo, hs, vs };
+}
+
+// 把非棋盤格樓層剩下的空地切成房間：先把空地拆成矩形，再遞迴二分。
+// 盡量讓切出來的兩半都貼著走廊；切不到走廊的房間就變成「內室」，之後從隔壁房間開門進去。
+function fillRooms(lv, rng, LY, eligible, addRoom) {
+  const { W, H } = lv;
+  const taken = new Uint8Array(W * H);
+  const ok = (x, y) => lv.inBounds(x, y) && !taken[y * W + x] && eligible(x, y);
+  const isCorr = (x, y) => lv.cellAt(x, y) === CORRIDOR;
+  const maxSide = LY.roomMax || 4;
+  const contact = (x0, y0, x1, y1) => {
+    let n = 0;
+    for (let x = x0; x <= x1; x++) { if (isCorr(x, y0 - 1)) n++; if (isCorr(x, y1 + 1)) n++; }
+    for (let y = y0; y <= y1; y++) { if (isCorr(x0 - 1, y)) n++; if (isCorr(x1 + 1, y)) n++; }
+    return n;
+  };
+  const split = (x0, y0, x1, y1) => {
+    const w = x1 - x0 + 1, h = y1 - y0 + 1, area = w * h;
+    const here = contact(x0, y0, x1, y1);
+    // 整塊一間大廳室
+    if (here > 0 && area >= 6 && area <= LY.hallMax && w <= 6 && h <= 6 && rng.chance(LY.hall * 0.7)) { addRoom(x0, y0, x1, y1); return; }
+    let best = null;
+    const consider = (A, B, along) => {
+      const ca = contact(...A) > 0, cb = contact(...B) > 0;
+      const tA = Math.min(A[2] - A[0], A[3] - A[1]) + 1, tB = Math.min(B[2] - B[0], B[3] - B[1]) + 1;
+      const aA = (A[2] - A[0] + 1) * (A[3] - A[1] + 1), aB = (B[2] - B[0] + 1) * (B[3] - B[1] + 1);
+      let s = (ca ? 2 : 0) + (cb ? 2 : 0) + rng.next() * 1.4;
+      if (tA === 1 || tB === 1) s -= rng.chance(LY.seg.p1 * 2) ? 0 : 1.3;
+      s -= Math.abs(Math.log(aA / aB)) * 0.25;
+      if (along === (w >= h ? 'v' : 'h')) s += 0.6; // 切長邊
+      if (!best || s > best.s) best = { s, A, B, both: ca && cb };
+    };
+    for (let k = 1; k < w; k++) consider([x0, y0, x0 + k - 1, y1], [x0 + k, y0, x1, y1], 'v');
+    for (let k = 1; k < h; k++) consider([x0, y0, x1, y0 + k - 1], [x0, y0 + k, x1, y1], 'h');
+    if (!best) { addRoom(x0, y0, x1, y1); return; }
+    if (w <= maxSide && h <= maxSide && area <= 12) {
+      // 已經夠小：通常就停在這裡（大小不一）；再切會切出走不到走廊的內室時更傾向不切
+      const stop = area <= 2 ? 0.95 : area <= 4 ? 0.7 : area <= 6 ? 0.5 : 0.3;
+      if (rng.chance(!best.both && here > 0 ? Math.max(stop, 0.85) : stop)) { addRoom(x0, y0, x1, y1); return; }
+    }
+    split(...best.A);
+    split(...best.B);
+  };
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (!ok(x, y)) continue;
+    let x1 = x;
+    while (ok(x1 + 1, y)) x1++;
+    let y1 = y;
+    for (;;) {
+      let full = true;
+      for (let xx = x; xx <= x1; xx++) if (!ok(xx, y1 + 1)) { full = false; break; }
+      if (!full) break;
+      y1++;
+    }
+    for (let yy = y; yy <= y1; yy++) for (let xx = x; xx <= x1; xx++) taken[yy * W + xx] = 1;
+    split(x, y, x1, y1);
+  }
+}
+
 function buildLevel(seed, diff, themeKey = 'ward') {
   const T = THEMES[themeKey], LY = T.layout;
   const rng = new RNG(seed);
@@ -257,13 +410,36 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   lv.rowOf = rowOf;
   const idx = (x, y) => y * W + x;
 
-  // --- 外形：L 形缺角或 U 形中庭（整塊挖空，牆外就是夜空）
+  // --- 大廳接在哪一條直走廊（先決定：每一種走廊拓樸都要保證那裡通到最下面一排）
+  const lobbyK = nC >= 3 ? (nC === 3 ? 1 : rng.int(1, nC - 2)) : -1;
+  const lobbyX = lobbyK >= 0 ? c[lobbyK] + (colW[lobbyK] === 2 ? rng.int(0, 1) : 0) : Math.round((c[0] + cEnd) / 2);
+
+  // --- 走廊拓樸：棋盤格 / 拆掉一部分的棋盤格 / 環狀 / 天井 / H 形 / 魚骨形（見 themes.js）
+  const plan = corridorPlan(rng, LY, nC, nR, lobbyK);
+  const { hs, vs } = plan;
+  lv.topo = plan.topo;
+
+  // --- 外形：L 形缺角或 U 形中庭（整塊挖空，牆外就是夜空）；天井 = 建築正中間挖空
   const hole = new Uint8Array(W * H);
   const dig = (x0, y0, x1, y1) => {
     for (let y = Math.max(0, y0); y <= Math.min(H - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(W - 1, x1); x++) hole[idx(x, y)] = 1;
   };
-  lv.shape = 'rect';
-  if (nC >= 3) {
+  lv.shape = plan.topo === 'grid' ? 'rect' : plan.topo;
+  if (plan.topo === 'atrium') {
+    // 中央大街區四周留一圈房間（每一邊 0～3 格；0 格 = 走廊直接面對天井的窗）
+    const ix0 = c[0] + colW[0], ix1 = c[nC - 1] - 1, iy0 = r[0] + rowW[0], iy1 = r[nR - 1] - 1;
+    const band = () => rng.weighted([[0, 0.2], [2, 0.55], [3, 0.25]]);
+    let bl = band(), br = band(), bt = band(), bb = band();
+    while (ix1 - br - (ix0 + bl) + 1 < 2 && (bl || br)) { if (bl >= br) bl = Math.max(0, bl - 1); else br = Math.max(0, br - 1); }
+    while (iy1 - bb - (iy0 + bt) + 1 < 2 && (bt || bb)) { if (bt >= bb) bt = Math.max(0, bt - 1); else bb = Math.max(0, bb - 1); }
+    // 天井旁邊只剩一格寬的房間帶太窄，乾脆不要
+    if (bl === 1) bl = 0; if (br === 1) br = 0; if (bt === 1) bt = 0; if (bb === 1) bb = 0;
+    if (ix1 - br - (ix0 + bl) + 1 >= 2 && iy1 - bb - (iy0 + bt) + 1 >= 2) {
+      dig(ix0 + bl, iy0 + bt, ix1 - br, iy1 - bb);
+      lv.atrium = { x0: ix0 + bl, y0: iy0 + bt, x1: ix1 - br, y1: iy1 - bb };
+    } else lv.shape = 'ring';
+  }
+  if (nC >= 3 && plan.topo === 'grid') {
     const u = rng.next();
     if (u < LY.notch) {
       lv.shape = 'notch';
@@ -283,10 +459,16 @@ function buildLevel(seed, diff, themeKey = 'ward') {
 
   // --- 走廊
   lv.rooms.push({ id: 0, type: 'corridor', x0: 0, y0: 0, x1: W - 1, y1: H - 1, doors: [], area: 0 });
-  for (let y = r[0]; y <= rEnd; y++) for (let x = c[0]; x <= cEnd; x++) {
-    if ((rowOf[y] >= 0 || colOf[x] >= 0) && !hole[idx(x, y)]) lv.cells[idx(x, y)] = CORRIDOR;
-  }
+  const paint = (x0, y0, x1, y1) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (!hole[idx(x, y)]) lv.cells[idx(x, y)] = CORRIDOR;
+  };
+  // 每一段走廊連同兩端的路口一起畫
+  for (let j = 0; j < nR; j++) for (let i = 0; i < nC - 1; i++) if (hs[j][i]) paint(c[i], r[j], c[i + 1] + colW[i + 1] - 1, r[j] + rowW[j] - 1);
+  for (let i = 0; i < nC; i++) for (let j = 0; j < nR - 1; j++) if (vs[i][j]) paint(c[i], r[j], c[i] + colW[i] - 1, r[j + 1] + rowW[j + 1] - 1);
+  // 只有兩欄的樓層：大廳在兩條直走廊中間，最下面一排走廊一定要有
+  if (lobbyK < 0) paint(c[0], rEnd, cEnd, rEnd);
   const isCorr = (x, y) => lv.cellAt(x, y) === CORRIDOR;
+  if (!isCorr(lobbyX, rEnd)) throw new Error('lobby not on a corridor');
   // --- 死路支線：從外圈走廊往外伸到外牆
   const spurCands = [];
   for (let x = c[0] + 1; x < cEnd; x++) {
@@ -340,16 +522,17 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   };
 
   // --- 大廳（下方，接在某一條直走廊的正下方）
-  let lobbyX;
-  if (nC >= 3) {
-    const k = nC === 3 ? 1 : rng.int(1, nC - 2);
-    lobbyX = c[k] + (colW[k] === 2 ? rng.int(0, 1) : 0);
-  } else lobbyX = Math.round((c[0] + cEnd) / 2);
   const lobbyTop = rEnd + 1;
   const lobby = addRoom(lobbyX - 1, lobbyTop, lobbyX + 1, H - 1, 'lobby');
   lv.lobby = lobby;
   lv.lobbyX = lobbyX;
   lv.lobbyTop = lobbyTop;
+  // 非棋盤格的格局：街區形狀不規則，整層剩下的空地一次切成大小不一的房間
+  // （切完之後下面棋盤格用的房間帶 / 街區程式找不到空地，自然不會再動）
+  if (plan.topo !== 'grid') {
+    const inside = (x, y) => free(x, y) && ((y >= r[0] && y <= rEnd) || (x >= c[0] && x <= cEnd));
+    fillRooms(lv, rng, LY, inside, addRoom);
+  }
   // --- 外圍房間帶（被支線、缺角切開）
   for (const [a, b] of runs(c[0], cEnd, (x) => free(x, 0))) stripX(a, b, 0, r[0] - 1);
   for (const [a, b] of runs(c[0], cEnd, (x) => free(x, lobbyTop))) stripX(a, b, lobbyTop, H - 1);
@@ -444,16 +627,33 @@ function buildLevel(seed, diff, themeKey = 'ward') {
     if (idb > 0) lv.rooms[idb].doors.push(door.id);
   };
 
+  const inner = [];
   for (const room of lv.rooms) {
     if (room.id === 0 || room.type === 'lobby') continue;
     const edges = roomEdges(room).filter((e) => lv.cellAt(e.ox, e.oy) === CORRIDOR);
-    if (!edges.length) throw new Error('room without corridor access');
+    if (!edges.length) { inner.push(room); continue; }
     const first = rng.pick(edges);
     addDoor(first);
     if (room.area >= 4 && rng.chance(0.55)) {
       const other = edges.filter((e) => e.side !== first.side);
       if (other.length) addDoor(rng.pick(other));
     }
+  }
+  // 沒有貼著走廊的房間（中央街區的深處）：從隔壁已經走得到的房間開一扇內門進去，可能一間接一間
+  const linked = new Set(lv.rooms.filter((rm) => rm.id > 0 && rm.type !== 'lobby' && !inner.includes(rm)).map((rm) => rm.id));
+  while (inner.length) {
+    let progress = false;
+    for (let i = 0; i < inner.length; i++) {
+      const room = inner[i];
+      const edges = roomEdges(room).filter((e) => linked.has(lv.cellAt(e.ox, e.oy)));
+      if (!edges.length) continue;
+      addDoor(rng.pick(edges));
+      room.inner = true;
+      linked.add(room.id);
+      inner.splice(i--, 1);
+      progress = true;
+    }
+    if (!progress) throw new Error('room without access');
   }
   // 房間之間的門（製造繞圈逃跑路線）
   for (const room of lv.rooms) {
@@ -489,7 +689,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   // --- 走廊路障
   const corridorCells = [];
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (isCorr(x, y)) corridorCells.push([x, y]);
-  const nBarricades = rng.int(1, 2);
+  const nBarricades = rng.int(...(LY.barricades || [1, 2]));
   for (const [x, y] of rng.shuffle(corridorCells.slice())) {
     if (lv.barricades.length >= nBarricades) break;
     const horiz = isCorr(x - 1, y) || isCorr(x + 1, y), vert = isCorr(x, y - 1) || isCorr(x, y + 1);
@@ -506,7 +706,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
     let ok = true;
     for (let i = 0; i < W * H; i++) if (lv.cells[i] !== VOID && !lv.blockedCell[i] && dist[i] < 0) { ok = false; break; }
     if (!ok) { lv.blockedCell[idx(x, y)] = 0; continue; }
-    lv.barricades.push({ x, y, cx: (x + 0.5) * CELL, cz: (y + 0.5) * CELL, horizontal: horiz });
+    lv.barricades.push({ x, y, cx: (x + 0.5) * CELL, cz: (y + 0.5) * CELL, horizontal: horiz, rubble: !!LY.rubble });
   }
 
   // --- 距離與房型
@@ -698,8 +898,10 @@ function roomStaysConnected(lv, room, extra) {
   }
   if (!seeds.length) return true;
   const seen = new Uint8Array(nx * nz);
-  const q = seeds.slice();
-  for (const k of q) seen[k] = 1;
+  // 只從第一個門口開始走：每一個門口都要互相走得到（房間被家具隔成兩半時，穿過房間的路就斷了——
+  // 走廊被瓦礫堵住的樓層常常要靠穿過房間繞路）
+  const q = [seeds[0]];
+  seen[seeds[0]] = 1;
   for (let qi = 0; qi < q.length; qi++) {
     const k = q[qi], i = k % nx, j = (k / nx) | 0;
     if (i > 0 && !seen[k - 1] && !blocked[k - 1]) { seen[k - 1] = 1; q.push(k - 1); }
@@ -707,6 +909,7 @@ function roomStaysConnected(lv, room, extra) {
     if (j > 0 && !seen[k - nx] && !blocked[k - nx]) { seen[k - nx] = 1; q.push(k - nx); }
     if (j < nz - 1 && !seen[k + nx] && !blocked[k + nx]) { seen[k + nx] = 1; q.push(k + nx); }
   }
+  for (const k of seeds) if (!seen[k]) return false;
   let lost = 0;
   for (let k = 0; k < nx * nz; k++) if (!blocked[k] && !seen[k]) lost++;
   return lost * res * res < 0.6; // 允許極小的死角
@@ -860,6 +1063,9 @@ function furnish(lv, rng, T) {
   };
   const drain = (x, z) => lv.decals.push({ kind: 'drain', x, z, rot: rng.range(0, 6.28), size: rng.range(0.32, 0.42) });
   const toyShelf = (room) => { const s = P.againstWall('shelf', room); if (s) s.toys = true; return s; };
+  // 瓦礫堆：正上方的天花板破一個洞，垂下燒焦的骨架與電線
+  const rubbleAt = (rb) => { if (rb) lv.decals.push({ kind: 'prop', prop: 'ceilingHole', x: rb.x, z: rb.z, rot: rb.rot }); return rb; };
+  const burned = lv.theme === 'burned';
   lv.rocking = [];
   const horse = (room, opts = {}) => {
     const h = P.freeStanding('rockinghorse', room, { margin: 0.45, ...opts });
@@ -905,7 +1111,7 @@ function furnish(lv, rng, T) {
         for (let i = 0; i < nBeds; i++) {
           const bed = P.againstWall('bed', room, { gap: 0.04 });
           if (!bed) break;
-          bed.variant = rng.int(0, 3);
+          bed.variant = burned ? (rng.chance(0.65) ? 2 : 1) : rng.int(0, 3);
           bedSide(bed, room, bounds);
         }
         if (rng.chance(0.6)) P.againstWall('cabinet', room);
@@ -955,7 +1161,19 @@ function furnish(lv, rng, T) {
       }
       case 'operating': {
         const tbl = P.freeStanding('optable', room, { center: true, axisAligned: true, margin: 0.6 });
-        if (tbl) lv.decals.push({ kind: 'surgicalLamp', x: tbl.x, z: tbl.z, rot: tbl.rot });
+        if (tbl && lv.theme === 'surgery') {
+          // 手術部：雙頭無影燈、床頭的麻醉機與監視器、蓋著綠布的手術台
+          tbl.draped = rng.chance(0.6);
+          lv.decals.push({ kind: 'prop', prop: 'surgicalLamp2', x: tbl.x, z: tbl.z, rot: tbl.rot + rng.range(-0.4, 0.4) });
+          const hs = rng.chance(0.5) ? 1 : -1;
+          const [ax, az] = local(tbl, 0, hs * 1.5);
+          addNear('anesthesia', room, ax, az, tbl.rot + (hs > 0 ? Math.PI : 0) + rng.range(-0.3, 0.3));
+          const [mx, mz] = local(tbl, rng.chance(0.5) ? 0.95 : -0.95, hs * 0.9);
+          addNear('monitor', room, mx, mz, rng.range(0, 6.28));
+          const [bx, bz] = local(tbl, rng.chance(0.5) ? 0.75 : -0.75, -hs * 0.4);
+          addNear('bin', room, bx, bz, 0);
+          if (room.area >= 4) P.againstWall('cabinet', room);
+        } else if (tbl) lv.decals.push({ kind: 'surgicalLamp', x: tbl.x, z: tbl.z, rot: tbl.rot });
         P.againstWall('trolley', room);
         P.againstWall('trolley', room);
         P.againstWall('cabinet', room);
@@ -1104,6 +1322,63 @@ function furnish(lv, rng, T) {
         if (rng.chance(0.35)) addLocker(room);
         break;
       }
+      case 'icu':
+      case 'recovery': {
+        // 加護病房 / 恢復室：一床一床用隔簾隔開，床頭有監視器或點滴架
+        const icu = t === 'icu';
+        const nBeds = Math.min(6, Math.max(1, Math.round(room.area * rng.range(icu ? 0.7 : 0.9, icu ? 1.1 : 1.3))));
+        for (let i = 0; i < nBeds; i++) {
+          const bed = P.againstWall('bed', room, { gap: 0.04, clearance: icu ? 0.6 : 0 });
+          if (!bed) break;
+          bed.variant = rng.weighted([[0, 0.55], [1, 0.35], [2, 0.1]]);
+          const side = rng.chance(0.5) ? 1 : -1;
+          const [mx, mz] = local(bed, side * 0.86, -0.62);
+          if (!(icu && addNear('monitor', room, mx, mz, bed.rot + rng.range(-0.3, 0.3)))) bedSide(bed, room, bounds);
+          if (rng.chance(icu ? 0.8 : 0.45)) {
+            const [cx, cz] = local(bed, -side * 0.7, 0.1);
+            lv.decals.push({ kind: 'curtain', x: cx, z: cz, rot: bed.rot, len: 2.0 });
+          }
+        }
+        P.againstWall('trolley', room);
+        if (rng.chance(0.5)) P.againstWall('cabinet', room);
+        if (!icu && rng.chance(0.5)) P.freeStanding('chair', room, { margin: 0.4 });
+        if (rng.chance(0.4)) addLocker(room);
+        break;
+      }
+      case 'scrub': {
+        // 刷手間：一長排刷手槽、置物櫃、手套與口罩的架子
+        if (!P.againstWall('scrubsink', room, { clearance: 0.7, noWindow: false })) P.againstWall('sink', room, { noWindow: false });
+        if (room.area >= 3 && rng.chance(0.6)) P.againstWall('scrubsink', room, { clearance: 0.7, noWindow: false });
+        if (rng.chance(0.6)) addLocker(room);
+        if (rng.chance(0.35)) addLocker(room);
+        P.againstWall('shelf', room);
+        P.againstWall('bin', room);
+        if (rng.chance(0.5)) P.againstWall('boxes', room);
+        break;
+      }
+      case 'sterile': {
+        // 無菌器械室：滅菌鍋、器械架、推車
+        P.againstWall('autoclave', room, { clearance: 0.8, noWindow: true });
+        for (let k = rng.int(2, 3); k > 0; k--) P.againstWall('shelf', room);
+        P.againstWall('trolley', room);
+        if (rng.chance(0.5)) P.freeStanding('trolley', room, { margin: 0.45, axisAligned: true });
+        if (rng.chance(0.5)) P.againstWall('cabinet', room);
+        if (rng.chance(0.35)) addLocker(room);
+        break;
+      }
+      case 'collapsed': {
+        // 坍塌病房：天花板整片塌下來，地上一堆一堆的瓦礫、斷樑和燒剩的床架
+        const n = room.area >= 6 ? 2 : 1;
+        for (let k = 0; k < n; k++) rubbleAt(P.freeStanding('rubble', room, { margin: 0.55 }));
+        if (room.area >= 2) P.againstWall('beam', room, { gap: 0.05 });
+        for (let k = room.area >= 4 ? 2 : 1; k > 0; k--) {
+          const bed = P.againstWall('bed', room, { gap: 0.04 });
+          if (bed) bed.variant = 2;
+        }
+        if (rng.chance(0.5)) P.againstWall('boxes', room);
+        if (rng.chance(0.3)) addLocker(room);
+        break;
+      }
       case 'nurse': {
         const ct = P.againstWall('counter', room, { clearance: 0.9 });
         if (ct) lv.phone = { x: ct.x, z: ct.z, rot: ct.rot, y: FURN.counter.surf.y };
@@ -1114,6 +1389,8 @@ function furnish(lv, rng, T) {
         break;
       }
     }
+    // 舊院區：很多房間的天花板塌了一角
+    if (burned && t !== 'generator' && t !== 'collapsed' && (t === 'lobby' || room.area >= 2) && rng.chance(t === 'lobby' ? 0.7 : 0.25)) rubbleAt(P.freeStanding('rubble', room, { margin: 0.55 }));
   }
 
   // --- 走廊：置物櫃、推床、輪椅、長椅、垃圾桶
@@ -1142,7 +1419,7 @@ function furnish(lv, rng, T) {
     if (!slots.length) continue;
     if (addLocker(corridor, { slots, bounds: cellBounds(x, y) })) used.add(x + ',' + y);
   }
-  const props = CORRIDOR_PROPS[lv.theme] || CORRIDOR_PROPS.ward;
+  const props = T.corridorProps || CORRIDOR_PROPS[lv.theme] || CORRIDOR_PROPS.ward;
   for (const [x, y] of rng.shuffle(corrCells.slice())) {
     if (used.has(x + ',' + y) || !rng.chance(0.33)) continue;
     const slots = wallSlots(lv, corridor, [[x, y]]);
@@ -1154,6 +1431,7 @@ function furnish(lv, rng, T) {
       if (kind === 'gurney' && rng.chance(T.decor.corridorBodies)) it.body = true;
       if (kind === 'wheelchair' || kind === 'chair') it.rot += rng.range(-0.6, 0.6);
       if (kind === 'crib') it.variant = rng.int(0, 3);
+      if (kind === 'rubble' && rng.chance(0.6)) rubbleAt(it);
     }
   }
   // 有些輪椅會在事件中被推動
@@ -1279,8 +1557,18 @@ function placeLights(lv, rng, T) {
   }
   // 緊急照明（一直亮著，顏色依主題）
   const inter = [];
-  for (const y of lv.corrRows) for (const x of lv.corrCols) if (isCorr(x, y)) inter.push([x, y]);
-  for (const [x, y] of rng.shuffle(inter).slice(0, L.emergencyN)) {
+  for (const y of lv.corrRows) for (const x of lv.corrCols) if (isCorr(x, y) && !lv.blockedCell[y * lv.W + x]) inter.push([x, y]);
+  rng.shuffle(inter);
+  // 路口太少的格局（環狀、魚骨形）：其他走廊格子補上
+  if (inter.length < L.emergencyN) {
+    const more = [];
+    for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) if (isCorr(x, y) && !lv.blockedCell[y * lv.W + x] && !inter.some(([a, b]) => Math.abs(a - x) + Math.abs(b - y) < 3)) more.push([x, y]);
+    for (const p of rng.shuffle(more)) {
+      if (inter.length >= L.emergencyN) break;
+      if (!inter.some(([a, b]) => Math.abs(a - p[0]) + Math.abs(b - p[1]) < 3)) inter.push(p);
+    }
+  }
+  for (const [x, y] of inter.slice(0, L.emergencyN)) {
     lv.emergency.push({ x: (x + 0.5) * CELL + rng.range(-0.8, 0.8), y: WALL_H - 0.25, z: (y + 0.5) * CELL + rng.range(-0.8, 0.8), phase: rng.range(0, 10) });
   }
   // 出口標示
@@ -1406,6 +1694,7 @@ function placeDecals(lv, rng, T) {
       }
     }
   }
+  placeThemeDecals(lv, T, wallSlotsClean, floorCells);
   // 房門上方的門牌
   for (const d of lv.doors) {
     const ids = d.rooms.filter((id) => id > 0);
@@ -1426,6 +1715,62 @@ function placeDecals(lv, rng, T) {
   }
 }
 
+// 手術部與燒毀舊院區的主題裝飾（另一個亂數來源，不影響其他主題的生成結果）：
+// 燻黑的牆、地上的焦痕、釘上木板的窗、走廊上的塑膠條門簾、瓦礫上方破掉的天花板
+function placeThemeDecals(lv, T, wallSlotsClean, floorCells) {
+  const D = T.decor;
+  const r4 = new RNG((lv.seed ^ 0x50071e) >>> 0);
+  if (D.soot > 0) {
+    for (const s of wallSlotsClean) {
+      if (!r4.chance(D.soot)) continue;
+      const w = r4.range(1.3, 2.6), h = r4.range(2.1, 2.95);
+      const along = s.a0 + r4.range(Math.min(CELL / 2, w / 2), Math.max(CELL / 2, CELL - w / 2));
+      if (!wallDecalFree(lv, s, along, w * 0.6)) continue;
+      lv.decals.push({ kind: 'soot', ...wallDecalPose(s, along, WALL_H - h / 2, HT + 0.006), w, h, flip: r4.chance(0.5), variant: r4.int(0, 1) });
+    }
+    // 火從門口竄出來：門楣上方一片黑
+    for (const d of lv.doors) {
+      if (!r4.chance(0.6)) continue;
+      const along = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2, plane = (d.o === 'h' ? d.y : d.x) * CELL;
+      for (const side of [-1, 1]) {
+        const off = side * (HT + 0.006), w = r4.range(1.6, 2.4), h = WALL_H - DOOR_H - 0.04;
+        const y = DOOR_H + 0.02 + h / 2;
+        const rot = d.o === 'h' ? (side > 0 ? 0 : Math.PI) : (side > 0 ? Math.PI / 2 : -Math.PI / 2);
+        lv.decals.push({ kind: 'soot', x: d.o === 'h' ? along : plane + off, y, z: d.o === 'h' ? plane + off : along, rot, w, h, flip: r4.chance(0.5), variant: 2 });
+      }
+    }
+  }
+  if (D.scorch > 0) {
+    for (const [x, y] of floorCells) {
+      if (!r4.chance(D.scorch)) continue;
+      lv.decals.push({ kind: 'scorch', x: (x + r4.range(0.25, 0.75)) * CELL, z: (y + r4.range(0.25, 0.75)) * CELL, rot: r4.range(0, 6.28), size: r4.range(1.4, 2.8), variant: r4.int(0, 1) });
+    }
+  }
+  if (D.boarded > 0) {
+    for (let y = 0; y <= lv.H; y++) for (let x = 0; x < lv.W; x++) if (lv.hEdge(x, y) === E.WINDOW && r4.chance(D.boarded)) lv.decals.push({ kind: 'prop', prop: 'boards', ...windowFor(lv, 'h', x, y) });
+    for (let y = 0; y < lv.H; y++) for (let x = 0; x <= lv.W; x++) if (lv.vEdge(x, y) === E.WINDOW && r4.chance(D.boarded)) lv.decals.push({ kind: 'prop', prop: 'boards', ...windowFor(lv, 'v', x, y) });
+  }
+  if (lv.barricades.some((b) => b.rubble)) for (const b of lv.barricades) lv.decals.push({ kind: 'prop', prop: 'ceilingHole', x: b.cx, z: b.cz, rot: r4.range(0, 6.28), big: true });
+  if (D.stripCurtains > 0) {
+    // 進入無菌區的塑膠條門簾（地上一條紅線）：只掛在兩側都是實牆、沒有家具的直走廊上
+    const isCorr = (x, y) => lv.cellAt(x, y) === CORRIDOR && !lv.blockedCell[y * lv.W + x];
+    const done = [];
+    for (const [x, y] of r4.shuffle(floorCells.slice())) {
+      if (done.length >= D.stripCurtains) break;
+      if (!isCorr(x, y) || done.some(([a, b]) => Math.abs(a - x) + Math.abs(b - y) < 4)) continue;
+      const horiz = isCorr(x - 1, y) && isCorr(x + 1, y), vert = isCorr(x, y - 1) && isCorr(x, y + 1);
+      if (horiz === vert) continue;
+      if (horiz ? (lv.hEdge(x, y) !== E.WALL || lv.hEdge(x, y + 1) !== E.WALL || isCorr(x, y - 1) || isCorr(x, y + 1))
+        : (lv.vEdge(x, y) !== E.WALL || lv.vEdge(x + 1, y) !== E.WALL || isCorr(x - 1, y) || isCorr(x + 1, y))) continue;
+      const cx = (x + 0.5) * CELL, cz = (y + 0.5) * CELL;
+      const band = horiz ? { minX: cx - 0.25, maxX: cx + 0.25, minZ: y * CELL, maxZ: (y + 1) * CELL } : { minX: x * CELL, maxX: (x + 1) * CELL, minZ: cz - 0.25, maxZ: cz + 0.25 };
+      if (lv.furniture.some((f) => overlaps(f.box, band)) || lv.items.some((it) => overlaps({ minX: it.x, maxX: it.x, minZ: it.z, maxZ: it.z }, band, 0.2))) continue;
+      lv.decals.push({ kind: 'prop', prop: 'stripCurtain', x: cx, z: cz, rot: horiz ? Math.PI / 2 : 0 });
+      done.push([x, y]);
+    }
+  }
+}
+
 function wallDecalFree(lv, s, along, width) {
   const p = wallDecalPose(s, along, 1.2);
   const box = { minX: p.x - width / 2 - 0.3, maxX: p.x + width / 2 + 0.3, minZ: p.z - width / 2 - 0.3, maxZ: p.z + width / 2 + 0.3 };
@@ -1433,8 +1778,7 @@ function wallDecalFree(lv, s, along, width) {
   return true;
 }
 
-function wallDecalPose(s, along, y) {
-  const off = HT + 0.012;
+function wallDecalPose(s, along, y, off = HT + 0.012) {
   switch (s.side) {
     case 'N': return { x: along, y, z: s.wall + off, rot: 0 };
     case 'S': return { x: along, y, z: s.wall - off, rot: Math.PI };

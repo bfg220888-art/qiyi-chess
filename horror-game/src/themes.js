@@ -5,10 +5,19 @@
 // theme 是 'random'（或任何不認得的值）時，先用 seed 決定主題再生成，
 // 所以多人連線只要傳 seed 與玩家選的 theme（或已解析好的主題 key）就能得到一模一樣的樓層。
 
-export const THEME_KEYS = ['ward', 'morgue', 'pediatric', 'psych'];
+export const THEME_KEYS = ['ward', 'morgue', 'pediatric', 'psych', 'surgery', 'burned'];
 export const RANDOM_THEME = 'random';
 
 // 房型權重：big = 面積 ≥ 4 格，mid = 2～3 格，small = 1 格
+//
+// layout.topo：走廊拓樸的權重（每一局依 seed 抽一種，同一個主題也會有很不一樣的平面圖）
+//   grid   = 棋盤格走廊（原本的格局，會再抽 L 形缺角 / U 形中庭）
+//   broken = 棋盤格拆掉一部分走廊：大小不一的街區、更多死路
+//   ring   = 一圈環狀走廊包著中央的大街區（中央房間只能從別的房間穿過去）
+//   atrium = 環狀走廊＋中央挖空的天井（四面都是看得到天井的窗）
+//   H      = 左右兩條直走廊、中間一條橫走廊，再從橫走廊往下接到大廳
+//   spine  = 一條偏向一側的主走廊，兩旁伸出長短不一的側翼（魚骨形，很多死路）
+// layout.roomMax：房間最長邊（格），非棋盤格的格局用它把街區切成大小不一的房間
 export const THEMES = {
   // -------------------------------------------------------------------------
   ward: {
@@ -20,6 +29,7 @@ export const THEMES = {
       margin: 2, cols: [3, 3], rows: [3, 3], blockW: [4, 5], blockH: [3, 4],
       seg: { p3: 0.3, p1: 0.12 }, fullDepth: 0.4, hall: 0, hallMax: 0,
       wideRow: 0, wideCol: 0, notch: 0.22, courtyard: 0.12, spurs: [0, 1],
+      topo: [['grid', 0.4], ['broken', 0.2], ['ring', 0.12], ['atrium', 0.08], ['H', 0.1], ['spine', 0.1]], roomMax: 4,
     },
     rooms: {
       nurse: true,
@@ -53,6 +63,7 @@ export const THEMES = {
       margin: 3, cols: [2, 3], rows: [2, 3], blockW: [4, 6], blockH: [3, 4],
       seg: { p3: 0.55, p1: 0.05 }, fullDepth: 0.55, hall: 0.25, hallMax: 15,
       wideRow: 0.75, wideCol: 0.25, notch: 0.2, courtyard: 0, spurs: [1, 2],
+      topo: [['grid', 0.35], ['spine', 0.25], ['broken', 0.2], ['H', 0.1], ['ring', 0.1]], roomMax: 4,
     },
     rooms: {
       nurse: true,
@@ -86,6 +97,7 @@ export const THEMES = {
       margin: 2, cols: [3, 3], rows: [2, 3], blockW: [4, 6], blockH: [3, 5],
       seg: { p3: 0.4, p1: 0.08 }, fullDepth: 0.45, hall: 0.18, hallMax: 15,
       wideRow: 0.15, wideCol: 0, notch: 0.3, courtyard: 0.3, spurs: [0, 2],
+      topo: [['grid', 0.35], ['atrium', 0.2], ['broken', 0.15], ['ring', 0.1], ['H', 0.1], ['spine', 0.1]], roomMax: 4,
     },
     rooms: {
       nurse: true,
@@ -119,6 +131,7 @@ export const THEMES = {
       margin: 2, cols: [3, 4], rows: [2, 3], blockW: [3, 5], blockH: [3, 4],
       seg: { p3: 0.12, p1: 0.45 }, fullDepth: 0.3, hall: 0.12, hallMax: 12,
       wideRow: 0.1, wideCol: 0, notch: 0.2, courtyard: 0.4, spurs: [1, 2],
+      topo: [['grid', 0.3], ['ring', 0.25], ['broken', 0.15], ['H', 0.15], ['spine', 0.15]], roomMax: 3,
     },
     rooms: {
       nurse: true,
@@ -140,6 +153,82 @@ export const THEMES = {
       ceiling: 0xcfcfbc, door: 0x9aa6a8,
     },
     decor: { blood: 0.1, paper: 0.4, writings: 7, hands: 9, drawings: 0, toys: 0, drains: 0, corridorBodies: 0.35 },
+  },
+
+  // -------------------------------------------------------------------------
+  surgery: {
+    key: 'surgery', name: '手術部', floor: '5F', short: '手術',
+    desc: '無影燈、刷手台、拉上隔簾的加護病床。消毒水味還沒散。',
+    intro: '二十年後，你帶著攝影機獨自走進五樓的手術部，想拍下傳說中「哼歌的女人」。',
+    board: '五樓手術部',
+    layout: {
+      margin: 2, cols: [3, 3], rows: [3, 3], blockW: [4, 6], blockH: [3, 4],
+      seg: { p3: 0.45, p1: 0.08 }, fullDepth: 0.5, hall: 0.2, hallMax: 16,
+      wideRow: 0.2, wideCol: 0.1, notch: 0.15, courtyard: 0.1, spurs: [0, 1],
+      topo: [['ring', 0.3], ['atrium', 0.2], ['grid', 0.15], ['H', 0.15], ['broken', 0.1], ['spine', 0.1]],
+      roomMax: 4, barricades: [1, 2],
+    },
+    rooms: {
+      nurse: true,
+      specials: [['operating', 1], ['icu', 0.95], ['scrub', 0.85], ['operating', 0.7]],
+      big: [['icu', 0.3], ['recovery', 0.24], ['operating', 0.18], ['sterile', 0.14], ['storage', 0.14]],
+      mid: [['scrub', 0.22], ['sterile', 0.22], ['recovery', 0.18], ['office', 0.16], ['storage', 0.12], ['utility', 0.1]],
+      small: [['storage', 0.45], ['utility', 0.3], ['scrub', 0.25]],
+      numbered: { type: 'operating', start: 1, skip: [7], fmt: (n) => `第 ${n} 手術室` },
+      special: { types: ['operating'], label: '第 7 手術室', tag: '7 號房' },
+      names: { nurse: '恢復室護理站', office: '麻醉科辦公室', storage: '衛材庫房', utility: '污物處理室', lobby: '手術部等候區' },
+    },
+    windows: 0.12, lobbyWindows: 0.4, corrWindows: 0.25,
+    lights: { corrEvery: 2, broken: 0.4, flicker: 0.3, color: 0xe4f4ff, tube: [0.88, 0.98, 1.0], emergency: 0xff2a14, emergencyN: 5 },
+    look: {
+      fog: 0x01070a, fogDensity: 0.055, hemiSky: 0x3e6460, hemiGround: 0x040808,
+      // 手術部是「手術綠」：走廊淺綠油漆，手術室與刷手間整面磁磚
+      wall: { default: 'paint', operating: 'tileWall', scrub: 'tileWall', sterile: 'tileWall', utility: 'tileWall' },
+      wallTint: 0xb4d6c6, wallTints: { tileWall: 0xd4ece6 },
+      floor: { corridor: 'vinyl', default: 'vinyl', operating: 'tile', scrub: 'tile', sterile: 'tile', utility: 'tile', lobby: 'lobby' },
+      floorTint: { vinyl: 0x9fb8ae, tile: 0xc6dcd6 },
+      ceiling: 0xd2dcd6, door: 0xa8c8bc,
+    },
+    corridorProps: [['gurney', 4], ['trolley', 2.2], ['ivstand', 1.4], ['monitor', 1.2], ['wheelchair', 1], ['bin', 1], ['boxes', 0.8]],
+    decor: { blood: 0.12, paper: 0.22, writings: 4, hands: 6, drawings: 0, toys: 0, drains: 0, corridorBodies: 0.45, stripCurtains: 3 },
+  },
+
+  // -------------------------------------------------------------------------
+  burned: {
+    key: 'burned', name: '燒毀的舊院區', floor: '3F', short: '舊院區',
+    desc: '那一夜之後燒毀的舊大樓。焦黑的牆、塌下的天花板。',
+    intro: '二十年後，你帶著攝影機鑽過封鎖線，走進燒毀的舊院區三樓，想拍下傳說中「哼歌的女人」。',
+    board: '舊院區三樓',
+    layout: {
+      margin: 2, cols: [3, 4], rows: [2, 3], blockW: [3, 5], blockH: [3, 4],
+      seg: { p3: 0.3, p1: 0.1 }, fullDepth: 0.35, hall: 0.12, hallMax: 12,
+      wideRow: 0.15, wideCol: 0, notch: 0.3, courtyard: 0.1, spurs: [1, 3],
+      topo: [['broken', 0.38], ['spine', 0.22], ['grid', 0.15], ['H', 0.15], ['ring', 0.1]],
+      roomMax: 4, barricades: [2, 4], rubble: true,
+    },
+    rooms: {
+      nurse: true,
+      specials: [['collapsed', 0.95], ['collapsed', 0.6]],
+      big: [['ward', 0.45], ['collapsed', 0.25], ['storage', 0.15], ['office', 0.15]],
+      mid: [['ward', 0.38], ['office', 0.18], ['storage', 0.16], ['collapsed', 0.16], ['utility', 0.12]],
+      small: [['storage', 0.5], ['utility', 0.3], ['collapsed', 0.2]],
+      numbered: { type: 'ward', start: 301, skip: [304, 313], fmt: (n) => `${n} 病房` },
+      special: { types: ['ward', 'collapsed'], label: '313 病房', tag: '起火點' },
+      names: { nurse: '燒毀的護理站', office: '值班室', storage: '被服室', utility: '配電間', lobby: '舊院區門廳' },
+    },
+    windows: 0.55, lobbyWindows: 0.6, corrWindows: 0.5,
+    lights: { corrEvery: 2, broken: 0.6, flicker: 0.5, color: 0xffd6a8, tube: [1.0, 0.82, 0.62], emergency: 0xff6a12, emergencyN: 9 },
+    look: {
+      // 煙灰色的霧、餘燼般的橘色緊急燈
+      fog: 0x1a1612, fogDensity: 0.068, hemiSky: 0x6a5240, hemiGround: 0x080504,
+      wall: { default: 'charred' }, wallTint: 0xffffff,
+      floor: { corridor: 'charred', default: 'charred', office: 'vinyl', storage: 'tile', utility: 'tile', lobby: 'charred' },
+      floorTint: { vinyl: 0x5a5048, tile: 0x6a625a },
+      ceiling: 0x3e3730, door: 0x5a4a3e,
+      charred: true,
+    },
+    corridorProps: [['rubble', 3], ['gurney', 2], ['wheelchair', 1.5], ['beam', 1.4], ['chair', 1], ['boxes', 0.8], ['bin', 0.6]],
+    decor: { blood: 0.06, paper: 0.18, writings: 4, hands: 9, drawings: 0, toys: 0, drains: 0, corridorBodies: 0.25, soot: 0.35, scorch: 0.3, boarded: 0.35 },
   },
 };
 

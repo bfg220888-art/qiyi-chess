@@ -730,7 +730,7 @@ export class PropBuilder {
     return g;
   }
 
-  optable() {
+  optable(f = {}) {
     const { M } = this, g = new THREE.Group();
     this.box(g, M.steel, 0.5, 0.06, 0.7, 0, 0.03, 0);
     this.cyl(g, M.steel, 0.09, 0.11, 0.8, 0, 0.45, 0, { seg: 12 });
@@ -738,6 +738,11 @@ export class PropBuilder {
     this.box(g, M.leather, 0.58, 0.05, 1.86, 0, 0.935, 0);
     // 束縛帶
     for (const z of [-0.5, 0.2, 0.7]) this.box(g, M.leatherBrown, 0.66, 0.012, 0.08, 0, 0.965, z);
+    if (f.draped) {
+      // 手術部：蓋在台上、兩側垂下來的綠色手術布
+      this.box(g, M.drape, 0.7, 0.012, 1.5, 0, 0.98, 0.15, { uvScale: 1.2 });
+      for (const sd of [-1, 1]) this.box(g, M.drape, 0.012, 0.42, 1.4, sd * 0.35, 0.78, 0.15, { rz: sd * 0.06, uvScale: 1.2 });
+    }
     return g;
   }
 
@@ -822,6 +827,198 @@ export class PropBuilder {
     return g;
   }
 
+  // ---- 手術部
+  // 麻醉機：推車、檯面、上方的監視器與流量計，背後兩支氣瓶
+  anesthesia() {
+    const { M } = this, g = new THREE.Group();
+    for (const [x, z] of [[-0.3, -0.24], [0.3, -0.24], [-0.3, 0.24], [0.3, 0.24]]) this.sphere(g, M.rubber, 0.04, x, 0.04, z, 1, 1, 0.6, 6);
+    this.box(g, M.plasticWhite, 0.68, 0.82, 0.56, 0, 0.49, -0.02, { uvScale: 0.8 });
+    for (let k = 0; k < 3; k++) this.box(g, M.plasticBeige, 0.6, 0.012, 0.01, 0, 0.25 + k * 0.22, 0.262);
+    this.box(g, M.steel, 0.72, 0.035, 0.6, 0, 0.92, 0);
+    this.box(g, M.plasticWhite, 0.6, 0.5, 0.3, 0, 1.2, -0.14);
+    this.box(g, M.screen, 0.32, 0.22, 0.01, -0.1, 1.27, 0.012);
+    for (let k = 0; k < 4; k++) this.cyl(g, M.glass, 0.022, 0.022, 0.16, 0.12 + k * 0.05, 1.15, 0.015, { seg: 8 });
+    // 呼吸袋（風箱）
+    this.cyl(g, M.rubber, 0.07, 0.07, 0.2, 0.25, 1.05, 0.12, { seg: 10 });
+    this.tube(g, M.plasticBlue, 0.018, [0.25, 0.97, 0.15], [0.32, 0.8, 0.4], 6);
+    this.tube(g, M.plasticBlue, 0.018, [-0.2, 0.97, 0.15], [-0.3, 0.75, 0.42], 6);
+    this.cyl(g, M.paintMint, 0.07, 0.07, 0.62, -0.18, 0.6, -0.33, { seg: 10 });
+    this.cyl(g, M.paintWhite, 0.07, 0.07, 0.62, 0.0, 0.6, -0.33, { seg: 10 });
+    return g;
+  }
+
+  // 推車上的生理監視器（五爪腳、立桿、螢幕往前傾）
+  monitor() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2;
+      this.tube(g, M.steel, 0.014, [0, 0.07, 0], [Math.cos(a) * 0.24, 0.05, Math.sin(a) * 0.24], 5);
+      this.sphere(g, M.rubber, 0.028, Math.cos(a) * 0.24, 0.028, Math.sin(a) * 0.24, 1, 1, 1, 6);
+    }
+    this.tube(g, M.steel, 0.018, [0, 0.05, 0], [0, 1.25, 0], 6);
+    this.box(g, M.plasticBeige, 0.4, 0.04, 0.26, 0, 0.95, 0.02);
+    const m = new THREE.Group();
+    m.position.set(0, 1.42, 0.02);
+    m.rotation.x = -0.15;
+    m.rotation.y = r.range(-0.3, 0.3);
+    this.box(m, M.plasticBeige, 0.4, 0.32, 0.16, 0, 0, 0);
+    this.box(m, M.screen, 0.32, 0.22, 0.01, -0.02, 0.01, 0.081);
+    g.add(m);
+    this.tube(g, M.plasticDark, 0.006, [0.12, 1.3, -0.05], [0.25, 0.7, 0.1], 4);
+    return g;
+  }
+
+  // 刷手槽：一長排不鏽鋼槽、三支高鵝頸水龍頭、膝控踏板
+  scrubsink() {
+    const { M } = this, g = new THREE.Group();
+    const L = 2.0, top = 0.95;
+    this.box(g, M.steel, L, 0.28, 0.56, 0, top - 0.14, 0.02, { uvScale: 1.2 });
+    this.box(g, M.dark, L - 0.12, 0.01, 0.42, 0, top + 0.001, 0.04);
+    this.box(g, M.steel, L, 0.45, 0.03, 0, top + 0.22, -0.26);
+    for (const x of [-L / 2 + 0.06, L / 2 - 0.06]) this.box(g, M.steel, 0.05, top - 0.28, 0.05, x, (top - 0.28) / 2, 0.15);
+    for (let k = -1; k <= 1; k++) {
+      const x = k * 0.62;
+      this.tube(g, M.steel, 0.014, [x, top + 0.2, -0.22], [x, top + 0.55, -0.22], 6);
+      this.tube(g, M.steel, 0.014, [x, top + 0.55, -0.22], [x, top + 0.55, -0.02], 6);
+      this.tube(g, M.steel, 0.012, [x, top + 0.55, -0.02], [x, top + 0.42, 0.02], 6);
+      this.box(g, M.steel, 0.12, 0.12, 0.03, x, 0.42, 0.29);
+    }
+    // 刷手刷與消毒液瓶
+    this.box(g, M.plasticWhite, 0.25, 0.22, 0.1, -0.31, top + 0.6, -0.22);
+    this.box(g, M.plasticRed, 0.2, 0.18, 0.08, 0.31, top + 0.58, -0.22);
+    return g;
+  }
+
+  // 高壓蒸氣滅菌鍋
+  autoclave() {
+    const { M } = this, g = new THREE.Group();
+    this.box(g, M.steel, 1.05, 1.0, 0.8, 0, 0.5, 0, { uvScale: 1.2 });
+    this.box(g, M.steel, 1.05, 0.6, 0.6, 0, 1.3, -0.08, { uvScale: 1.2 });
+    this.cyl(g, M.steel, 0.36, 0.36, 0.06, -0.1, 0.62, 0.42, { rx: Math.PI / 2, seg: 18 });
+    this.cyl(g, M.dark, 0.3, 0.3, 0.02, -0.1, 0.62, 0.455, { rx: Math.PI / 2, seg: 18 });
+    // 轉盤把手
+    for (let k = 0; k < 3; k++) {
+      const a = k * Math.PI / 3;
+      this.tube(g, M.steel, 0.012, [-0.1 - Math.cos(a) * 0.17, 0.62 - Math.sin(a) * 0.17, 0.48], [-0.1 + Math.cos(a) * 0.17, 0.62 + Math.sin(a) * 0.17, 0.48], 5);
+    }
+    this.box(g, M.plasticDark, 0.22, 0.42, 0.03, 0.38, 0.75, 0.41);
+    for (let k = 0; k < 2; k++) this.cyl(g, M.glass, 0.045, 0.045, 0.02, 0.38, 0.86 - k * 0.15, 0.43, { rx: Math.PI / 2, seg: 10 });
+    this.box(g, M.plasticRed, 0.03, 0.03, 0.01, 0.38, 0.62, 0.43);
+    this.tube(g, M.steel, 0.03, [0.4, 1.6, -0.3], [0.4, 2.9, -0.3], 6);
+    return g;
+  }
+
+  // 雙頭無影燈（手術部的手術室）
+  surgicalLamp2() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    this.cyl(g, M.paintWhite, 0.12, 0.12, 0.06, 0, 2.97, 0, { seg: 14 });
+    this.tube(g, M.steel, 0.035, [0, 3.0, 0], [0, 2.62, 0]);
+    for (const s of [-1, 1]) {
+      const a = r.range(0.3, 0.9) * s, len = r.range(0.55, 0.75);
+      const ex = Math.cos(a) * len * s, ez = Math.sin(a) * len;
+      this.tube(g, M.paintWhite, 0.028, [0, 2.62, 0], [ex, 2.5, ez]);
+      this.tube(g, M.paintWhite, 0.022, [ex, 2.5, ez], [ex, 2.34, ez]);
+      const head = new THREE.Group();
+      head.position.set(ex, 2.24, ez);
+      head.rotation.set(r.range(-0.35, 0.35), 0, r.range(-0.35, 0.35));
+      this.cyl(head, M.paintWhite, 0.34, 0.3, 0.14, 0, 0, 0, { seg: 22 });
+      this.cyl(head, M.lampOff, 0.28, 0.28, 0.01, 0, -0.072, 0, { seg: 22 });
+      this.cyl(head, M.paintWhite, 0.035, 0.035, 0.12, 0, -0.12, 0, { seg: 8 });
+      g.add(head);
+    }
+    return g;
+  }
+
+  // 無菌區入口：門框、上方的牆板、一整排半透明塑膠條門簾、地上的紅色警戒線（不擋路）
+  stripCurtain() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    const half = 1.4, top = 2.4;
+    for (const s of [-1, 1]) this.box(g, M.paintWhite, 0.1, top, 0.16, s * (half - 0.05), top / 2, 0);
+    this.box(g, M.paintWhite, half * 2, 3.0 - top, 0.12, 0, (3.0 + top) / 2, 0);
+    this.box(g, M.steel, half * 2 - 0.2, 0.04, 0.05, 0, top - 0.03, 0);
+    const n = 13, sw = (half * 2 - 0.2) / n;
+    for (let k = 0; k < n; k++) {
+      const x = -half + 0.1 + (k + 0.5) * sw;
+      const len = top - 0.08 - r.range(0, 0.12);
+      const s = this.box(g, M.stripPlastic, sw * 1.15, len, 0.004, x, top - 0.05 - len / 2, (k % 2 ? 0.012 : -0.012), { ry: r.range(-0.12, 0.12), uv: false });
+      s.userData.noShadow = true;
+    }
+    // 地上的紅線與「無菌區」字樣的牌子
+    this.box(g, M.plasticRed, half * 2 - 0.1, 0.004, 0.09, 0, 0.002, 0.35, { uv: false });
+    this.box(g, M.plasticRed, 0.7, 0.2, 0.02, 0, 2.7, 0.07);
+    return g;
+  }
+
+  // ---- 燒毀的舊院區
+  // 瓦礫堆：碎水泥塊、燒焦的木樑、掉下來的天花板礦纖板、鋼筋，縫裡還有一點悶燒的餘燼
+  rubble(f = {}, scale = 1) {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    const W = 1.4 * scale, D = 1.2 * scale;
+    // 底下一層灰
+    this.box(g, M.ash, W, 0.06, D, 0, 0.03, 0, { ry: r.range(-0.2, 0.2) });
+    for (let k = 0; k < Math.round(12 * scale); k++) {
+      const s = r.range(0.18, 0.42) * Math.min(1.4, scale);
+      const x = r.range(-W / 2 + s / 2, W / 2 - s / 2), z = r.range(-D / 2 + s / 2, D / 2 - s / 2);
+      const hgt = (1 - Math.max(Math.abs(x) / (W / 2), Math.abs(z) / (D / 2))) * 0.55 * scale;
+      this.box(g, k % 3 ? M.concrete : M.charcoal, s, s * r.range(0.4, 0.8), s * r.range(0.6, 1), x, 0.06 + hgt * r.range(0.4, 1) + s * 0.2, z, { rx: r.range(-0.5, 0.5), ry: r.range(0, 3), rz: r.range(-0.5, 0.5) });
+    }
+    for (let k = 0; k < Math.round(3 * scale); k++) {
+      const a = r.range(0, Math.PI);
+      const len = r.range(0.9, 1.4) * Math.min(1.3, scale);
+      this.box(g, M.charcoal, len, 0.1, 0.12, r.range(-0.2, 0.2) * W, r.range(0.12, 0.45) * scale, r.range(-0.2, 0.2) * D, { ry: a, rz: r.range(-0.35, 0.35) });
+    }
+    for (let k = 0; k < Math.round(3 * scale); k++) this.box(g, k % 2 ? M.ash : M.plasticBeige, 0.6, 0.015, 0.6, r.range(-0.35, 0.35) * W, r.range(0.15, 0.4) * scale, r.range(-0.3, 0.3) * D, { rx: r.range(-0.7, 0.7), ry: r.range(0, 3), rz: r.range(-0.7, 0.7) });
+    for (let k = 0; k < 2; k++) this.tube(g, M.steel, 0.008, [r.range(-0.4, 0.4) * W, 0.15, r.range(-0.4, 0.4) * D], [r.range(-0.6, 0.6) * W, r.range(0.5, 0.8) * scale, r.range(-0.6, 0.6) * D], 4);
+    for (let k = 0; k < Math.round(4 * scale); k++) {
+      const e = this.box(g, M.ember, r.range(0.03, 0.07), 0.02, r.range(0.03, 0.06), r.range(-0.35, 0.35) * W, r.range(0.07, 0.2), r.range(-0.35, 0.35) * D, { ry: r.range(0, 3), uv: false });
+      e.userData.noShadow = true;
+    }
+    return g;
+  }
+
+  // 斜靠在牆邊的斷樑與一片天花板
+  beam() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    const L = Math.hypot(2.0, 1.3), a = Math.atan2(1.3, 2.0) * (r.chance(0.5) ? 1 : -1);
+    this.box(g, M.charcoal, L, 0.22, 0.2, 0, 0.72, -0.08, { rz: a });
+    this.box(g, M.ash, 1.1, 0.02, 0.6, r.range(-0.4, 0.4), 0.35, 0.05, { rz: -a * 0.8, rx: 0.3 });
+    for (let k = 0; k < 4; k++) this.box(g, M.concrete, 0.2, 0.12, 0.18, r.range(-0.9, 0.9), 0.06, r.range(-0.1, 0.18), { ry: r.range(0, 3) });
+    return g;
+  }
+
+  // 天花板破洞：垂下來的礦纖板、T 型鋁架與電線（掛在頭頂上，不擋路）
+  ceilingHole(d = {}) {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    const S = d.big ? 1.3 : 1;
+    const hole = new THREE.Mesh(new THREE.PlaneGeometry(1.6 * S, 1.3 * S), M.dark);
+    hole.rotation.x = Math.PI / 2;
+    hole.position.y = 2.996;
+    g.add(hole);
+    for (let k = 0; k < Math.round(3 * S); k++) {
+      // 一邊還掛在龍骨上、另一邊垂下來的板子
+      const p = new THREE.Group();
+      p.position.set(r.range(-0.6, 0.6) * S, 2.99, r.range(-0.5, 0.5) * S);
+      p.rotation.y = r.range(0, 6.28);
+      this.box(p, k % 2 ? M.ash : M.plasticBeige, 0.6, 0.015, 0.6, 0, 0, 0.3, { rx: -r.range(0.6, 1.2) });
+      g.add(p);
+    }
+    for (let k = 0; k < 2; k++) this.box(g, M.steel, 1.4 * S, 0.03, 0.025, r.range(-0.3, 0.3), 2.96, r.range(-0.4, 0.4), { ry: r.range(0, 3), rz: r.range(-0.25, 0.25) });
+    for (let k = 0; k < Math.round(3 * S); k++) {
+      const x = r.range(-0.5, 0.5) * S, z = r.range(-0.5, 0.5) * S;
+      this.tube(g, M.plasticDark, 0.008, [x, 3.0, z], [x + r.range(-0.3, 0.3), r.range(2.05, 2.4), z + r.range(-0.3, 0.3)], 4);
+    }
+    return g;
+  }
+
+  // 釘在窗上的木板（燒破的窗戶）
+  boards() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    for (let k = r.int(3, 4); k > 0; k--) {
+      this.box(g, M.wood, 1.9, r.range(0.14, 0.2), 0.025, r.range(-0.08, 0.08), r.range(1.1, 2.2), 0.07, { rz: r.range(-0.3, 0.3), uvScale: 0.8 });
+    }
+    return g;
+  }
+
   // ---- 裝飾
   curtain(len = 2.0) {
     const { M } = this, g = new THREE.Group(), r = this.rng;
@@ -861,6 +1058,16 @@ export class PropBuilder {
 
   barricade(b) {
     const { M } = this, g = new THREE.Group(), r = this.rng;
+    if (b.rubble) {
+      // 燒毀的舊院區：天花板塌下來，一大堆瓦礫和斷樑把整條走廊堵死
+      const pile = this.rubble({}, 2.1);
+      pile.scale.y = 1.6;
+      g.add(pile);
+      for (let k = 0; k < 3; k++) this.box(g, M.charcoal, 2.7, r.range(0.18, 0.26), 0.22, r.range(-0.1, 0.1), r.range(0.5, 1.6), r.range(-0.9, 0.9), { rz: r.range(-0.4, 0.4), ry: r.range(-0.25, 0.25) });
+      for (let k = 0; k < 4; k++) this.box(g, M.ash, 0.6, 0.015, 0.6, r.range(-0.8, 0.8), r.range(0.9, 1.9), r.range(-0.8, 0.8), { rx: r.range(-1, 1), ry: r.range(0, 3), rz: r.range(-1, 1) });
+      g.rotation.y = b.horizontal ? Math.PI / 2 : 0;
+      return g;
+    }
     // 疊起來的床、椅子和木板
     const bed1 = this.bed({ variant: 2 });
     bed1.rotation.set(0.1, Math.PI / 2 + r.range(-0.2, 0.2), r.range(0.3, 0.5));
