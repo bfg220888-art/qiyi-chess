@@ -57,3 +57,5 @@
 | 名稱 | 授權 |
 |---|---|
 | [three.js](https://threejs.org/) | MIT |
+| [PeerJS](https://peerjs.com/)（多人連線，WebRTC 點對點） | MIT |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer)（遠處模型簡化） | MIT |
