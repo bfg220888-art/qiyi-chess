@@ -229,3 +229,21 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 @media (prefers-reduced-motion: reduce) {
   .title, .title::after, #menu::before, #loading::before, #intro::before, .rotate-ico { animation: none; }
 }
+
+/* 多人連線大廳 */
+.panel.mp { width: min(420px, 100%); }
+.mp-setup, .mp-room { display: flex; flex-direction: column; gap: 10px; }
+.mp-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--dim, #a8a094); }
+.mp-field input, .mp-join input { background: #0d0b0a; border: 1px solid var(--faint); color: inherit; font: inherit; font-size: 16px; padding: 10px 12px; min-width: 0; }
+.mp-join { display: flex; gap: 8px; }
+.mp-join input { flex: 1; text-transform: uppercase; letter-spacing: 0.3em; }
+.mp-code-label { margin: 0; text-align: center; font-size: 13px; opacity: 0.7; }
+.mp-code { margin: 0; text-align: center; font-size: 38px; letter-spacing: 0.35em; font-family: ui-monospace, Menlo, Consolas, monospace; user-select: all; }
+.mp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mp-list li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--faint); }
+.mp-list .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.mp-list .tag { margin-left: auto; font-size: 12px; opacity: 0.65; }
+.mp-info, .mp-status, .mp-note { margin: 0; font-size: 13px; text-align: center; }
+.mp-status { color: #e0645f; min-height: 1em; }
+.mp-status:empty { display: none; }
+.mp-note { opacity: 0.55; }

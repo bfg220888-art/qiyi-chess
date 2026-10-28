@@ -415,13 +415,13 @@ export class AudioEngine {
     const run = o.run, crouch = o.crouch;
     const base = run ? 0.55 : crouch ? 0.1 : 0.28;
     if (this.has('step')) {
-      const out = this.out(null, 0.5, run ? 0.22 : 0.16);
+      const out = this.out(o.pos ? o : null, 0.5, run ? 0.22 : 0.16);
       const tile = o.surface === 'tile';
       this.sample(out, 'step', t, { rate: rnd(0.93, 1.07) * (tile ? 1.1 : 1) * (run ? 1.06 : crouch ? 0.94 : 1), gain: base * 1.5 });
       if (Math.random() < 0.12) this.burst(out, t + 0.02, { ftype: 'highpass', f: 5000, d: 0.06, peak: base * 0.12 }); // 踩到碎玻璃 / 紙
       return;
     }
-    const out = this.out(null, 0.3, run ? 0.22 : 0.16);
+    const out = this.out(o.pos ? o : null, 0.3, run ? 0.22 : 0.16);
     const tile = o.surface === 'tile';
     this.burst(out, t, { f: rnd(380, 560) * (run ? 1.25 : 1) * (tile ? 1.3 : 1), q: 1.1, d: 0.07, peak: base });
     this.burst(out, t, { ftype: 'highpass', f: tile ? 3200 : 2400, q: 0.7, a: 0.001, d: 0.025, peak: base * (tile ? 0.7 : 0.45) });

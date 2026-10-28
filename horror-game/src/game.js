@@ -12,6 +12,7 @@ import { RealGhostModel } from './ghost-real.js';
 import { Director } from './events.js';
 import { Post } from './post.js';
 import { fmtTime } from './ui.js';
+import { SLOT_COLORS, makeFallbackAvatar } from './mp.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -46,6 +47,10 @@ export class Game {
     this.projectiles = [];
     this.timers = new Set();
     this.sight = (ax, az, bx, bz) => sightClear(this.lv, ax, az, bx, bz);
+    // 多人連線
+    this.mp = opts.mp || null;
+    this.remotes = new Map(); // slot → 其他玩家
+    this.mpStatus = 0; // 0 還在裡面、1 被抓走、2 逃出去了
   }
 
   async build(progress) {
@@ -92,6 +97,7 @@ export class Game {
     this.ghostNav = new NavGrid(this.lv, GHOST_R, { ghost: true });
     this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
     this.player = new Player(this);
+    if (this.mp) this.mpSetup();
     // 寫實女鬼模型（下載失敗就用程序化的備援）
     progress(0.72, '她正在醒來……（下載她的模型）');
     this.ghostAssets = await ghostP;
@@ -118,6 +124,7 @@ export class Game {
     this.director.apparition.visible = false;
     progress(1, '');
     this.markExplored(true);
+    if (this.mp) this.mp.attach(this);
   }
 
   resize() {
@@ -173,6 +180,7 @@ export class Game {
   // 噪音：會吸引她
   makeNoise(x, z, radius, kind = '') {
     if (radius <= 0 || !this.ghost) return;
+    if (this.mp && !this.mp.isHost) { this.mp.send({ t: 'noise', x: +x.toFixed(2), z: +z.toFixed(2), r: radius, k: kind }); return; }
     this.ghost.hearNoise(x, z, radius, kind);
   }
 
@@ -182,7 +190,8 @@ export class Game {
     this.time += dt;
     const P = this.player;
     this.inputMoveX = inp.mx;
-    if (this.dying) { this.updateDying(dt); return; }
+    if (this.dying) { this.updateDying(dt); if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); } return; }
+    if (this.mp && this.mpStatus !== 0) { this.updateSpectator(dt, inp); return; }
 
     // 動作
     inp.crouchToggle = false;
@@ -227,6 +236,7 @@ export class Game {
     }
     this.audio.setBuzz(this.buzzFix, this.buzzFix ? this.buzzFix.level : 0);
     this.updateInteraction();
+    if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); }
     this.markExplored(false);
     if (this.mapOpen && Math.floor(this.time * 4) !== Math.floor((this.time - dt) * 4)) this.ui.drawMap();
 
@@ -248,7 +258,7 @@ export class Game {
     }
 
     // 逃出大門
-    if (this.lv.gate.open && P.pos.z > this.lv.gate.z + 0.7) { this.win(); return; }
+    if (this.lv.gate.open && P.pos.z > this.lv.gate.z + 0.7) { if (this.mp) this.mpEscaped(); else this.win(); return; }
     // 進入發電機房
     if (!this.seenGenerator) {
       const room = this.lv.roomAtWorld(P.pos.x, P.pos.z);
@@ -378,7 +388,8 @@ export class Game {
         P.enterLocker(t.locker);
         break;
       case 'item':
-        this.pickup(t.item);
+        if (this.mp && t.item.kind !== 'note') this.mpRequestPick(t.item);
+        else this.pickup(t.item);
         break;
       case 'fusebox':
         this.useFusebox();
@@ -477,6 +488,7 @@ export class Game {
         this.scene.remove(p.mesh);
         this.projectiles.splice(i, 1);
         this.audio.play('bottleBreak', { pos: { x: at.x, y: at.y, z: at.z } });
+        if (this.mp) this.mp.send({ t: 'sfx', n: 'bottleBreak', x: +at.x.toFixed(2), y: +at.y.toFixed(2), z: +at.z.toFixed(2) });
         this.makeNoise(at.x, at.z, 20, 'bottle');
         p.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
         continue;
@@ -499,9 +511,20 @@ export class Game {
       this.ui.hint(`配電箱上有三個插槽，已經插上 ${this.fusesInserted} 個。`, 2.5);
       return;
     }
-    const fb = W.fusebox;
     P.fuses--;
-    const i = this.fusesInserted++;
+    if (this.mp) {
+      if (this.mp.isHost) this.mpHostFuse(this.mp.mySlot);
+      else this.mp.send({ t: 'fuse' });
+      this.ui.updateHud();
+      return;
+    }
+    this.applyFuse(this.fusesInserted++);
+  }
+
+  // 插上第 i 個保險絲（多人時由房主決定順序，大家一起套用）
+  applyFuse(i) {
+    const A = this.audio, W = this.world;
+    const fb = W.fusebox;
     const pos = fb.getWorldPosition(new THREE.Vector3());
     A.play('fuseInsert', { pos });
     // 插槽裡出現保險絲、燈號轉綠
@@ -568,8 +591,14 @@ export class Game {
   }
   onChaseEnd() { /* 配樂由 updateMood 自動淡出 */ }
 
-  onCaught(fromLocker) {
+  onCaught(fromLocker, who) {
     const P = this.player;
+    // 房主的女鬼抓到別人：通知那個人，她過一下就消失
+    if (this.mp && who && who !== P) {
+      this.mp.send({ t: 'caught', s: who.slot, lk: fromLocker ? 1 : 0 });
+      this.mpGhostRetreat(1.6);
+      return;
+    }
     this.stats.caught++;
     this.vibrate([300, 80, 500]);
     if (P.lives > 1) {
@@ -580,11 +609,13 @@ export class Game {
       P.knockBack();
       this.post.u.uFlash.value = 0.4;
       if (P.hiding) { P.hiding.hideDoor = false; P.hiding.dirty = true; P.hiding = null; this.ui.setHiding(false); }
-      this.ghost.state = 'dormant';
-      this.ghost.model.root.visible = false;
-      this.ghost.dormantUntil = this.time + 15;
-      this.ghost.knowsLocker = null;
-      this.ghost.stopHum();
+      if (!this.mp || this.mp.isHost) {
+        this.ghost.state = 'dormant';
+        this.ghost.model.root.visible = false;
+        this.ghost.dormantUntil = this.time + 15;
+        this.ghost.knowsLocker = null;
+        this.ghost.stopHum();
+      }
       this.ui.hint('她抓住了你……你掙脫了。下一次就沒這麼幸運。', 4);
       void fromLocker;
       return;
@@ -649,7 +680,7 @@ export class Game {
     u.uStatic.value = 0.6 + Math.random() * 0.4;
     u.uDistort.value = 1;
     u.uFade.value = Math.max(0, (d.t - 1.3) / 0.5);
-    if (d.t > 1.9 && !this.over) this.lose();
+    if (d.t > 1.9 && !this.over) { if (this.mp) this.mpDied(); else this.lose(); }
   }
 
   lose() {
@@ -800,6 +831,337 @@ export class Game {
         if (lv.cellAt(cx, cy) !== 0) break;
       }
     }
+  }
+
+  // =====================================================================
+  // 多人連線
+  mpSetup() {
+    const mp = this.mp, P = this.player, lv = this.lv;
+    P.slot = mp.mySlot;
+    // 出生點依座位往旁邊錯開，免得大家疊在一起
+    const off = [0, 0.8, -0.8, 1.6][mp.mySlot] || 0;
+    const sx = lv.spawn.x + Math.cos(lv.spawn.yaw) * off, sz = lv.spawn.z - Math.sin(lv.spawn.yaw) * off;
+    if (!this.collision.overlapsStatic(sx, sz, 0.35)) { P.pos.x = sx; P.pos.z = sz; P.camera.position.set(sx, P.camera.position.y, sz); }
+    for (const p of mp.players) if (p.slot !== mp.mySlot) this.mpAddRemote(p.slot);
+    // 門被我開關時告訴其他人（收到別人的門就不再轉送）
+    const W = this.world, setDoor = W.setDoor.bind(W);
+    W.setDoor = (d, target, speed = 2.6) => {
+      setDoor(d, target, speed);
+      if (!this.mpApplying) this.mp.send({ t: 'door', i: lv.doors.indexOf(d), tg: target, sp: speed });
+    };
+  }
+
+  mpAddRemote(slot) {
+    if (this.remotes.has(slot)) return;
+    const av = (this.app.playerAvatar && this.app.playerAvatar(slot)) || makeFallbackAvatar(slot);
+    const lv = this.lv;
+    const light = new THREE.SpotLight(0xfff1dc, 0, 18, 0.43, 0.5, 2);
+    light.castShadow = false;
+    this.scene.add(av.root, light, light.target);
+    const r = {
+      slot, av, light,
+      pos: new THREE.Vector3(lv.spawn.x, 1.6, lv.spawn.z), yaw: lv.spawn.yaw, pitch: 0,
+      tx: lv.spawn.x, tz: lv.spawn.z, ty: lv.spawn.yaw, tp: 0,
+      camera: { position: new THREE.Vector3(lv.spawn.x, 1.6, lv.spawn.z) },
+      flashOn: true, crouching: false, holdingBreath: false, sanity: 1, hiding: null, hideAnim: null,
+      speed: 0, a: 0, h: -1, stepT: 0, got: false,
+    };
+    this.remotes.set(slot, r);
+  }
+
+  mpRemoveRemote(slot) {
+    const r = this.remotes.get(slot);
+    if (!r) return;
+    this.scene.remove(r.av.root, r.light, r.light.target);
+    r.av.dispose();
+    r.light.dispose();
+    this.remotes.delete(slot);
+  }
+
+  mpPlayerLeft(slot) {
+    if (this.over) return;
+    this.ui.hint(`${this.mp.slotName(slot)} 離開了。`, 3);
+  }
+
+  // 要傳給別人的自己的狀態
+  mpLocalState() {
+    const P = this.player;
+    const h = P.hiding || (P.hideAnim && P.hideAnim.entering ? P.hideAnim.locker : null);
+    return {
+      x: +P.pos.x.toFixed(2), z: +P.pos.z.toFixed(2), y: +P.yaw.toFixed(2), p: +P.pitch.toFixed(2),
+      f: P.flashOn && P.battery > 0 ? 1 : 0, h: h ? this.lv.lockers.indexOf(h) : -1,
+      c: P.crouchNow || P.crouching ? 1 : 0, v: +(P.speed || 0).toFixed(1), a: this.mpStatus,
+      hb: P.holdingBreath ? 1 : 0, sa: +P.sanity.toFixed(2), b: this.dying ? 1 : 0,
+    };
+  }
+
+  mpApplyState(slot, s) {
+    if (slot === this.mp.mySlot) return;
+    if (!this.remotes.has(slot)) this.mpAddRemote(slot);
+    const r = this.remotes.get(slot);
+    if (!Number.isFinite(s.x) || !Number.isFinite(s.z)) return;
+    r.tx = s.x; r.tz = s.z; r.ty = s.y || 0; r.tp = s.p || 0;
+    if (!r.got) { r.got = true; r.pos.x = s.x; r.pos.z = s.z; r.yaw = r.ty; }
+    r.flashOn = !!s.f; r.crouching = !!s.c; r.holdingBreath = !!s.hb; r.speed = s.v || 0;
+    r.sanity = Number.isFinite(s.sa) ? s.sa : 1;
+    const h = Number.isInteger(s.h) ? s.h : -1;
+    if (h !== r.h) {
+      // 別人進出鐵櫃：櫃門開一下再關上
+      const l = this.lv.lockers[h >= 0 ? h : r.h];
+      if (l) {
+        this.audio.play('lockerOpen', { pos: { x: l.x, y: 1, z: l.z } });
+        l.target = 1.7;
+        this.later(() => { l.target = 0; this.audio.play('lockerClose', { pos: { x: l.x, y: 1, z: l.z } }); }, 650);
+      }
+      r.h = h;
+    }
+    r.hiding = h >= 0 ? this.lv.lockers[h] || null : null;
+    r.dying = !!s.b;
+    if (s.a !== r.a) {
+      const name = this.mp.slotName(slot);
+      if (s.a === 1) this.ui.subtitle(`${name} 被她帶走了。`, 4);
+      else if (s.a === 2) this.ui.subtitle(`${name} 逃出去了。`, 4);
+      r.a = s.a;
+    }
+  }
+
+  // 其他玩家的人物、手電筒、腳步聲
+  mpUpdateRemotes(dt) {
+    const k = 1 - Math.exp(-dt * 12);
+    const lerpAng = (x, y, t) => { let d = y - x; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return x + d * t; };
+    for (const r of this.remotes.values()) {
+      r.pos.x += (r.tx - r.pos.x) * k;
+      r.pos.z += (r.tz - r.pos.z) * k;
+      r.yaw = lerpAng(r.yaw, r.ty, k);
+      r.pitch += (r.tp - r.pitch) * k;
+      const eye = r.crouching ? 1.0 : 1.6;
+      r.pos.y = eye;
+      r.camera.position.set(r.pos.x, eye, r.pos.z);
+      const gone = r.a !== 0;
+      const root = r.av.root;
+      root.visible = !gone && !r.hiding;
+      root.position.set(r.pos.x, 0, r.pos.z);
+      root.rotation.y = r.yaw + Math.PI;
+      r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false });
+      // 手電筒
+      const on = r.flashOn && root.visible;
+      const fx = -Math.sin(r.yaw) * Math.cos(r.pitch), fz = -Math.cos(r.yaw) * Math.cos(r.pitch), fy = Math.sin(r.pitch);
+      r.light.intensity = on ? 22 : 0;
+      if (r.av.setFlashlight) r.av.setFlashlight(on);
+      r.light.position.set(r.pos.x + Math.cos(r.yaw) * 0.2, eye - 0.25, r.pos.z - Math.sin(r.yaw) * 0.2);
+      r.light.target.position.set(r.light.position.x + fx * 6, r.light.position.y + fy * 6, r.light.position.z + fz * 6);
+      r.light.target.updateMatrixWorld();
+      // 腳步聲
+      if (root.visible && r.speed > 0.6) {
+        r.stepT -= dt * (r.speed > 4 ? 2.6 : r.crouching ? 1.1 : 1.8);
+        if (r.stepT <= 0) {
+          r.stepT = 1;
+          this.audio.play('footstep', { pos: { x: r.pos.x, y: 0.1, z: r.pos.z }, run: r.speed > 4, crouch: r.crouching });
+        }
+      }
+    }
+  }
+
+  ghostNetState() { return this.ghost.netState(); }
+
+  // 房主：女鬼要追誰——追逐中盯住同一個人，否則找最近的
+  mpGhostTarget(gh) {
+    const list = [];
+    if (this.mpStatus === 0 && !this.dying) list.push(this.player);
+    for (const r of this.remotes.values()) if (r.a === 0 && r.got && !r.dying) list.push(r);
+    if (!list.length) { gh.targetSlot = -1; return gh.target && gh.target !== this.player ? gh.target : this.player; }
+    const cur = gh.target && list.includes(gh.target) ? gh.target : null;
+    let pick = cur;
+    if (!(cur && gh.state === 'chase' && gh.lostT < 2)) {
+      let best = 1e9;
+      for (const p of list) {
+        const d = Math.hypot(p.pos.x - gh.pos.x, p.pos.z - gh.pos.z) + (p === cur ? -2 : 0);
+        if (d < best) { best = d; pick = p; }
+      }
+    }
+    if (pick !== gh.target) gh.knowsLocker = null;
+    gh.targetSlot = pick === this.player ? this.mp.mySlot : pick.slot;
+    return pick;
+  }
+
+  // 被追的人消失了（被抓、離開）：女鬼退開一陣子
+  mpGhostRetreat(delay) {
+    this.later(() => {
+      const gh = this.ghost;
+      if (this.over || !gh || gh.state === 'dormant') return;
+      gh.setState('dormant');
+      gh.model.root.visible = false;
+      gh.dormantUntil = this.time + 12;
+      gh.knowsLocker = null;
+      gh.stopHum();
+    }, delay * 1000);
+  }
+
+  mpApplyDoor(m) {
+    const d = Number.isInteger(m.i) ? this.lv.doors[m.i] : null;
+    if (!d || !Number.isFinite(m.tg)) return;
+    m.tg = Math.max(-1.7, Math.min(1.7, m.tg));
+    const was = d.target;
+    this.mpApplying = true;
+    this.world.setDoor(d, m.tg, Number.isFinite(m.sp) ? m.sp : 2.6);
+    this.mpApplying = false;
+    const pos = { x: d.x, y: 1.2, z: d.z };
+    if (m.tg > was) this.audio.play(m.sp >= 7 ? 'doorBang' : 'doorOpen', { pos });
+    else if (m.tg < was) this.audio.play(m.sp >= 10 ? 'doorSlam' : 'doorClose', { pos });
+  }
+
+  // 撿道具：先問房主，房主確定沒人搶先才給
+  mpRequestPick(it) {
+    if (it.kind === 'bottle' && this.player.bottles >= 3) { this.ui.hint('最多只能帶三個瓶子。', 2); return; }
+    if (it.pending) return;
+    const i = this.lv.items.indexOf(it);
+    if (this.mp.isHost) { this.mpHostPick(i, this.mp.mySlot); return; }
+    it.pending = true;
+    setTimeout(() => { it.pending = false; }, 2000);
+    this.mp.send({ t: 'pick', i });
+  }
+  mpHostPick(i, slot) {
+    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+    if (!it || it.taken) return;
+    this.mp.send({ t: 'took', i, by: slot });
+    this.mpTook(i, slot);
+  }
+  mpTook(i, by) {
+    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+    if (!it || it.taken) return;
+    if (by === this.mp.mySlot) { it.pending = false; this.pickup(it); return; }
+    this.world.removeItem(it);
+    if (it.kind === 'fuse') this.ui.hint(`${this.mp.slotName(by)} 撿到了一個保險絲。`, 2.5);
+  }
+
+  // 保險絲：房主統一計數，避免兩人同時插而重複
+  mpHostFuse(slot) {
+    if (this.fusesInserted >= 3) return;
+    const n = this.fusesInserted + 1;
+    this.mp.send({ t: 'fuses', n, by: slot });
+    this.mpApplyFuse(n, slot);
+  }
+  mpApplyFuse(n, by) {
+    if (!Number.isInteger(n) || n < 1 || n > 3) return;
+    while (this.fusesInserted < n) {
+      const i = this.fusesInserted++;
+      this.applyFuse(i);
+    }
+    if (by !== this.mp.mySlot) this.ui.hint(`${this.mp.slotName(by)} 插上了保險絲（${n}/3）`, 3);
+  }
+
+  // 房主決定的世界事件（牆上的字、熄燈、屍體換姿勢）
+  mpApplyEvent(m) {
+    const D = this.director;
+    switch (m.k) {
+      case 'write':
+        if (typeof m.text === 'string' && [m.x, m.y, m.z, m.rot].every(Number.isFinite)) this.world.addWallWriting(m.text.slice(0, 40), m.x, m.y, m.z, m.rot);
+        break;
+      case 'lightsOut':
+        if ([m.x, m.z, m.r, m.d].every(Number.isFinite)) {
+          this.world.lightsOut(m.x, m.z, m.r, m.d);
+          this.audio.play('distantBang', { pos: { x: m.x, y: 2.5, z: m.z } });
+        }
+        break;
+      case 'corpse':
+        if (D.applyCorpseSwap) D.applyCorpseSwap(m.i, m.n);
+        break;
+    }
+  }
+
+  // 自己被抓走了 → 改成觀戰
+  mpDied() {
+    if (this.mpStatus !== 0) return;
+    this.mpStatus = 1;
+    this.mpSpectateBegin('你被她帶走了……');
+    if (this.mp.isHost) { this.mpGhostRetreat(0.2); this.mp.checkEnd(); }
+  }
+  // 自己逃出去了
+  mpEscaped() {
+    if (this.mpStatus !== 0) return;
+    this.mpStatus = 2;
+    this.audio.play('thunder', { near: 0.3 });
+    this.mpSpectateBegin('你逃出去了。還有人在裡面……');
+    if (this.mp.isHost) this.mp.checkEnd();
+  }
+  mpSpectateBegin(text) {
+    const P = this.player;
+    this.dying = null;
+    this.post.u.uFade.value = 0;
+    this.post.u.uRed.value = 0;
+    this.post.u.uDistort.value = 0;
+    this.damage = 0;
+    this.ghost.model.revealFace(0);
+    if (!this.mp.isHost) this.ghost.model.root.visible = false;
+    this.audio.startAmbience();
+    this.audio.setMusic('explore');
+    P.flash.intensity = 0;
+    P.flashOn = false;
+    if (P.hiding) { P.hiding.hideDoor = false; P.hiding.dirty = true; P.hiding = null; this.ui.setHiding(false); }
+    this.ui.prompt('');
+    this.ui.subtitle(text, 4);
+    this.spectate = -1;
+    this.mpNextSpectate();
+  }
+  mpNextSpectate() {
+    const alive = [...this.remotes.values()].filter((r) => r.a === 0).map((r) => r.slot).sort();
+    if (!alive.length) { this.spectate = -1; return; }
+    const i = alive.indexOf(this.spectate);
+    this.spectate = alive[(i + 1) % alive.length];
+    this.ui.hint(`正在看 ${this.mp.slotName(this.spectate)}（按互動鍵換人）`, 3);
+  }
+
+  updateSpectator(dt, inp) {
+    const P = this.player;
+    if (inp.interact) this.mpNextSpectate();
+    let r = this.remotes.get(this.spectate);
+    if (!r || r.a !== 0) { this.mpNextSpectate(); r = this.remotes.get(this.spectate); }
+    if (r) {
+      // 從他的眼睛看出去
+      P.pos.x = r.pos.x; P.pos.z = r.pos.z;
+      P.yaw = r.yaw; P.pitch = r.pitch;
+      P.sanity = r.sanity;
+      const c = P.camera;
+      c.position.copy(r.camera.position);
+      c.rotation.set(r.pitch, r.yaw, 0);
+      c.updateMatrixWorld();
+    }
+    this.ghost.update(dt);
+    if (this.mp.isHost) this.director.update(dt);
+    this.world.update(dt, P.camera, false);
+    this.mpUpdateRemotes(dt);
+    if (r) r.av.root.visible = false;
+    this.mp.tick(dt);
+    this.ghostDist = r && this.ghost.state !== 'dormant' ? Math.hypot(this.ghost.pos.x - r.pos.x, this.ghost.pos.z - r.pos.z) : 99;
+    this.updateMood(dt);
+    this.audio.setListener(P.camera);
+  }
+
+  // 全員結束：顯示每個人的結果
+  mpEnd(res) {
+    if (this.over) return;
+    this.over = true;
+    this.audio.stopAll();
+    const anyOut = res.some((p) => p.a === 2);
+    this.audio.setMusic(anyOut ? 'win' : 'lose');
+    this.input.exitLock();
+    this.ui.prompt('');
+    const rows = res.map((p) => [this.mp.slotName(p.s) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
+    rows.push(...this.statRows());
+    const text = anyOut
+      ? (res.every((p) => p.a === 2) ? '所有人都活著走出了大門。身後的燈一盞一盞熄滅。' : '有人逃了出來。被留下的人，再也沒有出來過。')
+      : '沒有人走出那扇門。隔天早上，警衛只找到幾台還在錄影的攝影機。';
+    this.ui.showEnd(anyOut, rows, text);
+    this.app.onGameOver(this.mpStatus === 2);
+  }
+
+  mpHostLost() {
+    if (this.over) return;
+    this.over = true;
+    this.audio.stopAll();
+    this.input.exitLock();
+    this.ui.showEnd(false, this.statRows(), '房主斷線了，這一局沒辦法繼續。');
+    this.app.onGameOver(false);
   }
 
   render(dt) {

@@ -8,6 +8,7 @@ import { Game } from './game.js';
 import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
 import { loadCorpses, prefetchCorpses } from './corpses.js';
+import { MP, SLOT_CSS, MAX_PLAYERS } from './mp.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -87,14 +88,21 @@ class App {
     this.ghostTries = 0;
     this.corpseTries = 0;
     this.photoTries = 0;
+    this.mp = new MP(this);
+    addEventListener('pagehide', () => { if (this.mp.active) this.mp.leave(true); });
     this.bindMenu();
+    this.bindLobby();
     this.resize();
     addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         if (this.state === 'playing' && !this.paused) this.pause();
-        this.audio.suspend();
-      } else if (!(this.state === 'playing' && this.paused)) this.audio.resume();
+        if (this.game && this.game.mp) this.startBackgroundTick();
+        else this.audio.suspend();
+      } else {
+        this.stopBackgroundTick();
+        if (!(this.state === 'playing' && this.paused) || (this.game && this.game.mp)) this.audio.resume();
+      }
     });
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
@@ -259,10 +267,112 @@ class App {
     bindCheck('sFps', 'showFps', () => this.ui.setFps(this.settings.showFps && this.state === 'playing'));
     // 鍵盤操作選單
     addEventListener('keydown', (e) => {
-      if (this.state === 'menu' && !$('menu').hidden && (e.code === 'Enter') && $('help').hidden && $('settings').hidden) this.startGame();
+      if (this.state === 'menu' && !$('menu').hidden && (e.code === 'Enter') && $('help').hidden && $('settings').hidden && $('mpPanel').hidden) this.startGame();
       if (this.paused && e.code === 'Escape' && $('settings').hidden && $('help').hidden) this.resume();
     });
   }
+
+  // ---------------------------------------------------------------------
+  // 多人連線大廳
+  bindLobby() {
+    const mp = this.mp;
+    const name = $('mpName');
+    name.value = store.get('mpName', '');
+    const getName = () => {
+      const n = name.value.trim().slice(0, 12);
+      store.set('mpName', n);
+      return n || '無名氏';
+    };
+    const busy = (b) => { for (const id of ['btnMpCreate', 'btnMpJoin']) $(id).disabled = b; };
+    $('btnMp').addEventListener('click', () => { $('mpPanel').hidden = false; this.renderLobby(); });
+    $('btnMpBack').addEventListener('click', () => { $('mpPanel').hidden = true; });
+    $('btnMpCreate').addEventListener('click', async () => {
+      busy(true);
+      try { await mp.create(getName()); } catch (e) { /* 狀態列已顯示原因 */ }
+      busy(false);
+      this.renderLobby();
+    });
+    const join = async () => {
+      busy(true);
+      try { await mp.join($('mpCode').value, getName()); } catch (e) { /* 狀態列已顯示原因 */ }
+      busy(false);
+      this.renderLobby();
+    };
+    $('btnMpJoin').addEventListener('click', join);
+    $('mpCode').addEventListener('keydown', (e) => { if (e.code === 'Enter') { e.stopPropagation(); join(); } });
+    $('btnMpLeave').addEventListener('click', () => { mp.leave(); this.renderLobby(); });
+    $('btnMpStart').addEventListener('click', () => {
+      if (!mp.isHost || this.busy) return;
+      mp.start({ difficulty: this.settings.difficulty, seed: (Math.random() * 2 ** 31) | 0, theme: this.settings.theme || null });
+    });
+    mp.onChange(() => this.renderLobby());
+  }
+
+  renderLobby() {
+    const mp = this.mp;
+    const inRoom = mp.active && (mp.isHost || mp.players.length > 0);
+    $('mpSetup').hidden = mp.active;
+    $('mpRoom').hidden = !inRoom;
+    $('mpStatus').textContent = mp.status;
+    $('btnMpBack').hidden = false;
+    if (!inRoom) return;
+    $('mpCodeShow').textContent = mp.code;
+    const ul = $('mpList');
+    ul.textContent = '';
+    for (const p of mp.players) {
+      const li = document.createElement('li');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = SLOT_CSS[p.slot] || '#888';
+      const nm = document.createElement('span');
+      nm.textContent = p.name;
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = (p.slot === 0 ? '房主' : '') + (p.slot === mp.mySlot ? '（你）' : '');
+      li.append(dot, nm, tag);
+      ul.append(li);
+    }
+    $('btnMpStart').hidden = !mp.isHost;
+    $('mpRoomInfo').textContent = mp.isHost
+      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}（在主選單切換）`
+      : '等待房主開始遊戲……';
+  }
+
+  // 房主按下開始（或收到房主的開始訊息）
+  startMpGame(opts) {
+    const diff = Object.hasOwn(DIFFICULTY, opts.difficulty) ? opts.difficulty : 'normal';
+    const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
+    if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
+    this.mpGo = false;
+    this.startGame(seed, true, { difficulty: diff, theme: typeof opts.theme === 'string' ? opts.theme : null });
+  }
+  mpBegin() {
+    this.mpGo = true;
+    if (this.pendingBegin) { const b = this.pendingBegin; this.pendingBegin = null; b(); }
+  }
+  disposeGame() {
+    if (this.game) { this.game.dispose(); this.game = null; }
+    this.stopBackgroundTick();
+  }
+
+  // 多人時分頁切到背景也要繼續跑（女鬼在房主那邊），只是不畫畫面
+  startBackgroundTick() {
+    if (this.bgTimer) return;
+    let last = performance.now();
+    this.bgTimer = setInterval(() => {
+      const now = performance.now();
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      const g = this.game;
+      if (g && g.mp && this.state === 'playing') g.update(dt, this.emptyInput());
+    }, 50);
+  }
+  stopBackgroundTick() {
+    if (this.bgTimer) clearInterval(this.bgTimer);
+    this.bgTimer = null;
+    this.last = performance.now();
+  }
+  emptyInput() { return { mx: 0, my: 0, sprint: false, crouchHold: false, holdBreath: false, look: { x: 0, y: 0 }, actions: [] }; }
 
   openPanel(id, from) {
     this.panelFrom = from;
@@ -274,14 +384,15 @@ class App {
     if (this.panelFrom === 'pause') $('pause').hidden = false;
   }
 
-  async startGame(seed, skipIntro = false) {
+  async startGame(seed, skipIntro = false, mpOpts = null) {
     if (this.busy) return;
     this.busy = true;
     await this.audio.resume();
-    if (this.game) { this.game.dispose(); this.game = null; }
+    this.disposeGame();
+    if (!mpOpts && this.mp.active) this.mp.leave();
     this.quality = QUALITY[this.settings.quality];
     this.resScale = 1;
-    ['menu', 'end', 'pause', 'help', 'settings', 'note', 'mapView', 'hideOverlay'].forEach((id) => { $(id).hidden = true; });
+    ['menu', 'mpPanel', 'end', 'pause', 'help', 'settings', 'note', 'mapView', 'hideOverlay'].forEach((id) => { $(id).hidden = true; });
     this.ui.setHiding(false);
     this.ui.fade(0, 0.01);
     $('loading').hidden = false;
@@ -291,7 +402,12 @@ class App {
       try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { /* 不支援全螢幕 */ }
       try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch (e) { /* 不支援鎖定方向 */ }
     }
-    const game = new Game(this, { difficulty: this.settings.difficulty, seed: seed ?? (Math.random() * 2 ** 31) | 0 });
+    const game = new Game(this, {
+      difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
+      seed: seed ?? (Math.random() * 2 ** 31) | 0,
+      theme: mpOpts ? mpOpts.theme : this.settings.theme,
+      mp: mpOpts ? this.mp : null,
+    });
     try {
       await game.build((p, msg) => {
         $('loadBar').style.width = (p * 100).toFixed(0) + '%';
@@ -301,12 +417,15 @@ class App {
       console.error(e);
       this.busy = false;
       $('loading').hidden = true;
+      if (mpOpts) this.mp.leave();
       this.fatal('生成醫院時發生錯誤：' + (e && e.message ? e.message : e));
       return;
     }
     this.game = game;
     $('loading').hidden = true;
     const begin = () => {
+      if (this.game !== game) return;
+      $('loading').hidden = true;
       this.audio.resume();
       this.state = 'playing';
       this.paused = false;
@@ -322,6 +441,20 @@ class App {
       this.busy = false;
     };
     this.state = 'intro';
+    if (mpOpts) {
+      // 多人：等所有人都載入完才一起開始
+      if (this.mp.game !== game || !this.mp.active) { this.busy = false; this.toMenu(); return; }
+      this.busy = false;
+      if (this.mpGo) begin();
+      else {
+        this.pendingBegin = () => { this.busy = true; begin(); };
+        $('loading').hidden = false;
+        $('loadBar').style.width = '100%';
+        document.querySelector('.load-title').textContent = '等待其他玩家載入……';
+        this.mp.localReady();
+      }
+      return;
+    }
     if (skipIntro || store.get('introSeen', false)) begin();
     else {
       this.ui.typeIntro([
@@ -339,7 +472,7 @@ class App {
     this.allowUnlock = true;
     this.input.exitLock();
     this.allowUnlock = false;
-    this.audio.suspend();
+    if (!this.game.mp) this.audio.suspend();
     $('pause').hidden = false;
     this.input.enabled = false;
   }
@@ -360,11 +493,24 @@ class App {
     }
   }
   toMenu() {
-    if (this.game) { this.game.dispose(); this.game = null; }
+    // 遊戲還沒結束就離開 = 退出房間（房主離開則整局結束）
+    if (this.mp.active && this.game && this.game.mp && !this.game.over) this.mp.leave();
+    this.disposeGame();
+    this.pendingBegin = null;
+    if (this.mp.active) {
+      // 留在房間裡，回到大廳可以再玩一局
+      this.mp.inGame = false;
+      this.mp.game = null;
+      this.mp.began = false;
+      this.mp.startOpts = null;
+      for (const p of this.mp.players) p.ready = p.slot === this.mp.mySlot;
+      $('mpPanel').hidden = false;
+      this.renderLobby();
+    }
     this.paused = false;
     this.state = 'menu';
     this.input.enabled = false;
-    ['pause', 'end', 'hud', 'touch', 'settings', 'help', 'note', 'mapView', 'hideOverlay', 'rotate'].forEach((id) => { $(id).hidden = true; });
+    ['loading', 'pause', 'end', 'hud', 'touch', 'settings', 'help', 'note', 'mapView', 'hideOverlay', 'rotate'].forEach((id) => { $(id).hidden = true; });
     this.ui.fade(0, 0.01);
     this.ui.damage(0);
     this.ui.setFps(false);
@@ -378,6 +524,10 @@ class App {
   }
   onGameOver() {
     this.state = 'over';
+    const mpg = !!(this.game && this.game.mp);
+    $('btnRetry').hidden = mpg;
+    $('btnNew').hidden = mpg;
+    $('btnMenu').textContent = mpg ? '回到大廳' : '主選單';
     this.input.enabled = false;
     $('touch').hidden = true;
     $('hud').hidden = true;
@@ -417,8 +567,9 @@ class App {
     this.ui.update(dt);
     const g = this.game;
     if (!g) return;
-    if (this.state === 'playing' && !this.paused) {
-      const inp = this.input.poll();
+    if (this.state === 'playing' && (!this.paused || g.mp)) {
+      // 多人時暫停選單打開也不能停下（別人還在玩），只是不接受操作
+      const inp = this.paused ? this.emptyInput() : this.input.poll();
       g.update(dt, inp);
       g.render(dt);
       this.adaptResolution(frameDt);

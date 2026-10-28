@@ -296,7 +296,7 @@ export class Ghost {
 
   // 找一個離玩家指定距離、看不到玩家的位置
   findSpot(minD, maxD, needHidden = true) {
-    const g = this.game, lv = g.lv, nav = g.ghostNav, pp = g.player.pos;
+    const g = this.game, lv = g.lv, nav = g.ghostNav, pp = (this.target || g.player).pos;
     for (let t = 0; t < 80; t++) {
       const x = Math.random() * lv.W * CELL, z = Math.random() * lv.H * CELL;
       if (!nav.isFree(x, z)) continue;
@@ -377,7 +377,11 @@ export class Ghost {
   }
 
   update(dt) {
-    const g = this.game, P = g.player, lv = g.lv;
+    const g = this.game, lv = g.lv;
+    // 多人連線：只有房主跑 AI，其他人照房主送來的狀態播放
+    if (g.mp && !g.mp.isHost) { this.netUpdate(dt); return; }
+    const P = g.mp ? g.mpGhostTarget(this) : g.player;
+    this.target = P;
     this.stateT += dt;
     const m = this.model;
     if (this.state === 'dormant') { m.root.visible = false; return; }
@@ -478,11 +482,11 @@ export class Ghost {
         if (this.knowsLocker) {
           if (P.hiding === this.knowsLocker && Math.hypot(this.knowsLocker.exitX - this.pos.x, this.knowsLocker.exitZ - this.pos.z) < 0.7) {
             this.setState('kill');
-            g.onCaught(true);
+            g.onCaught(true, P);
           }
         } else if (dist < 0.85 && !P.hiding) {
           this.setState('kill');
-          g.onCaught(false);
+          g.onCaught(false, P);
         } else if ((!this.enraged && this.lostT > 3.2) || (P.hiding && !this.knowsLocker)) {
           this.setState('search');
           this.searchN = 0;
@@ -548,7 +552,13 @@ export class Ghost {
       if (this.farT > 22) { this.farT = 0; this.teleportNear(14, 24); }
     } else this.farT = 0;
 
-    // --- 動畫與聲音
+    this.dist = dist;
+    this.animate(dt, P);
+  }
+
+  // 動畫、看人、腳步聲與哼歌位置
+  animate(dt, P) {
+    const g = this.game, m = this.model, dist = this.dist ?? 99;
     this.phase += dt * (1.5 + this.speed * 2.6);
     const t = g.time;
     let jitterX = 0, jitterZ = 0;
@@ -568,7 +578,7 @@ export class Ghost {
       const w = this.seesPlayer ? (this.state === 'chase' ? 1 : dist < 12 ? Math.min(1, 0.35 + this.suspicion) : 0) : this.lastKnown && this.state !== 'wander' ? 0.5 : 0;
       this.lookW = (this.lookW || 0) + (w - (this.lookW || 0)) * Math.min(1, dt * 3);
       const lt = this.lookTgt || (this.lookTgt = new THREE.Vector3());
-      if (this.seesPlayer) lt.copy(g.player.camera.position);
+      if (this.seesPlayer && P && P.camera) lt.copy(P.camera.position);
       else if (this.lastKnown) lt.set(this.lastKnown.x, 1.4, this.lastKnown.z);
       m.setLookTarget(lt, this.lookW);
     }
@@ -582,5 +592,41 @@ export class Ghost {
         g.audio.play('ghostStep', { pos: { x: this.pos.x, y: 0.1, z: this.pos.z }, fast: this.state === 'chase' });
       }
     }
+  }
+
+  // ---- 多人連線：房主送來的女鬼狀態
+  netState() {
+    return {
+      t: 'gh', x: +this.pos.x.toFixed(2), z: +this.pos.z.toFixed(2), y: +this.yaw.toFixed(2), s: this.state,
+      v: +this.speed.toFixed(2), sp: this.seesPlayer ? 1 : 0, tg: this.targetSlot ?? -1, l: this.listening ? 1 : 0,
+    };
+  }
+  applyNet(m) {
+    const first = !this.net;
+    this.net = m;
+    if (m.s !== this.state) {
+      const prev = this.state;
+      // 從消失的狀態現身：直接出現在新位置
+      if (prev === 'dormant' || first) { this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
+      if (m.s === 'stunned') this.game.audio.play('ghostScream', { pos: this.pos });
+      this.setState(m.s);
+    }
+  }
+  netUpdate(dt) {
+    const g = this.game, m = this.model, n = this.net;
+    this.stateT += dt;
+    if (!n || this.state === 'dormant') { m.root.visible = false; return; }
+    m.root.visible = true;
+    const k = 1 - Math.exp(-dt * 12);
+    this.pos.x += (n.x - this.pos.x) * k;
+    this.pos.z += (n.z - this.pos.z) * k;
+    this.yaw += angDiff(n.y, this.yaw) * k;
+    this.speed += (n.v - this.speed) * k;
+    this.seesPlayer = !!n.sp;
+    this.listening = !!n.l;
+    // 她在看誰：自己就看鏡頭，其他人就看那個人的頭
+    const P = n.tg === g.mp.mySlot ? g.player : g.remotes.get(n.tg) || null;
+    this.dist = P ? Math.hypot(P.pos.x - this.pos.x, P.pos.z - this.pos.z) : 99;
+    this.animate(dt, P);
   }
 }

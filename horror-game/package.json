@@ -10,11 +10,13 @@
     "test": "node tests/level.test.mjs 200 && node tests/smoke.mjs"
   },
   "dependencies": {
+    "peerjs": "^1.5.4",
     "three": "0.185.1"
   },
   "devDependencies": {
     "esbuild": "0.25.10",
     "meshoptimizer": "^0.22.0",
+    "peer": "^1.0.2",
     "playwright-core": "1.64.0"
   }
 }

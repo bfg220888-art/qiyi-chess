@@ -32,6 +32,7 @@
         <button type="button" role="radio" data-diff="nightmare">惡夢</button>
       </div>
       <p id="diffDesc" class="diff-desc"></p>
+      <button id="btnMp" class="btn" type="button">多人連線（最多 4 人）</button>
       <div class="menu-row">
         <button id="btnHelp" class="btn ghost" type="button">操作說明</button>
         <button id="btnSettings" class="btn ghost" type="button">設定</button>
@@ -39,6 +40,32 @@
       <p id="bestTime" class="best"></p>
     </div>
     <p class="phones">建議戴耳機遊玩・聲音會告訴你她在哪裡</p>
+  </div>
+</section>
+
+<!-- 多人連線大廳 -->
+<section id="mpPanel" class="overlay" hidden>
+  <div class="panel mp">
+    <h2>多人連線</h2>
+    <div id="mpSetup" class="mp-setup">
+      <label class="mp-field">你的名字<input id="mpName" type="text" maxlength="12" autocomplete="off" spellcheck="false"></label>
+      <button id="btnMpCreate" class="btn primary" type="button">建立房間</button>
+      <div class="mp-join">
+        <input id="mpCode" type="text" maxlength="5" placeholder="房間代碼" autocomplete="off" spellcheck="false" aria-label="房間代碼">
+        <button id="btnMpJoin" class="btn" type="button">加入</button>
+      </div>
+    </div>
+    <div id="mpRoom" class="mp-room" hidden>
+      <p class="mp-code-label">房間代碼（請告訴朋友）</p>
+      <p id="mpCodeShow" class="mp-code"></p>
+      <ul id="mpList" class="mp-list"></ul>
+      <p id="mpRoomInfo" class="mp-info"></p>
+      <button id="btnMpStart" class="btn primary" type="button">開始遊戲</button>
+      <button id="btnMpLeave" class="btn ghost" type="button">離開房間</button>
+    </div>
+    <p id="mpStatus" class="mp-status" role="status"></p>
+    <p class="mp-note">房主的分頁請保持在前景。網路防火牆太嚴格時可能連不上。</p>
+    <button id="btnMpBack" class="btn ghost" type="button">返回</button>
   </div>
 </section>
 

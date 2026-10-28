@@ -312,7 +312,9 @@ export class Player {
       return sightClear(g.lv, this.pos.x, this.pos.z, x, z);
     };
     if (gh.state !== 'dormant' && tryStun(gh.pos.x, gh.pos.z)) {
-      if (gh.stun()) {
+      // 多人時女鬼在房主那邊：請房主定住她
+      if (g.mp && !g.mp.isHost) g.mp.send({ t: 'stun' });
+      else if (gh.stun()) {
         g.stats.stuns++;
         g.ui.hint('她被閃光定住了——快跑！', 2.5);
       }

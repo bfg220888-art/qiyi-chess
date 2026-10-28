@@ -34,8 +34,9 @@ export class Director {
     if (!this.firstPeekDone && t > g.diff.grace - 12 && gh.state === 'dormant' && !gh.dormantUntil) {
       if (this.peek(true)) this.firstPeekDone = true;
     }
-    // 鬼魂登場 / 回來
-    if (gh.state === 'dormant') {
+    // 鬼魂登場 / 回來（多人時只有房主決定）
+    const authority = !g.mp || g.mp.isHost;
+    if (authority && gh.state === 'dormant') {
       const ready = gh.dormantUntil ? t > gh.dormantUntil : (t > g.diff.grace || g.fusesInserted > 0 || P.fuses > 0);
       if (ready && !g.dying) {
         const spot = gh.findSpot(g.phase === 'escape' ? 12 : 18, g.phase === 'escape' ? 24 : 34) || gh.findSpot(10, 60);
@@ -51,7 +52,7 @@ export class Director {
     if (this.fakeRush) this.updateRush(dt);
 
     // 隨機事件
-    if (g.phase === 'escape') return;
+    if (g.phase === 'escape' || g.mpStatus) return;
     this.next -= dt;
     if (this.next <= 0) {
       this.next = rnd(20, 42) * (1 - 0.12 * g.fusesInserted) * (P.sanity < 0.35 ? 0.65 : 1);
@@ -70,6 +71,11 @@ export class Director {
       ['phone', g.lv.phone && !this.used.has('phone') && g.time > 60 ? 2.5 : 0],
       ['corpse', g.world.corpseMeshes && g.world.corpseMeshes.length && (this.corpseMoves || 0) < 2 && g.time > 75 ? 2 : 0],
     ];
+    if (g.mp) {
+      // 多人：輪椅、電話不同步；會改變世界的事件只由房主觸發再廣播
+      const worldEv = ['writing', 'lightsOut', 'corpse'];
+      for (const o of opts) if (o[0] === 'wheelchair' || o[0] === 'phone' || (!g.mp.isHost && worldEv.includes(o[0]))) o[1] = 0;
+    }
     let total = 0;
     for (const o of opts) total += o[1];
     let r = Math.random() * total;
@@ -145,6 +151,7 @@ export class Director {
         break;
       case 'lightsOut':
         g.world.lightsOut(pp.x, pp.z, 10, 6);
+        if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'lightsOut', x: +pp.x.toFixed(2), z: +pp.z.toFixed(2), r: 10, d: 6 });
         A.play('static', { dur: 0.4, vol: 0.4 });
         A.play('distantBang', { pos: { x: pp.x + rnd(-6, 6), y: 2.5, z: pp.z + rnd(-6, 6) } });
         break;
@@ -193,6 +200,18 @@ export class Director {
     });
     if (!opts.length) return false;
     const name = opts[Math.floor(Math.random() * opts.length)];
+    const idx = W.corpseMeshes.indexOf(old);
+    if (!this.applyCorpseSwap(idx, name)) return false;
+    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'corpse', i: idx, n: name });
+    return true;
+  }
+
+  // 第 i 具屍體換成 name 這個姿勢（多人時其他人收到房主的指令也呼叫這裡）
+  applyCorpseSwap(i, name) {
+    const g = this.game, W = g.world;
+    const old = Number.isInteger(i) && W.corpseMeshes ? W.corpseMeshes[i] : null;
+    if (!old || !W.corpses || typeof name !== 'string' || !Object.hasOwn(W.corpses.meshes, name)) return false;
+    const f = old.userData.furn;
     const c = makeCorpse(W.corpses, name, f.corpse.mirror);
     if (!c) return false;
     placeCorpse(c, f);
@@ -331,7 +350,9 @@ export class Director {
     }
     if (!best) { this.trigger('whisper'); return; }
     this.writings++;
-    g.world.addWallWriting(words[Math.floor(Math.random() * words.length)], best.x, 1.5, best.z, best.rot);
+    const text = words[Math.floor(Math.random() * words.length)];
+    g.world.addWallWriting(text, best.x, 1.5, best.z, best.rot);
+    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'write', text, x: best.x, y: 1.5, z: best.z, rot: best.rot });
     g.audio.play('whisper', { pos: { x: best.x, y: 1.5, z: best.z }, dur: 1.2 });
   }
 }
