@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { assetUrl, assetBuffer } from './assets.js';
 import { corpseShift } from './corpse-poses.js';
+import { lodReady, lodGeometry } from './lod.js';
 
 const BASE = 'assets/corpses/';
 const PARTS = { m021: ['body', 'head'], f002: ['body', 'head', 'opacity'], m162: ['body', 'head', 'protection'] };
@@ -54,7 +55,7 @@ export async function loadCorpses(renderer, quality, timeoutMs = 20000) {
       t.needsUpdate = true;
       return t;
     };
-    const [gltf, ...texs] = await Promise.all([getGlb(), ...Object.entries(PARTS).flatMap(([id, parts]) => parts.map((p) => tex(id, p).then((t) => [id, p, t])))]);
+    const [gltf, lodOk, ...texs] = await Promise.all([getGlb(), lodReady(), ...Object.entries(PARTS).flatMap(([id, parts]) => parts.map((p) => tex(id, p).then((t) => [id, p, t])))]);
     const materials = {};
     for (const [id, part, t] of texs) {
       const m = new THREE.MeshStandardMaterial({ map: t, roughness: part === 'protection' ? 0.85 : 0.72, metalness: 0, name: `corpse_${id}_${part}` });
@@ -68,7 +69,10 @@ export async function loadCorpses(renderer, quality, timeoutMs = 20000) {
       let owner = o;
       while (owner && !/^[mf]\d{3}_[a-z]+$/.test(owner.name)) owner = owner.parent;
       if (!owner) return;
-      (meshes[owner.name] || (meshes[owner.name] = [])).push({ geometry: o.geometry, part: o.material.name });
+      const part = o.material.name;
+      // 細節層次：中距離約 45%、遠處約 18% 的三角形（只換索引，共用頂點）
+      const lods = lodOk ? [lodGeometry(o.geometry, 0.45, 0.012), lodGeometry(o.geometry, 0.18, 0.04)] : [];
+      (meshes[owner.name] || (meshes[owner.name] = [])).push({ geometry: o.geometry, part, lods });
     });
     return { meshes, materials };
   })();
@@ -82,19 +86,28 @@ export async function loadCorpses(renderer, quality, timeoutMs = 20000) {
   }
 }
 
+// 切換細節層次的距離（公尺）
+const LOD_DIST = [0, 6.5, 13];
+
 // 做出一具屍體（共用幾何與材質）。mirror：左右翻轉（垂下來的手換到另一側）
+// 回傳 THREE.LOD：近處用完整模型，越遠用越簡化的版本（最遠一級不投影，遠處的影子本來就看不出來）
 export function makeCorpse(assets, name, mirror) {
   const parts = assets.meshes[name];
   if (!parts) return null;
   const id = name.split('_')[0];
-  const g = new THREE.Group();
-  for (const p of parts) {
-    const mat = assets.materials[id] && assets.materials[id][p.part];
-    if (!mat) continue;
-    const m = new THREE.Mesh(p.geometry, mat);
-    m.castShadow = p.part !== 'opacity';
-    m.receiveShadow = true;
-    g.add(m);
+  const levels = Math.min(...parts.map((p) => (p.lods && p.lods.every(Boolean) ? p.lods.length : 0))) + 1;
+  const g = new THREE.LOD();
+  for (let l = 0; l < levels; l++) {
+    const lg = new THREE.Group();
+    for (const p of parts) {
+      const mat = assets.materials[id] && assets.materials[id][p.part];
+      if (!mat) continue;
+      const m = new THREE.Mesh(l ? p.lods[l - 1] : p.geometry, mat);
+      m.castShadow = p.part !== 'opacity' && l < 2;
+      m.receiveShadow = true;
+      lg.add(m);
+    }
+    g.addLevel(lg, LOD_DIST[l], 0.1);
   }
   if (mirror) g.scale.x = -1;
   g.userData.corpse = name;

@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { assetUrl, assetBuffer } from './assets.js';
+import { lodReady, simplifyIndex } from './lod.js';
 
 const BASE = 'assets/ghost/';
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -59,11 +60,11 @@ export async function loadGhostAssets(renderer, quality, timeoutMs = 30000) {
       t.needsUpdate = true;
       return t;
     };
-    const [gltf, head, headN, headR, body, bodyN, lashes] = await Promise.all([
-      getGlb(), make(headFile(quality), true), make('ghost_head_n.jpg', false, Math.min(max, 1024)), make('ghost_head_r.jpg', false, Math.min(max, 1024)),
+    const [gltf, lodOk, head, headN, headR, body, bodyN, lashes] = await Promise.all([
+      getGlb(), lodReady(), make(headFile(quality), true), make('ghost_head_n.jpg', false, Math.min(max, 1024)), make('ghost_head_r.jpg', false, Math.min(max, 1024)),
       make('ghost_body.jpg', true, Math.min(max, 1024)), make('ghost_body_n.jpg', false, Math.min(max, 1024)), make('ghost_lashes.png', true, 512),
     ]);
-    return { gltf, tex: { head, headN, headR, body, bodyN, lashes } };
+    return { gltf, lodOk, tex: { head, headN, headR, body, bodyN, lashes } };
   })();
   let timer;
   const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ghost assets timeout')), timeoutMs); });
@@ -110,6 +111,7 @@ export class RealGhostModel {
       m.boundingSphere.radius *= 1.6;
     }
     this.morphMeshes = this.meshes.filter((m) => m.morphTargetDictionary);
+    if (assets.lodOk) this.setupLod();
     this.bone = (name) => this.body.getObjectByName(name);
     this.headBone = this.bone('Bip01_Head');
     this.neckBone = this.bone('Bip01_Neck');
@@ -147,10 +149,28 @@ export class RealGhostModel {
     this.twitch = 0;
   }
 
+  // 細節層次：離鏡頭 7 公尺以外改用簡化過的索引（頂點、骨架與表情資料不變，只是少畫一半以上的三角形）。
+  // 幾何是本體與幻影共用的，所以每次繪製前依「這個實例」的距離換索引；陰影沿用同一格主畫面的選擇
+  setupLod() {
+    const v = new THREE.Vector3(), c = new THREE.Vector3();
+    for (const m of this.meshes) {
+      const geo = m.geometry, full = geo.index;
+      if (!full) continue;
+      const low = simplifyIndex(geo, m.material === this.headMat ? 0.5 : 0.4, 0.015);
+      if (!low) continue;
+      m.onBeforeRender = (renderer, scene, camera) => {
+        const far = camera.isPerspectiveCamera && v.setFromMatrixPosition(this.root.matrixWorld).distanceToSquared(c.setFromMatrixPosition(camera.matrixWorld)) > 49;
+        const want = far ? low : full;
+        if (geo.index !== want) geo.index = want;
+      };
+      m.onAfterRender = () => { if (geo.index !== full) geo.index = full; };
+    }
+  }
+
   // 找出主要受頭骨影響的頂點，量出頭的範圍（公尺）
   measureHead() {
     const box = new THREE.Box3();
-    const v = new THREE.Vector3();
+    const v = new THREE.Vector3(), c = new THREE.Vector3();
     for (const m of this.meshes) {
       if (m.material !== this.headMat) continue;
       const bi = m.skeleton.bones.indexOf(this.headBone);
