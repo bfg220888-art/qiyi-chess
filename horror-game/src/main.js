@@ -9,6 +9,7 @@ import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
 import { loadCorpses, prefetchCorpses } from './corpses.js';
 import { MP, SLOT_CSS, MAX_PLAYERS } from './mp.js';
+import { THEMES, RANDOM_THEME, resolveTheme, themeTitle } from './themes.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -39,7 +40,7 @@ class App {
     this.canvas = $('game');
     const defaults = {
       volume: 0.85, music: 0.8, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
-      quality: null, difficulty: 'normal', fpsCap: 60, aa: true,
+      quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
@@ -57,6 +58,7 @@ class App {
       this.settings.quality = touch && mem <= 3 ? 'low' : 'medium';
     }
     if (!DIFFICULTY[this.settings.difficulty]) this.settings.difficulty = 'normal';
+    if (this.settings.theme !== RANDOM_THEME && !Object.hasOwn(THEMES, String(this.settings.theme))) this.settings.theme = RANDOM_THEME;
     this.quality = this.qualityPreset();
     this.resScale = 1;
     this.ui = new UI();
@@ -207,6 +209,16 @@ class App {
     };
     for (const b of seg.querySelectorAll('button')) b.addEventListener('click', () => setDiff(b.dataset.diff));
     setDiff(this.settings.difficulty);
+    // 地圖（樓層主題）
+    const tseg = $('themeSeg');
+    const setTheme = (k) => {
+      this.settings.theme = k;
+      for (const b of tseg.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.theme === k));
+      $('themeDesc').textContent = k === RANDOM_THEME ? '每一局隨機挑一層樓。' : `${themeTitle(k)}：${THEMES[k].desc}`;
+      this.saveSettings();
+    };
+    for (const b of tseg.querySelectorAll('button')) b.addEventListener('click', () => setTheme(b.dataset.theme));
+    setTheme(this.settings.theme);
     $('btnStart').addEventListener('click', () => this.startGame());
     $('btnHelp').addEventListener('click', () => this.openPanel('help', 'menu'));
     $('btnSettings').addEventListener('click', () => this.openPanel('settings', 'menu'));
@@ -216,7 +228,7 @@ class App {
     $('btnPauseSettings').addEventListener('click', () => this.openPanel('settings', 'pause'));
     $('btnPauseHelp').addEventListener('click', () => this.openPanel('help', 'pause'));
     $('btnQuit').addEventListener('click', () => this.toMenu());
-    $('btnRetry').addEventListener('click', () => this.startGame(this.game ? this.game.seed : undefined, true));
+    $('btnRetry').addEventListener('click', () => this.startGame(this.game ? this.game.seed : undefined, true, this.game ? this.game.theme : undefined));
     $('btnNew').addEventListener('click', () => this.startGame(undefined, true));
     $('btnMenu').addEventListener('click', () => this.toMenu());
     $('btnRotateOk').addEventListener('click', () => { this.rotateDismissed = true; $('rotate').hidden = true; });
@@ -341,7 +353,7 @@ class App {
     }
     $('btnMpStart').hidden = !mp.isHost;
     $('mpRoomInfo').textContent = mp.isHost
-      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}（在主選單切換）`
+      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}・地圖：${this.settings.theme === RANDOM_THEME ? '隨機' : themeTitle(this.settings.theme)}（在主選單切換）`
       : '等待房主開始遊戲……';
   }
 
@@ -351,7 +363,7 @@ class App {
     const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
     if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
     this.mpGo = false;
-    this.startGame(seed, true, { difficulty: diff, theme: typeof opts.theme === 'string' ? opts.theme : null });
+    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : undefined, { difficulty: diff });
   }
   mpBegin() {
     this.mpGo = true;
@@ -391,7 +403,8 @@ class App {
     if (this.panelFrom === 'pause') $('pause').hidden = false;
   }
 
-  async startGame(seed, skipIntro = false, mpOpts = null) {
+  // theme：不給就用設定裡選的地圖（'random' = 由 seed 決定）。「再試一次」會傳入上一局的主題
+  async startGame(seed, skipIntro = false, theme = undefined, mpOpts = null) {
     if (this.busy) return;
     this.busy = true;
     await this.audio.resume();
@@ -404,6 +417,9 @@ class App {
     this.ui.fade(0, 0.01);
     $('loading').hidden = false;
     $('loadTip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+    seed = seed ?? (Math.random() * 2 ** 31) | 0;
+    theme = resolveTheme(theme ?? this.settings.theme, seed >>> 0);
+    $('loadFloor').textContent = themeTitle(theme);
     const touch = this.input.touchMode;
     if (touch) {
       try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { /* 不支援全螢幕 */ }
@@ -411,8 +427,7 @@ class App {
     }
     const game = new Game(this, {
       difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
-      seed: seed ?? (Math.random() * 2 ** 31) | 0,
-      theme: mpOpts ? mpOpts.theme : this.settings.theme,
+      seed, theme,
       mp: mpOpts ? this.mp : null,
     });
     try {
@@ -466,7 +481,7 @@ class App {
     else {
       this.ui.typeIntro([
         '1999 年 8 月，聖羅莎紀念醫院在一連串失蹤事件後封院。',
-        '二十年後，你帶著攝影機獨自走進七樓，想拍下傳說中「哼歌的女人」。',
+        game.themeInfo.intro,
         '直播訊號在踏進大廳的那一刻中斷。',
         '身後的大門，鎖上了。',
       ], () => { store.set('introSeen', true); begin(); });

@@ -3,6 +3,7 @@
 import { RNG } from './rng.js';
 import { CORPSE_POSES, corpseShift } from './corpse-poses.js';
 import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
+import { THEMES, resolveTheme } from './themes.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
 export const VOID = -1;
@@ -34,11 +35,30 @@ export const FURN = {
   plant:      { w: 0.55, d: 0.55, h: 1.3 },
   generator:  { w: 2.2, d: 1.1,  h: 1.5 },
   fusebox:    { w: 0.9, d: 0.22, h: 2.0, tall: true },
+  // 地下太平間
+  drawers:    { w: 2.6, d: 0.8,  h: 2.05, tall: true },   // 一整面冷藏櫃（3 × 3 個抽屜）
+  tray:       { w: 0.66, d: 1.0, h: 1.12 },              // 拉出來的冷藏抽屜（長邊垂直於櫃子）
+  autopsy:    { w: 0.9, d: 2.2,  h: 0.98 },
+  bagrail:    { w: 2.2, d: 0.7,  h: 2.4, tall: true },    // 天花板吊軌與吊著的屍袋
+  bodybag:    { w: 0.66, d: 1.95, h: 0.32 },
+  // 兒童病房
+  crib:       { w: 0.78, d: 1.36, h: 1.05 },
+  kidbed:     { w: 0.86, d: 1.7,  h: 0.75, surf: { y: 0.52, hx: 0.22, hz: 0.2, oz: 0.45 } },
+  bassinet:   { w: 0.56, d: 0.9,  h: 0.95 },
+  rockinghorse: { w: 0.44, d: 1.06, h: 0.95 },
+  kidtable:   { w: 0.96, d: 0.96, h: 0.52, surf: { y: 0.53, hx: 0.3, hz: 0.3 } },
+  kidchair:   { w: 0.36, d: 0.36, h: 0.62 },
+  // 精神科
+  ectchair:   { w: 0.74, d: 0.92, h: 1.38 },
+  ectmachine: { w: 0.64, d: 0.5,  h: 1.15 },
+  table:      { w: 1.3, d: 0.86,  h: 0.75, surf: { y: 0.76, hx: 0.5, hz: 0.25 } },
 };
 
 export const ROOM_NAMES = {
   ward: '病房', office: '醫師辦公室', storage: '儲藏室', utility: '工具間', operating: '手術室',
   morgue: '太平間', nurse: '護理站', generator: '發電機房', lobby: '大廳', corridor: '走廊',
+  autopsy: '解剖室', coldstore: '屍袋冷藏室', kidward: '兒童病房', nursery: '嬰兒室', playroom: '遊戲室',
+  cell: '隔離室', therapy: '電療室', dayroom: '交誼廳',
 };
 
 export class Level {
@@ -173,11 +193,14 @@ export const NOTES = [
 export const WALL_WRITINGS = ['救救我', '她在看你', '不要回頭', '707', '媽媽在哪裡', '快逃', '別出聲', '她聽得到'];
 
 // ---------------------------------------------------------------------------
-export function generateLevel(seed, diff, validator) {
+// theme：主題 key（'ward' / 'morgue' / 'pediatric' / 'psych'），或 'random' / 不給 = 由 seed 決定。
+// 主題在重試之前就決定好（不受 validator 重試影響），結果存在 lv.theme。
+export function generateLevel(seed, diff, validator, theme) {
+  const themeKey = resolveTheme(theme, seed >>> 0);
   let lastErr = null;
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
-      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff);
+      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey);
       if (validator) {
         const problem = validator(lv);
         if (problem) { lastErr = new Error(problem); continue; }
@@ -191,15 +214,15 @@ export function generateLevel(seed, diff, validator) {
   throw lastErr || new Error('level generation failed');
 }
 
-function segmentLengths(rng, L) {
+function segmentLengths(rng, L, pref = { p3: 0.3, p1: 0.12 }) {
   const out = [];
   while (L > 0) {
     let s;
-    if (L <= 3) s = L;
+    if (L <= 3) s = L >= 2 && rng.chance(pref.p1 * 0.5) ? 1 : L;
     else {
-      s = rng.chance(0.3) ? 3 : 2;
-      if (rng.chance(0.12)) s = 1;
-      if (L - s === 1) s = s === 3 ? 2 : 3;
+      s = rng.chance(pref.p3) ? 3 : 2;
+      if (rng.chance(pref.p1)) s = 1;
+      if (L - s === 1 && s !== 1) s = s === 3 ? 2 : 3;
     }
     out.push(s);
     L -= s;
@@ -207,23 +230,85 @@ function segmentLengths(rng, L) {
   return rng.shuffle(out);
 }
 
-function buildLevel(seed, diff) {
+function buildLevel(seed, diff, themeKey = 'ward') {
+  const T = THEMES[themeKey], LY = T.layout;
   const rng = new RNG(seed);
-  const M = 2;
-  const bw = [rng.int(4, 5), rng.int(4, 5)];
-  const bh = [rng.int(3, 4), rng.int(3, 4)];
-  const c = [M, M + 1 + bw[0], M + 2 + bw[0] + bw[1]];
-  const r = [M, M + 1 + bh[0], M + 2 + bh[0] + bh[1]];
-  const W = c[2] + 1 + M, H = r[2] + 1 + M;
+  const M = LY.margin;
+  // --- 走廊格線：欄 / 列數、寬度（寬走廊 = 2 格）與街區大小都依主題變化
+  const nC = rng.int(LY.cols[0], LY.cols[1]), nR = rng.int(LY.rows[0], LY.rows[1]);
+  const colW = new Array(nC).fill(1), rowW = new Array(nR).fill(1);
+  if (rng.chance(LY.wideRow)) rowW[rng.int(0, nR - 1)] = 2;
+  if (rng.chance(LY.wideCol)) colW[rng.int(0, nC - 1)] = 2;
+  const c = [M], r = [M];
+  for (let i = 0; i < nC - 1; i++) c.push(c[i] + colW[i] + rng.int(LY.blockW[0], LY.blockW[1]));
+  for (let j = 0; j < nR - 1; j++) r.push(r[j] + rowW[j] + rng.int(LY.blockH[0], LY.blockH[1]));
+  const cEnd = c[nC - 1] + colW[nC - 1] - 1, rEnd = r[nR - 1] + rowW[nR - 1] - 1;
+  const W = cEnd + 1 + M, H = rEnd + 1 + M;
   const lv = new Level(seed, W, H);
+  lv.theme = themeKey;
   lv.corrCols = c;
   lv.corrRows = r;
+  lv.colW = colW;
+  lv.rowW = rowW;
+  const colOf = new Int8Array(W).fill(-1), rowOf = new Int8Array(H).fill(-1);
+  c.forEach((x, i) => { for (let k = 0; k < colW[i]; k++) colOf[x + k] = i; });
+  r.forEach((y, j) => { for (let k = 0; k < rowW[j]; k++) rowOf[y + k] = j; });
+  lv.colOf = colOf;
+  lv.rowOf = rowOf;
   const idx = (x, y) => y * W + x;
+
+  // --- 外形：L 形缺角或 U 形中庭（整塊挖空，牆外就是夜空）
+  const hole = new Uint8Array(W * H);
+  const dig = (x0, y0, x1, y1) => {
+    for (let y = Math.max(0, y0); y <= Math.min(H - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(W - 1, x1); x++) hole[idx(x, y)] = 1;
+  };
+  lv.shape = 'rect';
+  if (nC >= 3) {
+    const u = rng.next();
+    if (u < LY.notch) {
+      lv.shape = 'notch';
+      if (rng.chance(0.5)) {
+        dig(c[nC - 2] + colW[nC - 2], 0, W - 1, r[0] + rowW[0] - 1);
+        dig(c[nC - 1], 0, W - 1, r[1] - 1);
+      } else {
+        dig(0, 0, c[1] - 1, r[0] + rowW[0] - 1);
+        dig(0, 0, c[0] + colW[0] - 1, r[1] - 1);
+      }
+    } else if (u < LY.notch + LY.courtyard) {
+      lv.shape = 'courtyard';
+      const i = nC === 3 ? rng.int(0, 1) : rng.int(1, nC - 3);
+      dig(c[i] + colW[i], 0, c[i + 1] - 1, r[1] - 1);
+    }
+  }
 
   // --- 走廊
   lv.rooms.push({ id: 0, type: 'corridor', x0: 0, y0: 0, x1: W - 1, y1: H - 1, doors: [], area: 0 });
-  for (const ry of r) for (let x = c[0]; x <= c[2]; x++) lv.cells[idx(x, ry)] = CORRIDOR;
-  for (const cx of c) for (let y = r[0]; y <= r[2]; y++) lv.cells[idx(cx, y)] = CORRIDOR;
+  for (let y = r[0]; y <= rEnd; y++) for (let x = c[0]; x <= cEnd; x++) {
+    if ((rowOf[y] >= 0 || colOf[x] >= 0) && !hole[idx(x, y)]) lv.cells[idx(x, y)] = CORRIDOR;
+  }
+  const isCorr = (x, y) => lv.cellAt(x, y) === CORRIDOR;
+  // --- 死路支線：從外圈走廊往外伸到外牆
+  const spurCands = [];
+  for (let x = c[0] + 1; x < cEnd; x++) {
+    if (colOf[x - 1] >= 0 || colOf[x] >= 0 || colOf[x + 1] >= 0 || !isCorr(x, r[0]) || hole[idx(x, 0)]) continue;
+    spurCands.push({ side: 'top', v: x });
+  }
+  for (let y = r[0] + 1; y < rEnd; y++) {
+    if (rowOf[y - 1] >= 0 || rowOf[y] >= 0 || rowOf[y + 1] >= 0) continue;
+    if (isCorr(c[0], y) && !hole[idx(0, y)]) spurCands.push({ side: 'left', v: y });
+    if (isCorr(cEnd, y) && !hole[idx(W - 1, y)]) spurCands.push({ side: 'right', v: y });
+  }
+  const spurs = [];
+  const wantSpurs = rng.int(LY.spurs[0], LY.spurs[1]);
+  for (const s of rng.shuffle(spurCands)) {
+    if (spurs.length >= wantSpurs) break;
+    if (spurs.some((o) => o.side === s.side && Math.abs(o.v - s.v) < 3)) continue;
+    spurs.push(s);
+    if (s.side === 'top') for (let y = 0; y < r[0]; y++) lv.cells[idx(s.v, y)] = CORRIDOR;
+    else if (s.side === 'left') for (let x = 0; x < c[0]; x++) lv.cells[idx(x, s.v)] = CORRIDOR;
+    else for (let x = cEnd + 1; x < W; x++) lv.cells[idx(x, s.v)] = CORRIDOR;
+  }
+  lv.spurs = spurs;
 
   const addRoom = (x0, y0, x1, y1, type = null) => {
     const room = { id: lv.rooms.length, type, x0, y0, x1, y1, w: x1 - x0 + 1, h: y1 - y0 + 1, doors: [] };
@@ -236,36 +321,76 @@ function buildLevel(seed, diff) {
   };
   const stripX = (xa, xb, y0, y1) => {
     let x = xa;
-    for (const s of segmentLengths(rng, xb - xa + 1)) { addRoom(x, y0, x + s - 1, y1); x += s; }
+    for (const s of segmentLengths(rng, xb - xa + 1, LY.seg)) { addRoom(x, y0, x + s - 1, y1); x += s; }
   };
   const stripY = (ya, yb, x0, x1) => {
     let y = ya;
-    for (const s of segmentLengths(rng, yb - ya + 1)) { addRoom(x0, y, x1, y + s - 1); y += s; }
+    for (const s of segmentLengths(rng, yb - ya + 1, LY.seg)) { addRoom(x0, y, x1, y + s - 1); y += s; }
+  };
+  const free = (x, y) => lv.inBounds(x, y) && lv.cells[idx(x, y)] === VOID && !hole[idx(x, y)];
+  const runs = (a, b, ok) => {
+    const out = [];
+    let s = -1;
+    for (let v = a; v <= b + 1; v++) {
+      const good = v <= b && ok(v);
+      if (good && s < 0) s = v;
+      if (!good && s >= 0) { out.push([s, v - 1]); s = -1; }
+    }
+    return out;
   };
 
-  // --- 大廳（下方中央）
-  const lobby = addRoom(c[1] - 1, r[2] + 1, c[1] + 1, H - 1, 'lobby');
+  // --- 大廳（下方，接在某一條直走廊的正下方）
+  let lobbyX;
+  if (nC >= 3) {
+    const k = nC === 3 ? 1 : rng.int(1, nC - 2);
+    lobbyX = c[k] + (colW[k] === 2 ? rng.int(0, 1) : 0);
+  } else lobbyX = Math.round((c[0] + cEnd) / 2);
+  const lobbyTop = rEnd + 1;
+  const lobby = addRoom(lobbyX - 1, lobbyTop, lobbyX + 1, H - 1, 'lobby');
   lv.lobby = lobby;
-  // --- 外圍房間帶
-  stripX(c[0], c[2], 0, r[0] - 1);
-  stripX(c[0], c[1] - 2, r[2] + 1, H - 1);
-  stripX(c[1] + 2, c[2], r[2] + 1, H - 1);
-  stripY(r[0], r[2], 0, c[0] - 1);
-  stripY(r[0], r[2], c[2] + 1, W - 1);
+  lv.lobbyX = lobbyX;
+  lv.lobbyTop = lobbyTop;
+  // --- 外圍房間帶（被支線、缺角切開）
+  for (const [a, b] of runs(c[0], cEnd, (x) => free(x, 0))) stripX(a, b, 0, r[0] - 1);
+  for (const [a, b] of runs(c[0], cEnd, (x) => free(x, lobbyTop))) stripX(a, b, lobbyTop, H - 1);
+  for (const [a, b] of runs(r[0], rEnd, (y) => free(0, y))) stripY(a, b, 0, c[0] - 1);
+  for (const [a, b] of runs(r[0], rEnd, (y) => free(W - 1, y))) stripY(a, b, cEnd + 1, W - 1);
   // --- 內部街區
-  for (let i = 0; i < 2; i++) {
-    for (let j = 0; j < 2; j++) {
-      const x0 = c[i] + 1, x1 = c[i + 1] - 1, y0 = r[j] + 1, y1 = r[j + 1] - 1;
-      const d = y1 - y0 + 1;
-      let x = x0;
-      for (const s of segmentLengths(rng, x1 - x0 + 1)) {
-        if (rng.chance(0.4)) addRoom(x, y0, x + s - 1, y1);
-        else {
-          const top = rng.chance(0.5) ? Math.floor(d / 2) : Math.ceil(d / 2);
-          addRoom(x, y0, x + s - 1, y0 + top - 1);
-          addRoom(x, y0 + top, x + s - 1, y1);
+  const corrRunX = (xa, xb, y) => { for (let x = xa; x <= xb; x++) if (!isCorr(x, y)) return false; return true; };
+  const corrRunY = (ya, yb, x) => { for (let y = ya; y <= yb; y++) if (!isCorr(x, y)) return false; return true; };
+  for (let i = 0; i < nC - 1; i++) {
+    for (let j = 0; j < nR - 1; j++) {
+      const x0 = c[i] + colW[i], x1 = c[i + 1] - 1, y0 = r[j] + rowW[j], y1 = r[j + 1] - 1;
+      if (!free(x0, y0)) continue;
+      const w = x1 - x0 + 1, d = y1 - y0 + 1;
+      // 整塊一間大房間（交誼廳、解剖教室……）
+      if (w * d <= LY.hallMax && rng.chance(LY.hall)) { addRoom(x0, y0, x1, y1); continue; }
+      const top = corrRunX(x0, x1, y0 - 1), bot = corrRunX(x0, x1, y1 + 1);
+      const left = corrRunY(y0, y1, x0 - 1), right = corrRunY(y0, y1, x1 + 1);
+      const canX = top || bot, canY = left || right;
+      const alongX = canX && (!canY || (w >= d ? rng.chance(0.85) : rng.chance(0.3)));
+      if (alongX) {
+        let x = x0;
+        for (const s of segmentLengths(rng, w, LY.seg)) {
+          if (!(top && bot) || d < 2 || rng.chance(LY.fullDepth)) addRoom(x, y0, x + s - 1, y1);
+          else {
+            const half = rng.chance(0.5) ? Math.floor(d / 2) : Math.ceil(d / 2);
+            addRoom(x, y0, x + s - 1, y0 + half - 1);
+            addRoom(x, y0 + half, x + s - 1, y1);
+          }
+          x += s;
         }
-        x += s;
+      } else {
+        let y = y0;
+        for (const s of segmentLengths(rng, d, LY.seg)) {
+          if (!(left && right) || w < 2 || rng.chance(LY.fullDepth)) addRoom(x0, y, x1, y + s - 1);
+          else {
+            const half = rng.chance(0.5) ? Math.floor(w / 2) : Math.ceil(w / 2);
+            addRoom(x0, y, x0 + half - 1, y + s - 1);
+            addRoom(x0 + half, y, x1, y + s - 1);
+          }
+          y += s;
+        }
       }
     }
   }
@@ -281,9 +406,9 @@ function buildLevel(seed, diff) {
   }
 
   // --- 大廳開口與大門
-  lv.setH(c[1], r[2] + 1, E.OPEN);
-  lv.setH(c[1], H, E.GATE);
-  lv.gate = { x: (c[1] + 0.5) * CELL, z: H * CELL, open: false, angle: 0 };
+  lv.setH(lobbyX, lobbyTop, E.OPEN);
+  lv.setH(lobbyX, H, E.GATE);
+  lv.gate = { x: (lobbyX + 0.5) * CELL, z: H * CELL, open: false, angle: 0 };
 
   // --- 門
   const roomEdges = (room) => {
@@ -341,24 +466,35 @@ function buildLevel(seed, diff) {
     if (edges.length) addDoor(rng.pick(edges));
   }
 
-  // --- 窗戶（朝外的牆）
+  // --- 窗戶（朝外的牆；地下室沒有窗）
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
+    const p = room.type === 'lobby' ? T.lobbyWindows : T.windows;
     for (const e of roomEdges(room)) {
       if (lv.cellAt(e.ox, e.oy) !== VOID || edgeType(e) !== E.WALL) continue;
-      if (room.type === 'lobby' ? rng.chance(0.5) : rng.chance(0.42)) setEdge(e, E.WINDOW);
+      if (p > 0 && rng.chance(p)) setEdge(e, E.WINDOW);
+    }
+  }
+  // 走廊盡頭、中庭邊的走廊窗
+  if (T.corrWindows > 0) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!isCorr(x, y)) continue;
+      for (const e of [{ o: 'h', x, y, ox: x, oy: y - 1 }, { o: 'h', x, y: y + 1, ox: x, oy: y + 1 }, { o: 'v', x, y, ox: x - 1, oy: y }, { o: 'v', x: x + 1, y, ox: x + 1, oy: y }]) {
+        if (lv.cellAt(e.ox, e.oy) !== VOID || edgeType(e) !== E.WALL) continue;
+        if (rng.chance(T.corrWindows)) setEdge(e, E.WINDOW);
+      }
     }
   }
 
   // --- 走廊路障
-  const isIntersection = (x, y) => r.includes(y) && c.includes(x);
   const corridorCells = [];
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (lv.cellAt(x, y) === CORRIDOR) corridorCells.push([x, y]);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (isCorr(x, y)) corridorCells.push([x, y]);
   const nBarricades = rng.int(1, 2);
   for (const [x, y] of rng.shuffle(corridorCells.slice())) {
     if (lv.barricades.length >= nBarricades) break;
-    if (isIntersection(x, y)) continue;
-    if (Math.abs(x - c[1]) <= 1 && y >= r[2] - 1) continue; // 大廳附近不要擋
+    const horiz = isCorr(x - 1, y) || isCorr(x + 1, y), vert = isCorr(x, y - 1) || isCorr(x, y + 1);
+    if (horiz && vert) continue; // 路口或寬走廊
+    if (Math.abs(x - lobbyX) <= 1 && y >= rEnd - 1) continue; // 大廳附近不要擋
     let touchesDoor = false;
     for (const [dx, dy] of DIRS) {
       const t = lv.edgeBetween(x, y, dx, dy);
@@ -366,17 +502,15 @@ function buildLevel(seed, diff) {
     }
     if (touchesDoor) continue;
     lv.blockedCell[idx(x, y)] = 1;
-    const dist = lv.bfs(c[1], r[2] + 1);
+    const dist = lv.bfs(lobbyX, lobbyTop);
     let ok = true;
     for (let i = 0; i < W * H; i++) if (lv.cells[i] !== VOID && !lv.blockedCell[i] && dist[i] < 0) { ok = false; break; }
     if (!ok) { lv.blockedCell[idx(x, y)] = 0; continue; }
-    const horizontal = r.includes(y);
-    lv.barricades.push({ x, y, cx: (x + 0.5) * CELL, cz: (y + 0.5) * CELL, horizontal });
+    lv.barricades.push({ x, y, cx: (x + 0.5) * CELL, cz: (y + 0.5) * CELL, horizontal: horiz });
   }
 
   // --- 距離與房型
-  const lobbyCellX = c[1], lobbyCellY = H - 1;
-  const dist = lv.bfs(lobbyCellX, lobbyCellY);
+  const dist = lv.bfs(lobbyX, H - 1);
   lv.distFromLobby = dist;
   for (let i = 0; i < W * H; i++) if (lv.cells[i] !== VOID && !lv.blockedCell[i] && dist[i] < 0) throw new Error('unreachable cell');
   const normal = lv.rooms.filter((rm) => rm.id > 0 && rm.type !== 'lobby');
@@ -385,32 +519,37 @@ function buildLevel(seed, diff) {
     for (let y = rm.y0; y <= rm.y1; y++) for (let x = rm.x0; x <= rm.x1; x++) best = Math.min(best, dist[idx(x, y)]);
     rm.dist = best;
   }
+  const R = T.rooms;
   const byDist = normal.slice().sort((a, b) => b.dist - a.dist);
   const gen = byDist.find((rm) => rm.area >= 2 && rm.area <= 6) || byDist[0];
   gen.type = 'generator';
   lv.generatorRoom = gen;
-  const nurse = normal.filter((rm) => !rm.type && rm.area >= 2 && rm.area <= 6).sort((a, b) => a.dist - b.dist)[0];
-  if (nurse) nurse.type = 'nurse';
+  if (R.nurse) {
+    const nurse = normal.filter((rm) => !rm.type && rm.area >= 2 && rm.area <= 6).sort((a, b) => a.dist - b.dist)[0];
+    if (nurse) nurse.type = 'nurse';
+  }
   const big = rng.shuffle(normal.filter((rm) => !rm.type && rm.area >= 4));
-  if (big.length && rng.chance(0.9)) big.shift().type = 'operating';
-  if (big.length && rng.chance(0.85)) big.shift().type = 'morgue';
+  for (const [t, p] of R.specials) if (big.length && rng.chance(p)) big.shift().type = t;
   for (const rm of normal) {
     if (rm.type) continue;
-    if (rm.area >= 4) rm.type = rng.weighted([['ward', 0.55], ['office', 0.25], ['storage', 0.2]]);
-    else if (rm.area >= 2) rm.type = rng.weighted([['office', 0.32], ['storage', 0.26], ['ward', 0.26], ['utility', 0.16]]);
-    else rm.type = rng.chance(0.55) ? 'storage' : 'utility';
+    rm.type = rng.weighted(rm.area >= 4 ? R.big : rm.area >= 2 ? R.mid : R.small);
   }
-  // 病房編號
-  let wardNo = 701;
-  const wards = normal.filter((rm) => rm.type === 'ward').sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-  for (const rm of wards) { if (wardNo === 707) wardNo++; rm.label = `${wardNo++} 病房`; }
-  if (wards.length) {
-    const special = wards.reduce((a, b) => (b.dist > a.dist ? b : a));
-    special.label = '707 病房';
+  // 房間編號
+  const num = R.numbered;
+  const numbered = normal.filter((rm) => rm.type === num.type).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  let n = num.start;
+  for (const rm of numbered) { while (num.skip.includes(n)) n++; rm.label = num.fmt(n++); }
+  // 劇情房間（707 病房 / 嬰兒室 / 0713 隔離室……）：離大廳最遠的那一間
+  let specialCands = normal.filter((rm) => R.special.types.includes(rm.type));
+  if (!specialCands.length) specialCands = normal.filter((rm) => rm !== gen && rm.type !== 'nurse');
+  if (specialCands.length) {
+    const special = specialCands.reduce((a, b) => (b.dist > a.dist ? b : a));
+    special.label = R.special.label;
     special.special = true;
+    special.tag = R.special.tag;
     lv.room707 = special;
   }
-  for (const rm of lv.rooms) if (!rm.label) rm.label = ROOM_NAMES[rm.type];
+  for (const rm of lv.rooms) if (!rm.label) rm.label = R.names[rm.type] || ROOM_NAMES[rm.type];
 
   // --- 保險絲房間：彼此分散
   const chosen = [];
@@ -430,17 +569,28 @@ function buildLevel(seed, diff) {
   }
   lv.fuseRooms = chosen;
 
+  // --- 觀察窗（精神科隔離室）與鐵籠護理站：牆上開洞，人過不去
+  lv.obs = new Map();
+  if (themeKey === 'psych') {
+    for (const room of normal) {
+      if (room.type !== 'cell' && room.type !== 'nurse') continue;
+      const edges = roomEdges(room).filter((e) => lv.cellAt(e.ox, e.oy) === CORRIDOR && edgeType(e) === E.WALL);
+      if (room.type === 'nurse') for (const e of edges) lv.obs.set(`${e.o}${e.x},${e.y}`, 'cage');
+      else if (edges.length) { const e = rng.pick(edges); lv.obs.set(`${e.o}${e.x},${e.y}`, 'glass'); }
+    }
+  }
+
   // --- 家具
-  furnish(lv, rng);
+  furnish(lv, rng, T);
 
   // --- 道具
   placeItems(lv, rng, diff || { batteries: 6, film: 3, pills: 3, bottles: 4 });
 
   // --- 燈具
-  placeLights(lv, rng);
+  placeLights(lv, rng, T);
 
   // --- 血跡、字跡、紙張
-  placeDecals(lv, rng);
+  placeDecals(lv, rng, T);
 
   // --- 床上與推床上的屍體（另一個亂數來源，不影響其他生成結果）
   assignCorpses(lv);
@@ -449,10 +599,9 @@ function buildLevel(seed, diff) {
   buildWallPieces(lv);
 
   // 出生點：大廳靠大門處，面向北方（-z）
-  lv.spawn = { x: (c[1] + 0.5) * CELL, z: H * CELL - 1.3, yaw: 0 };
+  lv.spawn = { x: (lobbyX + 0.5) * CELL, z: H * CELL - 1.3, yaw: 0 };
   return lv;
 }
-
 // ---------------------------------------------------------------------------
 // 家具擺放
 function roomBounds(room) {
@@ -490,7 +639,8 @@ function wallSlots(lv, room, cellsList) {
     for (const s of tests) {
       if (s.o === me) continue;
       if (s.t !== E.WALL && s.t !== E.WINDOW) continue;
-      s.window = s.t === E.WINDOW;
+      // 觀察窗 / 鐵籠牆跟窗戶一樣：不放高櫃、不貼貼花
+      s.window = s.t === E.WINDOW || (lv.obs && lv.obs.has(s.side === 'N' || s.side === 'S' ? `h${x},${s.side === 'N' ? y : y + 1}` : `v${s.side === 'W' ? x : x + 1},${y}`));
       s.a1 = s.a0 + CELL;
       slots.push(s);
     }
@@ -537,7 +687,7 @@ function roomStaysConnected(lv, room, extra) {
     for (const s of [-0.6, 0.6]) entries.push(d.o === 'h' ? [along, plane + s] : [plane + s, along]);
   }
   if (room.type === 'lobby') {
-    entries.push([(lv.corrCols[1] + 0.5) * CELL, (lv.corrRows[2] + 1) * CELL + 0.6]);
+    entries.push([(lv.lobbyX + 0.5) * CELL, lv.lobbyTop * CELL + 0.6]);
     entries.push([lv.gate.x, lv.gate.z - 0.8]);
   }
   for (const [x, z] of entries) {
@@ -636,17 +786,24 @@ function doorClearance(lv) {
     else lv.blockers.push({ minX: plane - depth, maxX: plane + depth, minZ: along0 - half, maxZ: along0 + half, clearance: true });
   }
   // 大廳開口與大門
-  const { c, r } = { c: lv.corrCols, r: lv.corrRows };
-  const ox = (c[1] + 0.5) * CELL;
-  lv.blockers.push({ minX: ox - 1.6, maxX: ox + 1.6, minZ: (r[2] + 1) * CELL - 1.6, maxZ: (r[2] + 1) * CELL + 1.6, clearance: true });
+  const ox = (lv.lobbyX + 0.5) * CELL, oz = lv.lobbyTop * CELL;
+  lv.blockers.push({ minX: ox - 1.6, maxX: ox + 1.6, minZ: oz - 1.6, maxZ: oz + 1.6, clearance: true });
   lv.blockers.push({ minX: ox - 1.9, maxX: ox + 1.9, minZ: lv.H * CELL - 2.4, maxZ: lv.H * CELL, clearance: true });
   // 大廳中央通道保持淨空（最後逃跑的路線）
-  lv.blockers.push({ minX: ox - 1.0, maxX: ox + 1.0, minZ: (r[2] + 1) * CELL, maxZ: lv.H * CELL, clearance: true });
+  lv.blockers.push({ minX: ox - 1.0, maxX: ox + 1.0, minZ: oz, maxZ: lv.H * CELL, clearance: true });
   // 路障
   for (const b of lv.barricades) lv.blockers.push({ ...cellBounds(b.x, b.y), clearance: true });
 }
 
-function furnish(lv, rng) {
+// 走廊上隨手擺放的東西（依主題）
+const CORRIDOR_PROPS = {
+  ward: [['gurney', 3], ['wheelchair', 2], ['bench', 1.5], ['bin', 1.5], ['chair', 1.5], ['boxes', 1]],
+  morgue: [['gurney', 5], ['boxes', 1.5], ['bin', 1], ['wheelchair', 0.5], ['chair', 0.5]],
+  pediatric: [['gurney', 1.6], ['wheelchair', 1.4], ['bench', 1.5], ['crib', 1.2], ['chair', 1], ['boxes', 1], ['bin', 0.8]],
+  psych: [['wheelchair', 2], ['chair', 2], ['bench', 2], ['gurney', 1.5], ['bin', 1.5]],
+};
+
+function furnish(lv, rng, T) {
   const P = new Placer(lv, rng);
   doorClearance(lv);
   const lockerCount = { n: 0 };
@@ -664,6 +821,51 @@ function furnish(lv, rng) {
     }
     return it;
   };
+  // 家具局部座標 (lx, lz) → 世界座標（three.js rotation.y 的方向）
+  const local = (f, lx, lz) => [f.x + lx * Math.cos(f.rot) + lz * Math.sin(f.rot), f.z - lx * Math.sin(f.rot) + lz * Math.cos(f.rot)];
+  // 放在既有家具旁邊的小東西（點滴架、小椅子……）：位置合法才放
+  const addNear = (kind, room, x, z, rot, extra = {}) => {
+    const f = FURN[kind];
+    const box = footprint(x, z, rot, f.w, f.d);
+    if (!inside(box, roomBounds(room)) || !P.free(box) || !roomStaysConnected(lv, room, box)) return null;
+    return P.add(kind, room, { x, z, rot }, extra);
+  };
+  // 冷藏櫃：有些抽屜被拉出來，上面躺著蓋白布的屍體或空著
+  const openDrawers = (u, room) => {
+    u.open = [];
+    for (let col = 0; col < 3; col++) {
+      if (!rng.chance(0.42)) continue;
+      const row = rng.chance(0.55) ? 1 : 0;
+      const [x, z] = local(u, (col - 1) * (2.55 / 3), FURN.drawers.d / 2 + 0.06 + FURN.tray.d / 2);
+      const tray = addNear('tray', room, x, z, u.rot, { row, trayTop: row ? 0.82 : 0.2, body: rng.chance(0.62), drawers: u });
+      if (tray) u.open.push({ col, row });
+    }
+  };
+  const bedSide = (bed, room, bounds) => {
+    if (rng.chance(0.55)) {
+      // 點滴架放在床頭旁
+      const [fx, fz] = frontVec(bed.rot);
+      const sx = fz, sz = -fx; // 側向
+      const side = rng.chance(0.5) ? 1 : -1;
+      const px = bed.x - fx * 0.75 + sx * side * 0.78, pz = bed.z - fz * 0.75 + sz * side * 0.78;
+      const box = footprint(px, pz, 0, 0.45, 0.45);
+      if (inside(box, bounds) && P.free(box) && roomStaysConnected(lv, room, box)) P.add('ivstand', room, { x: px, z: pz, rot: rng.range(0, 6) });
+    }
+    if (rng.chance(0.4)) {
+      const [fx, fz] = frontVec(bed.rot);
+      const sx = fz, sz = -fx;
+      const side = rng.chance(0.5) ? 1 : -1;
+      lv.decals.push({ kind: 'curtain', x: bed.x + sx * side * 0.68 + fx * 0.1, z: bed.z + sz * side * 0.68 + fz * 0.1, rot: bed.rot, len: 2.0 });
+    }
+  };
+  const drain = (x, z) => lv.decals.push({ kind: 'drain', x, z, rot: rng.range(0, 6.28), size: rng.range(0.32, 0.42) });
+  const toyShelf = (room) => { const s = P.againstWall('shelf', room); if (s) s.toys = true; return s; };
+  lv.rocking = [];
+  const horse = (room, opts = {}) => {
+    const h = P.freeStanding('rockinghorse', room, { margin: 0.45, ...opts });
+    if (h) lv.rocking.push(h);
+    return h;
+  };
 
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
@@ -672,10 +874,18 @@ function furnish(lv, rng) {
     switch (t) {
       case 'lobby': {
         P.againstWall('counter', room, { sides: ['E', 'W'], clearance: 0.9 });
-        for (let i = 0; i < 3; i++) P.againstWall('bench', room, { noWindow: false });
-        P.againstWall('plant', room);
-        P.againstWall('plant', room);
-        P.freeStanding('wheelchair', room, { margin: 0.6 });
+        if (lv.theme === 'morgue') {
+          // 卸貨區：推床與紙箱
+          for (let i = 0; i < 2; i++) { const g = P.againstWall('gurney', room, { gap: 0.1 }); if (g) g.body = rng.chance(0.6); }
+          P.againstWall('boxes', room);
+          P.againstWall('boxes', room);
+        } else {
+          for (let i = 0; i < 3; i++) P.againstWall('bench', room, { noWindow: false });
+          P.againstWall('plant', room);
+          if (lv.theme === 'pediatric') horse(room, { margin: 0.6 });
+          else P.againstWall('plant', room);
+          P.freeStanding('wheelchair', room, { margin: 0.6 });
+        }
         lv.signs.push({ kind: 'tv', room: room.id });
         break;
       }
@@ -696,21 +906,7 @@ function furnish(lv, rng) {
           const bed = P.againstWall('bed', room, { gap: 0.04 });
           if (!bed) break;
           bed.variant = rng.int(0, 3);
-          if (rng.chance(0.55)) {
-            // 點滴架放在床頭旁
-            const [fx, fz] = frontVec(bed.rot);
-            const sx = fz, sz = -fx; // 側向
-            const side = rng.chance(0.5) ? 1 : -1;
-            const px = bed.x - fx * 0.75 + sx * side * 0.78, pz = bed.z - fz * 0.75 + sz * side * 0.78;
-            const box = footprint(px, pz, 0, 0.45, 0.45);
-            if (inside(box, bounds) && P.free(box) && roomStaysConnected(lv, room, box)) P.add('ivstand', room, { x: px, z: pz, rot: rng.range(0, 6) });
-          }
-          if (rng.chance(0.4)) {
-            const [fx, fz] = frontVec(bed.rot);
-            const sx = fz, sz = -fx;
-            const side = rng.chance(0.5) ? 1 : -1;
-            lv.decals.push({ kind: 'curtain', x: bed.x + sx * side * 0.68 + fx * 0.1, z: bed.z + sz * side * 0.68 + fz * 0.1, rot: bed.rot, len: 2.0 });
-          }
+          bedSide(bed, room, bounds);
         }
         if (rng.chance(0.6)) P.againstWall('cabinet', room);
         if (rng.chance(0.5)) P.freeStanding('chair', room, { margin: 0.4 });
@@ -738,8 +934,12 @@ function furnish(lv, rng) {
       case 'storage': {
         if (rng.chance(0.5)) addLocker(room);
         const n = rng.int(2, 4);
-        for (let i = 0; i < n; i++) P.againstWall('shelf', room);
+        for (let i = 0; i < n; i++) {
+          if (lv.theme === 'pediatric' && rng.chance(0.3)) toyShelf(room);
+          else P.againstWall('shelf', room);
+        }
         for (let i = 0; i < 2; i++) P.againstWall('boxes', room);
+        if (lv.theme === 'morgue' && rng.chance(0.6)) P.freeStanding('bodybag', room, { margin: 0.35, axisAligned: true });
         if (rng.chance(0.5)) P.againstWall('cabinet', room);
         break;
       }
@@ -750,6 +950,7 @@ function furnish(lv, rng) {
         P.againstWall('shelf', room);
         P.againstWall('bin', room);
         if (rng.chance(0.6)) P.againstWall('boxes', room);
+        if (lv.theme === 'morgue') drain(room.cx + rng.range(-0.5, 0.5), room.cz + rng.range(-0.5, 0.5));
         break;
       }
       case 'operating': {
@@ -763,12 +964,144 @@ function furnish(lv, rng) {
         break;
       }
       case 'morgue': {
+        if (lv.theme === 'morgue') {
+          // 冷藏櫃室：一整面一整面的屍體抽屜
+          const nUnits = room.area >= 4 ? 3 : room.area >= 2 ? 2 : 1;
+          for (let i = 0; i < nUnits; i++) {
+            const u = P.againstWall('drawers', room, { noWindow: true });
+            if (!u) break;
+            openDrawers(u, room);
+          }
+          const g = P.againstWall('gurney', room, { noWindow: false, gap: 0.25 });
+          if (g) g.body = rng.chance(0.7);
+          if (rng.chance(0.4)) addLocker(room);
+          if (rng.chance(0.5)) P.againstWall('sink', room);
+          drain(room.cx + rng.range(-0.6, 0.6), room.cz + rng.range(-0.6, 0.6));
+          break;
+        }
         P.againstWall('morgue', room);
         if (rng.chance(0.7)) P.againstWall('morgue', room);
         const g = P.againstWall('gurney', room, { noWindow: false, gap: 0.25 });
         if (g) g.body = true;
         if (rng.chance(0.6)) { const g2 = P.freeStanding('gurney', room, { margin: 0.5 }); if (g2) g2.body = rng.chance(0.7); }
         P.againstWall('sink', room);
+        break;
+      }
+      case 'autopsy': {
+        // 解剖室：不鏽鋼解剖台、地上的排水孔、器械推車
+        const n = room.area >= 4 ? 2 : 1;
+        for (let i = 0; i < n; i++) {
+          const tb = P.freeStanding('autopsy', room, { axisAligned: true, margin: 0.6, center: n === 1 });
+          if (!tb) continue;
+          const [dx, dz] = local(tb, 0, 0.75);
+          drain(dx, dz);
+          lv.decals.push({ kind: 'surgicalLamp', x: tb.x, z: tb.z, rot: tb.rot });
+        }
+        P.againstWall('trolley', room);
+        P.againstWall('sink', room, { noWindow: false });
+        P.againstWall('cabinet', room);
+        if (rng.chance(0.5)) P.againstWall('trolley', room);
+        if (rng.chance(0.35)) addLocker(room);
+        break;
+      }
+      case 'coldstore': {
+        // 屍袋冷藏室：天花板吊軌上掛著一排屍袋
+        const n = room.area >= 4 ? 3 : 2;
+        for (let i = 0; i < n; i++) P.againstWall('bagrail', room, { noWindow: true });
+        for (let k = rng.int(1, 2); k > 0; k--) P.freeStanding('bodybag', room, { margin: 0.35, axisAligned: true });
+        const g = P.againstWall('gurney', room, { gap: 0.2 });
+        if (g) g.body = true;
+        if (rng.chance(0.5)) P.againstWall('shelf', room);
+        drain(room.cx + rng.range(-0.8, 0.8), room.cz + rng.range(-0.8, 0.8));
+        if (rng.chance(0.3)) addLocker(room);
+        break;
+      }
+      case 'kidward': {
+        if (rng.chance(0.4)) addLocker(room);
+        const nBeds = Math.min(6, Math.max(1, Math.round(room.area * rng.range(0.9, 1.4))));
+        for (let i = 0; i < nBeds; i++) {
+          const kind = rng.chance(0.45) ? 'crib' : 'kidbed';
+          const bed = P.againstWall(kind, room, { gap: 0.04, clearance: 0.75 });
+          if (!bed) continue;
+          bed.variant = rng.int(0, 3);
+          if (kind === 'kidbed' && rng.chance(0.3)) lv.decals.push({ kind: 'curtain', ...(() => { const [fx, fz] = frontVec(bed.rot); const s = rng.chance(0.5) ? 1 : -1; return { x: bed.x + fz * s * 0.62 + fx * 0.1, z: bed.z - fx * s * 0.62 + fz * 0.1 }; })(), rot: bed.rot, len: 1.6 });
+        }
+        if (rng.chance(0.35)) horse(room);
+        if (rng.chance(0.4)) toyShelf(room);
+        if (rng.chance(0.5)) P.againstWall('cabinet', room);
+        if (rng.chance(0.4)) P.freeStanding('chair', room, { margin: 0.4 });
+        break;
+      }
+      case 'nursery': {
+        // 嬰兒室：一排一排的嬰兒床
+        const n = Math.min(7, room.area + 2);
+        for (let i = 0; i < n; i++) if (!P.againstWall('bassinet', room, { gap: 0.04, clearance: 0.7 })) break;
+        if (room.area >= 6) P.freeStanding('bassinet', room, { margin: 0.8, axisAligned: true });
+        P.freeStanding('chair', room, { margin: 0.4 });
+        if (rng.chance(0.5)) P.againstWall('cabinet', room);
+        if (rng.chance(0.4)) P.freeStanding('ivstand', room, { margin: 0.4 });
+        if (rng.chance(0.3)) addLocker(room);
+        break;
+      }
+      case 'playroom': {
+        // 遊戲室：小桌子、小椅子、搖搖馬和玩具架
+        const tb = P.freeStanding('kidtable', room, { margin: 0.8, axisAligned: true, center: room.area < 4 });
+        if (tb) {
+          for (const [lx, lz] of [[0, 0.62], [0, -0.62], [0.62, 0], [-0.62, 0]]) {
+            if (!rng.chance(0.7)) continue;
+            const [x, z] = local(tb, lx, lz);
+            addNear('kidchair', room, x, z, Math.atan2(lx, lz) + Math.PI + rng.range(-0.4, 0.4));
+          }
+        }
+        horse(room);
+        toyShelf(room);
+        if (rng.chance(0.6)) toyShelf(room);
+        P.againstWall('boxes', room);
+        if (rng.chance(0.4)) addLocker(room);
+        break;
+      }
+      case 'cell': {
+        // 軟墊隔離室：束縛床（有時候兩張）
+        const nb = room.area >= 2 && rng.chance(0.45) ? 2 : 1;
+        for (let i = 0; i < nb; i++) {
+          const bed = P.againstWall('bed', room, { gap: 0.04 });
+          if (!bed) break;
+          bed.variant = rng.chance(0.8) ? 0 : 1;
+          bed.restraint = true;
+        }
+        if (rng.chance(0.25)) addLocker(room);
+        break;
+      }
+      case 'therapy': {
+        // 電療室：電擊椅、電療機、束縛床
+        P.againstWall('ectchair', room, { clearance: 0.5 });
+        P.againstWall('ectmachine', room);
+        const bed = P.againstWall('bed', room, { gap: 0.04 });
+        if (bed) { bed.variant = 0; bed.restraint = true; }
+        P.againstWall('cabinet', room);
+        if (rng.chance(0.6)) P.againstWall('trolley', room);
+        if (rng.chance(0.5)) P.againstWall('sink', room);
+        if (rng.chance(0.35)) addLocker(room);
+        break;
+      }
+      case 'dayroom': {
+        // 交誼廳：桌椅、長椅、輪椅
+        const nt = room.area >= 6 ? 2 : 1;
+        for (let i = 0; i < nt; i++) {
+          const tb = P.freeStanding('table', room, { margin: 0.9, axisAligned: true });
+          if (!tb) continue;
+          for (const [lx, lz] of [[-0.35, 0.72], [0.35, 0.72], [-0.35, -0.72], [0.35, -0.72]]) {
+            if (!rng.chance(0.6)) continue;
+            const [x, z] = local(tb, lx, lz);
+            addNear('chair', room, x, z, tb.rot + (lz > 0 ? Math.PI : 0) + rng.range(-0.5, 0.5));
+          }
+        }
+        P.againstWall('bench', room);
+        if (rng.chance(0.6)) P.againstWall('bench', room);
+        P.againstWall('plant', room);
+        if (rng.chance(0.6)) P.freeStanding('wheelchair', room, { margin: 0.5 });
+        if (rng.chance(0.5)) P.againstWall('shelf', room);
+        if (rng.chance(0.35)) addLocker(room);
         break;
       }
       case 'nurse': {
@@ -801,16 +1134,26 @@ function furnish(lv, rng) {
     const it = addLocker(corridor, { slots, bounds: cellBounds(x, y) });
     if (it) { lockerSpots.push([cx, cz]); used.add(x + ',' + y); }
   }
+  // 置物櫃太少（櫃子間距 9 公尺放不下）就放寬間距再補
+  for (const [x, y] of rng.shuffle(corrCells.slice())) {
+    if (lv.lockers.length >= 6) break;
+    if (used.has(x + ',' + y)) continue;
+    const slots = wallSlots(lv, corridor, [[x, y]]);
+    if (!slots.length) continue;
+    if (addLocker(corridor, { slots, bounds: cellBounds(x, y) })) used.add(x + ',' + y);
+  }
+  const props = CORRIDOR_PROPS[lv.theme] || CORRIDOR_PROPS.ward;
   for (const [x, y] of rng.shuffle(corrCells.slice())) {
     if (used.has(x + ',' + y) || !rng.chance(0.33)) continue;
     const slots = wallSlots(lv, corridor, [[x, y]]);
     if (!slots.length) continue;
-    const kind = rng.weighted([['gurney', 3], ['wheelchair', 2], ['bench', 1.5], ['bin', 1.5], ['chair', 1.5], ['boxes', 1]]);
+    const kind = rng.weighted(props);
     const it = P.againstWall(kind, corridor, { slots, bounds: cellBounds(x, y), gap: kind === 'gurney' ? 0.1 : 0.03 });
     if (it) {
       used.add(x + ',' + y);
-      if (kind === 'gurney' && rng.chance(0.35)) it.body = true;
+      if (kind === 'gurney' && rng.chance(T.decor.corridorBodies)) it.body = true;
       if (kind === 'wheelchair' || kind === 'chair') it.rot += rng.range(-0.6, 0.6);
+      if (kind === 'crib') it.variant = rng.int(0, 3);
     }
   }
   // 有些輪椅會在事件中被推動
@@ -910,15 +1253,16 @@ function placeItems(lv, rng, diff) {
 }
 
 // ---------------------------------------------------------------------------
-function placeLights(lv, rng) {
-  const stageOf = () => rng.weighted([[1, 0.17], [2, 0.17], [3, 0.2], [0, 0.46]]); // 0 = 壞掉
-  const { c, r } = { c: lv.corrCols, r: lv.corrRows };
+function placeLights(lv, rng, T) {
+  const L = T.lights;
+  const stageOf = () => rng.weighted([[1, 0.17], [2, 0.17], [3, 0.2], [0, L.broken]]); // 0 = 壞掉
+  const isCorr = (x, y) => lv.cellAt(x, y) === CORRIDOR;
   for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) {
     const id = lv.cellAt(x, y);
     if (id === VOID || lv.blockedCell[y * lv.W + x]) continue;
     const room = lv.rooms[id];
     let place = false;
-    if (id === CORRIDOR) place = (x + y) % 2 === 0;
+    if (id === CORRIDOR) place = (x + y) % L.corrEvery === 0;
     else if (room.area <= 2) place = x === room.x0 && y === room.y0;
     else place = (x - room.x0) % 2 === 0 && (y - room.y0) % 2 === 0;
     if (!place) continue;
@@ -928,26 +1272,29 @@ function placeLights(lv, rng) {
     if (room.type === 'generator') stage = 1;
     if (room.type === 'lobby') stage = 3;
     if (room.type === 'nurse' && stage === 0) stage = 2;
-    const mode = stage === 0 ? 'broken' : rng.chance(0.35) ? 'flicker' : 'steady';
-    lv.fixtures.push({ x: fx, z: fz, y: WALL_H - 0.04, room: id, stage, mode, rot: id === CORRIDOR ? (r.includes(y) && !c.includes(x) ? 0 : Math.PI / 2) : 0, phase: rng.range(0, 100), on: false, level: 0 });
+    const mode = stage === 0 ? 'broken' : rng.chance(L.flicker) ? 'flicker' : 'steady';
+    // 走廊燈管順著走廊方向
+    const horiz = (isCorr(x - 1, y) || isCorr(x + 1, y)) && !(isCorr(x, y - 1) || isCorr(x, y + 1));
+    lv.fixtures.push({ x: fx, z: fz, y: WALL_H - 0.04, room: id, stage, mode, rot: id === CORRIDOR ? (horiz ? 0 : Math.PI / 2) : 0, phase: rng.range(0, 100), on: false, level: 0 });
   }
-  // 緊急照明（紅色，一直亮著）
+  // 緊急照明（一直亮著，顏色依主題）
   const inter = [];
-  for (const y of r) for (const x of c) inter.push([x, y]);
-  for (const [x, y] of rng.shuffle(inter).slice(0, 5)) {
+  for (const y of lv.corrRows) for (const x of lv.corrCols) if (isCorr(x, y)) inter.push([x, y]);
+  for (const [x, y] of rng.shuffle(inter).slice(0, L.emergencyN)) {
     lv.emergency.push({ x: (x + 0.5) * CELL + rng.range(-0.8, 0.8), y: WALL_H - 0.25, z: (y + 0.5) * CELL + rng.range(-0.8, 0.8), phase: rng.range(0, 10) });
   }
   // 出口標示
-  lv.exitSigns.push({ x: (c[1] + 0.5) * CELL, y: DOOR_H + 0.35, z: (r[2] + 1) * CELL - HT - 0.05, rot: Math.PI });
-  lv.exitSigns.push({ x: (c[1] + 0.5) * CELL, y: GATE_H + 0.25, z: lv.H * CELL - HT - 0.05, rot: Math.PI });
+  lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: DOOR_H + 0.35, z: lv.lobbyTop * CELL - HT - 0.05, rot: Math.PI });
+  lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: GATE_H + 0.25, z: lv.H * CELL - HT - 0.05, rot: Math.PI });
 }
 
 // ---------------------------------------------------------------------------
-function placeDecals(lv, rng) {
+function placeDecals(lv, rng, T) {
+  const D = T.decor;
   // 地板血跡
   const floorCells = [];
   for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) if (lv.cellAt(x, y) !== VOID && !lv.blockedCell[y * lv.W + x]) floorCells.push([x, y]);
-  const nBlood = Math.round(floorCells.length * 0.12);
+  const nBlood = Math.round(floorCells.length * D.blood);
   for (let i = 0; i < nBlood; i++) {
     const [x, y] = rng.pick(floorCells);
     lv.decals.push({ kind: 'blood', x: (x + rng.range(0.15, 0.85)) * CELL, z: (y + rng.range(0.15, 0.85)) * CELL, rot: rng.range(0, 6.28), size: rng.range(0.5, 1.4), variant: rng.int(0, 3) });
@@ -958,7 +1305,7 @@ function placeDecals(lv, rng) {
     lv.decals.push({ kind: 'drag', x: (x + 0.5) * CELL, z: (y + 0.5) * CELL, rot: rng.pick([0, Math.PI / 2]) + rng.range(-0.3, 0.3), size: rng.range(2.0, 2.8) });
   }
   // 紙張
-  const nPaper = Math.round(floorCells.length * 0.35);
+  const nPaper = Math.round(floorCells.length * D.paper);
   for (let i = 0; i < nPaper; i++) {
     const [x, y] = rng.pick(floorCells);
     lv.decals.push({ kind: 'paper', x: (x + rng.range(0.1, 0.9)) * CELL, z: (y + rng.range(0.1, 0.9)) * CELL, rot: rng.range(0, 6.28), size: rng.range(0.22, 0.32), variant: rng.int(0, 3) });
@@ -977,14 +1324,14 @@ function placeDecals(lv, rng) {
   const words = rng.shuffle(WALL_WRITINGS.slice());
   let wi = 0;
   for (const s of wallSlotsClean) {
-    if (wi >= 5) break;
+    if (wi >= D.writings) break;
     const along = s.a0 + CELL / 2 + rng.range(-0.4, 0.4);
     if (!wallDecalFree(lv, s, along, 1.2)) continue;
     lv.decals.push({ kind: 'writing', text: words[wi++ % words.length], ...wallDecalPose(s, along, rng.range(1.35, 1.75)), size: rng.range(1.3, 1.8) });
   }
   let hp = 0;
-  for (const s of wallSlotsClean.slice(5)) {
-    if (hp >= 7) break;
+  for (const s of wallSlotsClean.slice(D.writings)) {
+    if (hp >= D.hands) break;
     const along = s.a0 + rng.range(0.6, CELL - 0.6);
     if (!wallDecalFree(lv, s, along, 0.4)) continue;
     lv.decals.push({ kind: 'hand', ...wallDecalPose(s, along, rng.range(0.9, 1.6)), size: rng.range(0.22, 0.28), rotZ: rng.range(-0.6, 0.6), variant: rng.int(0, 1) });
@@ -1017,6 +1364,46 @@ function placeDecals(lv, rng) {
       lv.decals.push({ kind: 'smear', ...p, w, rotZ: r2.range(-0.2, 0.2), band: r2.int(0, 3) });
       spans.push({ rot: p.rot, x: p.x, z: p.z, half: w / 2 });
       smears++;
+    }
+  }
+  // 主題貼花：蠟筆畫（兒童病房）、地上的排水孔（太平間）、散落的玩具（兒童病房）。
+  // 再用另一個亂數來源，不影響上面的結果
+  const r3 = new RNG((lv.seed ^ 0x7a11c3) >>> 0);
+  if (D.drawings > 0) {
+    const kidRoom = (s) => { const id = lv.cellAt(s.x, s.y); return id === 0 || ['kidward', 'playroom', 'nursery', 'lobby', 'nurse'].includes(lv.rooms[id].type); };
+    let nd = 0;
+    for (const s of r3.shuffle(wallSlotsClean.filter(kidRoom))) {
+      if (nd >= D.drawings) break;
+      // 一面牆貼一到三張
+      for (let k = r3.int(1, 3); k > 0 && nd < D.drawings; k--) {
+        const w = r3.range(0.42, 0.56);
+        const along = s.a0 + r3.range(w / 2 + 0.2, CELL - w / 2 - 0.2);
+        if (!wallDecalFree(lv, s, along, w)) continue;
+        const p = wallDecalPose(s, along, r3.range(0.95, 1.55));
+        if (clashes(p, w)) continue;
+        lv.decals.push({ kind: 'drawing', ...p, w, rotZ: r3.range(-0.12, 0.12), variant: r3.int(0, 5) });
+        spans.push({ rot: p.rot, x: p.x, z: p.z, half: w / 2 });
+        nd++;
+      }
+    }
+  }
+  if (D.drains > 0) {
+    for (const [x, y] of floorCells) {
+      if (lv.cellAt(x, y) !== CORRIDOR || !r3.chance(D.drains)) continue;
+      lv.decals.push({ kind: 'drain', x: (x + r3.range(0.35, 0.65)) * CELL, z: (y + r3.range(0.35, 0.65)) * CELL, rot: r3.range(0, 6.28), size: r3.range(0.3, 0.4) });
+    }
+  }
+  if (D.toys > 0) {
+    const nearItem = (p) => lv.items.some((it) => it.y < 0.3 && Math.hypot(it.x - p.x, it.z - p.z) < 0.45);
+    for (const room of lv.rooms) {
+      const kid = ['kidward', 'playroom', 'nursery'].includes(room.type);
+      const n = kid ? D.toys + (room.type === 'playroom' ? 3 : 0) : room.id === 0 ? 6 : room.type === 'lobby' ? 2 : 0;
+      for (let k = 0; k < n; k++) {
+        const b = room.id === 0 ? (() => { const [x, y] = r3.pick(floorCells.filter(([cx, cy]) => lv.cellAt(cx, cy) === CORRIDOR)); return cellBounds(x, y); })() : roomBounds(room);
+        const p = floorPoint(lv, r3, b, 0.3);
+        if (!p || nearItem(p)) continue;
+        lv.decals.push({ kind: 'toy', x: p.x, z: p.z, rot: r3.range(0, 6.28), variant: r3.int(0, 4), tipped: r3.chance(0.35) });
+      }
     }
   }
   // 房門上方的門牌
@@ -1102,14 +1489,18 @@ function assignCorpses(lv) {
     for (const it of lv.items) if (it.y <= 0.01 && overlaps(o, { minX: it.x, maxX: it.x, minZ: it.z, maxZ: it.z }, 0.2)) return false;
     return roomStaysConnected(lv, lv.rooms[f.room], o);
   };
-  const cands = lv.furniture.filter((f) => (f.kind === 'bed' && (f.variant || 0) !== 2 && r.chance(0.42)) || (f.kind === 'gurney' && f.body && r.chance(0.75)));
+  // 解剖台與拉出來的冷藏抽屜也可以躺人（只用平躺類、不垂到外面的姿勢）
+  const flat = (k) => k === 'autopsy' || k === 'tray';
+  const cands = lv.furniture.filter((f) => (f.kind === 'bed' && (f.variant || 0) !== 2 && r.chance(0.42)) || (f.kind === 'gurney' && f.body && r.chance(0.75))
+    || (f.kind === 'autopsy' && r.chance(0.6)) || (f.kind === 'tray' && f.body && r.chance(0.55)));
   let n = 0;
   for (const f of r.shuffle(cands)) {
-    if (n >= 7) break;
+    if (n >= (lv.theme === 'morgue' ? 10 : 7)) break;
     const opts = [];
     for (const name of poseNames) {
       const p = CORPSE_POSES[name];
       if (f.kind === 'gurney' && !p.gurney) continue;
+      if (flat(f.kind) && (p.hang || !p.gurney)) continue;
       if (!p.hang) { opts.push([name, r.chance(0.5), p.w]); continue; }
       // 預設垂向 -X 側；翻轉後垂向 +X 側
       if (hangOk(f, -1, name)) opts.push([name, false, p.w]);
@@ -1152,11 +1543,31 @@ function buildWallPieces(lv) {
       piece(plane - HT, plane + HT, h, WALL_H, m - w / 2, m + w / 2, { lintel: true });
     }
   };
+  // 觀察窗 / 鐵籠：牆中間開一個洞（下面是窗台，上面是過梁），洞裡放玻璃或鐵條（world.js）
+  lv.obsOpenings = [];
+  const obsPieces = (o, a0, a1, plane, kind) => {
+    const m = (a0 + a1) / 2;
+    const w = kind === 'cage' ? CELL - 0.55 : 1.1, y0 = kind === 'cage' ? 1.0 : 1.15, y1 = kind === 'cage' ? 2.6 : 1.85;
+    if (o === 'h') {
+      piece(a0 + HT, m - w / 2, 0, WALL_H, plane - HT, plane + HT, { jamb: 'obs' });
+      piece(m + w / 2, a1 - HT, 0, WALL_H, plane - HT, plane + HT, { jamb: 'obs' });
+      piece(m - w / 2, m + w / 2, 0, y0, plane - HT, plane + HT, { sill: true });
+      piece(m - w / 2, m + w / 2, y1, WALL_H, plane - HT, plane + HT, { lintel: true });
+    } else {
+      piece(plane - HT, plane + HT, 0, WALL_H, a0 + HT, m - w / 2, { jamb: 'obs' });
+      piece(plane - HT, plane + HT, 0, WALL_H, m + w / 2, a1 - HT, { jamb: 'obs' });
+      piece(plane - HT, plane + HT, 0, y0, m - w / 2, m + w / 2, { sill: true });
+      piece(plane - HT, plane + HT, y1, WALL_H, m - w / 2, m + w / 2, { lintel: true });
+    }
+    lv.obsOpenings.push({ o, kind, x: o === 'h' ? m : plane, z: o === 'h' ? plane : m, w, y0, y1, rot: o === 'h' ? 0 : Math.PI / 2 });
+  };
+  const obsAt = (o, x, y) => lv.obs && lv.obs.get(`${o}${x},${y}`);
   for (let y = 0; y <= lv.H; y++) for (let x = 0; x < lv.W; x++) {
     const t = lv.hEdge(x, y);
     if (!isWallish(t)) continue;
     const a0 = x * CELL, a1 = a0 + CELL, z = y * CELL;
-    if (t === E.WALL || t === E.WINDOW) {
+    if (t === E.WALL && obsAt('h', x, y)) obsPieces('h', a0, a1, z, obsAt('h', x, y));
+    else if (t === E.WALL || t === E.WINDOW) {
       piece(a0 + HT, a1 - HT, 0, WALL_H, z - HT, z + HT, { window: t === E.WINDOW, o: 'h', ex: x, ey: y });
       if (t === E.WINDOW) lv.windows.push(windowFor(lv, 'h', x, y));
     } else if (t === E.DOOR) openingPieces('h', a0, a1, z, DOOR_W, DOOR_H, 'door');
@@ -1166,7 +1577,8 @@ function buildWallPieces(lv) {
     const t = lv.vEdge(x, y);
     if (!isWallish(t)) continue;
     const a0 = y * CELL, a1 = a0 + CELL, px = x * CELL;
-    if (t === E.WALL || t === E.WINDOW) {
+    if (t === E.WALL && obsAt('v', x, y)) obsPieces('v', a0, a1, px, obsAt('v', x, y));
+    else if (t === E.WALL || t === E.WINDOW) {
       piece(px - HT, px + HT, 0, WALL_H, a0 + HT, a1 - HT, { window: t === E.WINDOW, o: 'v', ex: x, ey: y });
       if (t === E.WINDOW) lv.windows.push(windowFor(lv, 'v', x, y));
     } else if (t === E.DOOR) openingPieces('v', a0, a1, px, DOOR_W, DOOR_H, 'door');

@@ -918,6 +918,379 @@ export class TextureFactory {
   }
 
   // ---------------------------------------------------------------------
+  // 樓層主題的牆面與地板
+
+  // 地下太平間：整面到頂的小方磁磚（上淺下深兩色）、生鏽水痕、發黑的磁縫
+  tileWall() {
+    return this.get('tileWall', () => {
+      const S = this.q.tex, rng = this.rng;
+      const ppm = S / 3;
+      const c = mk(S, S), g = ctx2d(c);
+      const hc = mk(S, S), hg = ctx2d(hc);
+      const n = 20, ts = S / n, grout = Math.max(2, S / 300);
+      const yBand = S - 1.25 * ppm, ySkirt = S - 0.1 * ppm;
+      g.fillStyle = '#3c4440'; g.fillRect(0, 0, S, S);
+      hg.fillStyle = '#383838'; hg.fillRect(0, 0, S, S);
+      const P = this.ph('tiles');
+      const pc = P && this.photoPixels(S, S, [{ img: P.c, pw: S / 2 }], '#737373', 24);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const y0 = j * ts;
+        const low = y0 >= yBand - 1;
+        const v = rng.range(-0.035, 0.03);
+        const missing = rng.chance(0.008);
+        if (missing) { g.fillStyle = '#2a2b27'; hg.fillStyle = '#1c1c1c'; }
+        else {
+          g.fillStyle = low ? css(0.36 + v, 0.5 + v, 0.48 + v) : css(0.74 + v, 0.8 + v, 0.78 + v);
+          hg.fillStyle = '#c8c8c8';
+        }
+        g.fillRect(i * ts + grout / 2, y0 + grout / 2, ts - grout, ts - grout);
+        hg.fillRect(i * ts + grout / 2, y0 + grout / 2, ts - grout, ts - grout);
+      }
+      // 腰帶的一排深色磁磚與踢腳
+      g.fillStyle = '#26302d'; g.fillRect(0, yBand - ts * 0.18, S, ts * 0.18);
+      g.fillStyle = '#1e2220'; g.fillRect(0, ySkirt, S, S - ySkirt);
+      hg.fillStyle = '#b0b0b0'; hg.fillRect(0, ySkirt, S, S - ySkirt);
+      // 鏽水從天花板流下來
+      for (let k = 0; k < 14; k++) {
+        const x = rng.range(0, S), w = rng.range(S * 0.004, S * 0.02), len = rng.range(0.2, 0.9) * S;
+        wrapDraw(S, (o) => {
+          const gr = g.createLinearGradient(0, 0, 0, len);
+          gr.addColorStop(0, 'rgba(110,60,25,0.55)'); gr.addColorStop(0.6, 'rgba(100,55,25,0.25)'); gr.addColorStop(1, 'rgba(100,55,25,0)');
+          g.fillStyle = gr;
+          g.fillRect(x + o - w / 2, 0, w, len);
+        });
+      }
+      const cd = g.getImageData(0, 0, S, S);
+      const hgt = readGray(hc);
+      const dirt = fbm(S, S, rng, [[3, 0.35], [9, 0.3], [27, 0.2], [80, 0.15]]);
+      const mold = fbm(S, S, rng, [[6, 0.5], [18, 0.3], [54, 0.2]]);
+      const rough = new Float32Array(S * S);
+      for (let i = 0; i < S * S; i++) {
+        const o = i * 4, y = (i / S) | 0, yy = y / S;
+        const isGrout = hgt[i] < 0.5;
+        let k = 0.62 + dirt[i] * 0.45;
+        // 下半部越接近地板越髒，磁縫發黑
+        k *= 1 - smooth(0.6, 1.0, yy) * 0.3;
+        if (isGrout) k *= 0.55;
+        if (pc) k *= Math.min(1.2, Math.max(0.6, (pc[o] + pc[o + 1] + pc[o + 2]) / 336));
+        let r = cd.data[o] / 255 * k, gg = cd.data[o + 1] / 255 * k, b = cd.data[o + 2] / 255 * k;
+        const m = mold[i] * (0.6 + yy * 0.6);
+        if (m > 0.62) { const e = smooth(0.62, 0.78, m); r *= 1 - 0.5 * e; gg *= 1 - 0.42 * e; b *= 1 - 0.45 * e; }
+        cd.data[o] = clamp01(r) * 255; cd.data[o + 1] = clamp01(gg) * 255; cd.data[o + 2] = clamp01(b) * 255;
+        rough[i] = isGrout ? 0.95 : 0.14 + (1 - dirt[i]) * 0.35;
+      }
+      g.putImageData(cd, 0, 0);
+      this.set('tileWall', c, hgt, rough, S, S, S / 256 * 1.5);
+    });
+  }
+
+  // 兒童病房：粉彩條紋壁紙（星星、小鴨、氣球），大片剝落露出灰泥；下半部漆成奶油色的護牆板
+  wallpaper() {
+    return this.get('wallpaper', () => {
+      const S = this.q.tex, rng = this.rng;
+      const ppm = S / 3;
+      const c = mk(S, S), g = ctx2d(c);
+      const yRail = S - 1.0 * ppm, yRail2 = S - 1.08 * ppm, ySkirt = S - 0.12 * ppm;
+      // 條紋
+      const stripe = S / 16;
+      for (let i = 0; i < 16; i++) {
+        g.fillStyle = i % 2 ? '#e3b9b9' : '#cde0cf';
+        g.fillRect(i * stripe, 0, stripe, yRail2);
+      }
+      g.fillStyle = 'rgba(255,255,255,0.35)';
+      for (let i = 0; i < 16; i++) g.fillRect(i * stripe + stripe * 0.46, 0, stripe * 0.08, yRail2);
+      // 圖案
+      const motif = (x, y, k) => {
+        if (k === 0) {
+          // 星星
+          g.fillStyle = '#e9c66b';
+          g.beginPath();
+          for (let p = 0; p < 10; p++) { const a = p * Math.PI / 5 - Math.PI / 2, rr = p % 2 ? S * 0.008 : S * 0.019; g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+          g.fill();
+        } else if (k === 1) {
+          // 小鴨
+          g.fillStyle = '#efd35a';
+          g.beginPath(); g.ellipse(x, y, S * 0.02, S * 0.013, 0, 0, 6.29); g.fill();
+          g.beginPath(); g.arc(x + S * 0.015, y - S * 0.014, S * 0.009, 0, 6.29); g.fill();
+          g.fillStyle = '#d8743a'; g.fillRect(x + S * 0.022, y - S * 0.016, S * 0.008, S * 0.004);
+        } else {
+          // 氣球
+          g.strokeStyle = 'rgba(90,80,70,0.6)'; g.lineWidth = Math.max(1, S / 900);
+          g.beginPath(); g.moveTo(x, y + S * 0.02); g.quadraticCurveTo(x + S * 0.008, y + S * 0.04, x, y + S * 0.06); g.stroke();
+          g.fillStyle = ['#8fb3d9', '#e08b8b', '#a8d08d'][rng.int(0, 2)];
+          g.beginPath(); g.ellipse(x, y, S * 0.014, S * 0.019, 0, 0, 6.29); g.fill();
+        }
+      };
+      for (let row = 0; row * S * 0.09 < yRail2 - S * 0.04; row++) for (let i = 0; i < 8; i++) {
+        motif(i * S / 8 + (row % 2 ? S / 16 : 0) + S / 32, S * 0.05 + row * S * 0.09, (row + i) % 3);
+      }
+      // 護牆板與腰線（彩色邊條）
+      g.fillStyle = '#d9cfb0'; g.fillRect(0, yRail, S, ySkirt - yRail);
+      g.fillStyle = 'rgba(120,100,70,0.25)';
+      for (let i = 0; i < 12; i++) g.fillRect(i * S / 12, yRail, Math.max(1, S / 500), ySkirt - yRail);
+      const band = ['#d98c8c', '#e6c36a', '#8fbf8f', '#87a9d6'];
+      for (let i = 0; i < 24; i++) { g.fillStyle = band[i % 4]; g.fillRect(i * S / 24, yRail2, S / 24, yRail - yRail2); }
+      g.fillStyle = '#6d5a48'; g.fillRect(0, ySkirt, S, S - ySkirt);
+      // 水漬
+      for (let k = 0; k < 8; k++) {
+        const x = rng.range(0, S), w = rng.range(S * 0.02, S * 0.07), len = rng.range(0.15, 0.7) * yRail;
+        wrapDraw(S, (o) => {
+          const gr = g.createLinearGradient(0, 0, 0, len);
+          gr.addColorStop(0, 'rgba(95,72,40,0.5)'); gr.addColorStop(0.7, 'rgba(95,72,40,0.2)'); gr.addColorStop(1, 'rgba(95,72,40,0)');
+          g.fillStyle = gr;
+          g.beginPath(); g.ellipse(x + o, 0, w, len, 0, 0, Math.PI); g.fill();
+        });
+      }
+      const cd = g.getImageData(0, 0, S, S);
+      const peel = fbm(S, S, rng, [[5, 0.45], [14, 0.3], [40, 0.25]]);
+      const peelMask = fbm(S, S, rng, [[2, 0.6], [6, 0.4]]);
+      const dirt = fbm(S, S, rng, [[3, 0.4], [9, 0.3], [27, 0.2], [81, 0.1]]);
+      const mold = fbm(S, S, rng, [[8, 0.5], [24, 0.3], [64, 0.2]]);
+      const hgt = new Float32Array(S * S).fill(0.5), rough = new Float32Array(S * S);
+      for (let y = 0; y < S; y++) {
+        const yy = y / S, upper = y < yRail2;
+        for (let x = 0; x < S; x++) {
+          const i = y * S + x, o = i * 4;
+          let r = cd.data[o] / 255, gg = cd.data[o + 1] / 255, b = cd.data[o + 2] / 255, ro = 0.85;
+          if (upper) {
+            // 剝落：露出灰泥，邊緣翹起有一圈亮邊與陰影
+            const p = peel[i] * (0.5 + peelMask[i] * 0.7);
+            const T = 0.7;
+            if (p > T - 0.02) {
+              const e = smooth(T, T + 0.012, p), rim = 1 - Math.abs(p - T) / 0.02;
+              const pl = 0.55 + dirt[i] * 0.1;
+              r = r * (1 - e) + pl * e; gg = gg * (1 - e) + pl * 0.97 * e; b = b * (1 - e) + pl * 0.9 * e;
+              if (rim > 0 && p < T) { r = r + rim * 0.12; gg = gg + rim * 0.12; b = b + rim * 0.1; }
+              if (rim > 0 && p >= T) { r *= 1 - rim * 0.4; gg *= 1 - rim * 0.4; b *= 1 - rim * 0.4; }
+              hgt[i] = 0.5 - e * 0.12 + (rim > 0 && p < T ? rim * 0.15 : 0);
+              ro = 0.95;
+            }
+            const m = mold[i] * (1.0 - yy * 2.6);
+            if (m > 0.48) { const e = smooth(0.48, 0.62, m); r *= 1 - 0.5 * e; gg *= 1 - 0.45 * e; b *= 1 - 0.45 * e; }
+            // 褪色
+            const l = (r + gg + b) / 3;
+            r = r * 0.8 + l * 0.2; gg = gg * 0.8 + l * 0.2; b = b * 0.8 + l * 0.2;
+          } else {
+            ro = 0.6;
+            hgt[i] = y < yRail ? 0.7 : 0.5;
+          }
+          const k = 0.72 + dirt[i] * 0.34 - smooth(0.5, 0.75, yy) * 0.12;
+          cd.data[o] = clamp01(r * k) * 255; cd.data[o + 1] = clamp01(gg * k) * 255; cd.data[o + 2] = clamp01(b * k * 0.97) * 255;
+          rough[i] = ro;
+        }
+      }
+      g.putImageData(cd, 0, 0);
+      this.set('wallpaper', c, hgt, rough, S, S, S / 256 * 2.0);
+    });
+  }
+
+  // 精神科隔離室：鈕扣軟墊（牆與地板共用），發黃、污漬、抓痕
+  padded() {
+    return this.get('padded', () => {
+      const S = this.q.tex, rng = this.rng;
+      const n = 6, cs = S / n;
+      const c = mk(S, S), g = ctx2d(c);
+      const hgt = new Float32Array(S * S), rough = new Float32Array(S * S);
+      const dirt = fbm(S, S, rng, [[3, 0.4], [8, 0.3], [24, 0.2], [72, 0.1]]);
+      const stain = fbm(S, S, rng, [[4, 0.6], [12, 0.4]]);
+      const fine = fbm(S, S, rng, [[160, 1]]);
+      const id = g.createImageData(S, S);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const i = y * S + x, o = i * 4;
+        // 菱形格：轉 45 度的方格，每格中間鼓起
+        const u = (x + y) / cs, v = (x - y + S) / cs;
+        const fu = u - Math.floor(u) - 0.5, fv = v - Math.floor(v) - 0.5;
+        const d = Math.max(Math.abs(fu), Math.abs(fv));
+        const bump = Math.cos(Math.min(1, d * 2) * Math.PI / 2);
+        const seam = smooth(0.44, 0.5, d);
+        const button = Math.hypot(fu - 0.5 * Math.sign(fu), fv - 0.5 * Math.sign(fv)) < 0.07;
+        hgt[i] = bump * 0.8 - seam * 0.2 + (fine[i] - 0.5) * 0.03;
+        let l = 0.78 * (0.75 + 0.25 * bump) - seam * 0.18;
+        if (button) l *= 0.55;
+        let r = l * 0.97, gg = l * 0.93, b = l * 0.8;
+        const st = smooth(0.62, 0.8, stain[i]);
+        r *= 1 - st * 0.35; gg *= 1 - st * 0.4; b *= 1 - st * 0.55;
+        const k = 0.75 + dirt[i] * 0.3;
+        id.data[o] = clamp01(r * k) * 255; id.data[o + 1] = clamp01(gg * k) * 255; id.data[o + 2] = clamp01(b * k) * 255; id.data[o + 3] = 255;
+        rough[i] = 0.55 + seam * 0.3 + st * 0.1;
+      }
+      g.putImageData(id, 0, 0);
+      // 指甲抓痕與乾掉的血
+      for (let k = 0; k < 7; k++) {
+        const x = rng.range(0, S), y = rng.range(S * 0.3, S * 0.8);
+        for (let f = 0; f < 4; f++) {
+          g.strokeStyle = `rgba(${rng.int(60, 100)},40,30,${rng.range(0.3, 0.6)})`;
+          g.lineWidth = Math.max(1, S / 600);
+          g.beginPath(); g.moveTo(x + f * S * 0.012, y); g.lineTo(x + f * S * 0.012 + rng.range(-8, 8), y + rng.range(S * 0.05, S * 0.15)); g.stroke();
+        }
+      }
+      for (let k = 0; k < 3; k++) splatter(g, rng, rng.range(0, S), rng.range(S * 0.4, S), rng.range(S * 0.02, S * 0.05), 'rgba(80,14,10,', 0.6);
+      this.set('padded', c, hgt, rough, S, S, S / 256 * 3.0);
+    });
+  }
+
+  // 兒童病房地板：粉彩方格塑膠地磚
+  kidFloor() {
+    return this.get('kidFloor', () => {
+      const S = this.q.tex, rng = this.rng;
+      const c = mk(S, S), g = ctx2d(c);
+      const n = 8, ts = S / n, seam = Math.max(1.5, S / 600);
+      const cols = [[0.62, 0.72, 0.8], [0.84, 0.8, 0.68], [0.82, 0.66, 0.66], [0.66, 0.78, 0.66]];
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const [r, gg, b] = cols[(i + j * 3) % 4], v = rng.range(-0.03, 0.03);
+        g.fillStyle = css(r + v, gg + v, b + v);
+        g.fillRect(i * ts, j * ts, ts, ts);
+        for (let k = 0; k < ts * ts / 160; k++) {
+          g.fillStyle = rng.chance(0.5) ? 'rgba(255,255,250,0.14)' : 'rgba(0,0,0,0.1)';
+          g.fillRect(i * ts + rng.range(0, ts), j * ts + rng.range(0, ts), 1.5 * S / 1024, 1.5 * S / 1024);
+        }
+      }
+      g.fillStyle = 'rgba(20,20,18,0.7)';
+      for (let i = 0; i <= n; i++) { g.fillRect(i * ts - seam / 2, 0, seam, S); g.fillRect(0, i * ts - seam / 2, S, seam); }
+      g.lineCap = 'round';
+      for (let k = 0; k < 50; k++) {
+        const x = rng.range(0, S), y = rng.range(0, S), l = rng.range(8, 40) * S / 1024, a = rng.range(0, 6.28);
+        g.strokeStyle = `rgba(10,10,10,${rng.range(0.12, 0.35)})`; g.lineWidth = rng.range(1, 3) * S / 1024;
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+      }
+      const cd = g.getImageData(0, 0, S, S);
+      const dirt = fbm(S, S, rng, [[3, 0.35], [8, 0.3], [20, 0.2], [60, 0.15]]);
+      const wet = fbm(S, S, rng, [[4, 0.6], [12, 0.3], [40, 0.1]]);
+      const hgt = new Float32Array(S * S), rough = new Float32Array(S * S);
+      for (let i = 0; i < S * S; i++) {
+        const o = i * 4, x = i % S, y = (i / S) | 0;
+        const onSeam = Math.min(x % ts, ts - (x % ts), y % ts, ts - (y % ts)) < seam;
+        let k = 0.66 + dirt[i] * 0.42;
+        const w = smooth(0.66, 0.72, wet[i]);
+        k *= 1 - w * 0.3;
+        cd.data[o] = clamp01(cd.data[o] / 255 * k) * 255; cd.data[o + 1] = clamp01(cd.data[o + 1] / 255 * k) * 255; cd.data[o + 2] = clamp01(cd.data[o + 2] / 255 * k * 0.97) * 255;
+        rough[i] = onSeam ? 0.9 : (0.4 + (1 - dirt[i]) * 0.25) * (1 - w) + 0.05 * w;
+        hgt[i] = onSeam ? 0.25 : 0.6;
+      }
+      g.putImageData(cd, 0, 0);
+      this.set('kidFloor', c, hgt, rough, S, S, S / 256 * 1.4);
+    });
+  }
+
+  // 孩子的蠟筆畫（3 × 2 圖集）：長頭髮的白衣女人、牽手、房子、黑色漩渦、病床、「她在找我」
+  drawingAtlas() {
+    return this.get('drawings', () => {
+      const S = Math.min(512, this.q.propTex), rng = this.rng;
+      const c = mk(S * 3, S * 2), g = ctx2d(c);
+      const crayon = (pts, color, w = 4, passes = 3) => {
+        g.lineCap = 'round'; g.lineJoin = 'round';
+        for (let p = 0; p < passes; p++) {
+          g.strokeStyle = color; g.globalAlpha = 0.45 + rng.range(0, 0.3); g.lineWidth = w * rng.range(0.6, 1.1) * S / 512;
+          g.beginPath();
+          pts.forEach(([x, y], i) => { const jx = x + rng.range(-2, 2) * S / 512, jy = y + rng.range(-2, 2) * S / 512; if (i) g.lineTo(jx, jy); else g.moveTo(jx, jy); });
+          g.stroke();
+        }
+        g.globalAlpha = 1;
+      };
+      const scribble = (x0, y0, x1, y1, color, density = 30) => {
+        const pts = [];
+        for (let k = 0; k < density; k++) pts.push([rng.range(x0, x1), rng.range(y0, y1)]);
+        crayon(pts, color, 6, 2);
+      };
+      const person = (ox, oy, s, dress, hair, longHair, noFace) => {
+        g.fillStyle = dress; g.globalAlpha = 0.7;
+        g.beginPath(); g.moveTo(ox, oy - s * 0.35); g.lineTo(ox - s * 0.28, oy + s * 0.45); g.lineTo(ox + s * 0.28, oy + s * 0.45); g.closePath(); g.fill();
+        g.globalAlpha = 1;
+        crayon([[ox, oy - s * 0.35], [ox - s * 0.28, oy + s * 0.45], [ox + s * 0.28, oy + s * 0.45], [ox, oy - s * 0.35]], '#444', 3, 2);
+        crayon([[ox - s * 0.1, oy + s * 0.45], [ox - s * 0.12, oy + s * 0.75]], '#333', 4, 2);
+        crayon([[ox + s * 0.1, oy + s * 0.45], [ox + s * 0.12, oy + s * 0.75]], '#333', 4, 2);
+        g.strokeStyle = '#333'; g.lineWidth = 3 * S / 512; g.beginPath(); g.arc(ox, oy - s * 0.52, s * 0.17, 0, 6.29); g.stroke();
+        if (longHair) for (let k = -4; k <= 4; k++) crayon([[ox + k * s * 0.04, oy - s * 0.68], [ox + k * s * 0.07, oy - s * 0.1 + Math.abs(k) * s * 0.02]], hair, 4, 2);
+        else scribble(ox - s * 0.15, oy - s * 0.72, ox + s * 0.15, oy - s * 0.6, hair, 12);
+        if (!noFace) {
+          g.fillStyle = '#222'; g.fillRect(ox - s * 0.07, oy - s * 0.56, s * 0.03, s * 0.03); g.fillRect(ox + s * 0.04, oy - s * 0.56, s * 0.03, s * 0.03);
+          crayon([[ox - s * 0.05, oy - s * 0.45], [ox, oy - s * 0.42], [ox + s * 0.05, oy - s * 0.45]], '#a33', 3, 1);
+        }
+      };
+      const text = (t, x, y, size, color) => {
+        g.font = `700 ${size}px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif`;
+        g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = color;
+        for (let k = 0; k < 2; k++) { g.globalAlpha = 0.6; g.save(); g.translate(x + rng.range(-2, 2), y + rng.range(-2, 2)); g.rotate(rng.range(-0.08, 0.08)); g.fillText(t, 0, 0); g.restore(); }
+        g.globalAlpha = 1;
+      };
+      for (let v = 0; v < 6; v++) {
+        const ox = (v % 3) * S, oy = Math.floor(v / 3) * S;
+        g.save();
+        g.beginPath(); g.rect(ox, oy, S, S); g.clip();
+        // 紙張（有點黃、角落捲起）與膠帶
+        const tone = rng.range(0.82, 0.92);
+        g.fillStyle = css(tone, tone * 0.97, tone * 0.88);
+        g.fillRect(ox + S * 0.04, oy + S * 0.06, S * 0.92, S * 0.88);
+        g.fillStyle = 'rgba(230,220,170,0.55)';
+        g.fillRect(ox + S * 0.4, oy + S * 0.02, S * 0.2, S * 0.08);
+        const cx = ox + S / 2, cy = oy + S / 2, s = S * 0.42;
+        if (v === 0) {
+          // 長頭髮的白衣女人牽著小孩
+          person(cx - s * 0.35, cy, s, '#f4f4f0', '#111', true, true);
+          person(cx + s * 0.4, cy + s * 0.25, s * 0.55, '#7aa0d8', '#6b4b2a', false, false);
+          crayon([[cx - s * 0.1, cy], [cx + s * 0.25, cy + s * 0.2]], '#333', 4, 2);
+          text('媽媽', cx, oy + S * 0.15, S * 0.1, '#c33');
+        } else if (v === 1) {
+          // 房子和太陽
+          crayon([[cx - s * 0.5, cy + s * 0.6], [cx - s * 0.5, cy], [cx, cy - s * 0.45], [cx + s * 0.5, cy], [cx + s * 0.5, cy + s * 0.6], [cx - s * 0.5, cy + s * 0.6]], '#a0522d', 5, 3);
+          scribble(cx - s * 0.12, cy + s * 0.2, cx + s * 0.12, cy + s * 0.58, '#6b3a1f', 14);
+          scribble(ox + S * 0.1, oy + S * 0.1, ox + S * 0.26, oy + S * 0.24, '#e8b51c', 24);
+          for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; crayon([[ox + S * 0.18 + Math.cos(a) * S * 0.1, oy + S * 0.17 + Math.sin(a) * S * 0.1], [ox + S * 0.18 + Math.cos(a) * S * 0.15, oy + S * 0.17 + Math.sin(a) * S * 0.15]], '#e8b51c', 4, 1); }
+          crayon([[ox + S * 0.08, oy + S * 0.86], [ox + S * 0.92, oy + S * 0.86]], '#3a8a3a', 7, 3);
+          text('我想回家', cx, oy + S * 0.93, S * 0.07, '#335');
+        } else if (v === 2) {
+          // 整張塗黑，中間一個白色的人
+          for (let k = 0; k < 6; k++) scribble(ox + S * 0.08, oy + S * 0.1, ox + S * 0.92, oy + S * 0.9, '#111', 60);
+          person(cx, cy + s * 0.1, s * 0.8, '#ddd', '#000', true, true);
+        } else if (v === 3) {
+          // 紅色漩渦
+          const pts = [];
+          for (let a = 0; a < 26; a += 0.2) pts.push([cx + Math.cos(a) * a * S * 0.016, cy + Math.sin(a) * a * S * 0.016]);
+          crayon(pts, '#b01515', 5, 2);
+          text('不要哭', cx, oy + S * 0.88, S * 0.08, '#222');
+        } else if (v === 4) {
+          // 病床上的小孩，床邊站著一個很高的女人
+          crayon([[cx - s * 0.7, cy + s * 0.3], [cx + s * 0.2, cy + s * 0.3]], '#555', 6, 3);
+          crayon([[cx - s * 0.7, cy + s * 0.3], [cx - s * 0.7, cy + s * 0.7]], '#555', 5, 2);
+          crayon([[cx + s * 0.2, cy + s * 0.3], [cx + s * 0.2, cy + s * 0.7]], '#555', 5, 2);
+          g.strokeStyle = '#333'; g.lineWidth = 3 * S / 512; g.beginPath(); g.arc(cx - s * 0.5, cy + s * 0.16, s * 0.12, 0, 6.29); g.stroke();
+          scribble(cx - s * 0.35, cy + s * 0.12, cx + s * 0.15, cy + s * 0.28, '#7aa0d8', 18);
+          person(cx + s * 0.55, cy - s * 0.15, s * 1.25, '#f0f0ec', '#111', true, true);
+        } else {
+          // 沒有臉的護士和字
+          person(cx, cy + s * 0.05, s, '#f4f4f0', '#111', true, true);
+          scribble(cx - s * 0.12, cy - s * 0.62, cx + s * 0.12, cy - s * 0.42, '#111', 20);
+          text('她在找我', cx, oy + S * 0.14, S * 0.09, '#c22');
+        }
+        // 舊污漬
+        const gr = g.createRadialGradient(ox + rng.range(0, S), oy + rng.range(0, S), 2, ox + S / 2, oy + S / 2, S * 0.7);
+        gr.addColorStop(0, 'rgba(110,85,40,0.25)'); gr.addColorStop(1, 'rgba(110,85,40,0)');
+        g.fillStyle = gr; g.fillRect(ox + S * 0.04, oy + S * 0.06, S * 0.92, S * 0.88);
+        g.restore();
+      }
+      this.cache.set('drawings', { map: this.tex(c, { srgb: true, repeat: false }) });
+    });
+  }
+
+  // 地上的排水孔（透明貼花）：圓形鐵蓋、鏽圈
+  drainTex() {
+    return this.get('drain', () => {
+      const S = 256, rng = this.rng;
+      const c = mk(S, S), g = ctx2d(c);
+      const cx = S / 2, cy = S / 2;
+      const halo = g.createRadialGradient(cx, cy, S * 0.2, cx, cy, S * 0.5);
+      halo.addColorStop(0, 'rgba(70,40,20,0.75)'); halo.addColorStop(0.6, 'rgba(60,35,18,0.3)'); halo.addColorStop(1, 'rgba(60,35,18,0)');
+      g.fillStyle = halo; g.fillRect(0, 0, S, S);
+      g.fillStyle = '#4a4744'; g.beginPath(); g.arc(cx, cy, S * 0.26, 0, 6.29); g.fill();
+      g.strokeStyle = '#2a2826'; g.lineWidth = S * 0.02; g.beginPath(); g.arc(cx, cy, S * 0.25, 0, 6.29); g.stroke();
+      g.fillStyle = '#050505';
+      for (let k = -3; k <= 3; k++) g.fillRect(cx + k * S * 0.06 - S * 0.015, cy - Math.sqrt(Math.max(0, (S * 0.21) ** 2 - (k * S * 0.06) ** 2)), S * 0.03, 2 * Math.sqrt(Math.max(0, (S * 0.21) ** 2 - (k * S * 0.06) ** 2)));
+      for (let k = 0; k < 40; k++) { g.fillStyle = `rgba(120,60,25,${rng.range(0.2, 0.5)})`; g.fillRect(cx + rng.range(-S * 0.25, S * 0.25), cy + rng.range(-S * 0.25, S * 0.25), rng.range(2, 8), rng.range(2, 8)); }
+      this.cache.set('drain', { map: this.tex(c, { srgb: true, repeat: false }) });
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // 透明貼花（血跡、字跡、手印、紙張）——圖集
   bloodAtlas() {
     return this.get('blood', () => {

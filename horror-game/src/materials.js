@@ -1,5 +1,6 @@
 // 材質表：PBR 材質全部共用，靜態物件依材質合併以減少 draw call
 import * as THREE from 'three';
+import { THEMES } from './themes.js';
 
 const std = (o) => new THREE.MeshStandardMaterial(o);
 
@@ -18,19 +19,35 @@ function stripes() {
   return t;
 }
 
-export function createMaterials(tf) {
-  const wall = tf.wall(), vinyl = tf.floorVinyl(), tile = tf.floorTile(), ceil = tf.ceiling();
+// theme：樓層主題 key，決定牆面 / 地板用哪幾種貼圖與顏色（只產生這一層用得到的貼圖）
+export function createMaterials(tf, theme = 'ward') {
+  const L = (THEMES[theme] || THEMES.ward).look;
+  const ceil = tf.ceiling();
   const door = tf.door(), locker = tf.lockerDoor(), paint = tf.paintedMetal(), steel = tf.steel();
   const fabric = tf.fabric(), wood = tf.wood(), grime = tf.grime();
   const paperA = tf.paperAtlas();
 
   const M = {};
-  M.wall = std({ ...wall, vertexColors: true, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(1, 1) });
-  M.floorVinyl = std({ ...vinyl, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) });
-  M.floorTile = std({ ...tile, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.7, 0.7) });
-  M.floorLobby = std({ ...vinyl, color: 0xb9b0a0, roughness: 0.85, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) });
-  M.ceiling = std({ ...ceil, color: 0xd8d5cc, roughness: 1, metalness: 0 });
-  M.door = std({ ...door, roughness: 1, metalness: 0.25 });
+  // 牆：paint = 油漆 + 磁磚護牆板（原本的七樓）、tileWall = 整面磁磚、wallpaper = 粉彩壁紙、padded = 軟墊
+  const wallTex = { paint: () => tf.wall(), tileWall: () => tf.tileWall(), wallpaper: () => tf.wallpaper(), padded: () => tf.padded() };
+  M.walls = {};
+  for (const kind of new Set(Object.values(L.wall))) {
+    M.walls[kind] = std({ ...wallTex[kind](), vertexColors: true, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(1, 1) });
+    if (kind === 'paint') M.walls[kind].color.set(L.wallTint);
+  }
+  M.wall = M.walls[L.wall.default];
+  // 地板
+  const floorMat = {
+    vinyl: () => std({ ...tf.floorVinyl(), color: L.floorTint.vinyl, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) }),
+    tile: () => std({ ...tf.floorTile(), color: L.floorTint.tile, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.7, 0.7) }),
+    lobby: () => std({ ...tf.floorVinyl(), color: 0xb9b0a0, roughness: 0.85, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) }),
+    kidFloor: () => std({ ...tf.kidFloor(), roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) }),
+    padded: () => std({ ...tf.padded(), color: 0xc9c4b6, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.8, 0.8) }),
+  };
+  M.floors = {};
+  for (const kind of new Set(Object.values(L.floor))) M.floors[kind] = floorMat[kind]();
+  M.ceiling = std({ ...ceil, color: L.ceiling, roughness: 1, metalness: 0 });
+  M.door = std({ ...door, color: L.door, roughness: 1, metalness: 0.25 });
   M.lockerDoor = std({ ...locker, roughness: 1, metalness: 0.35 });
   M.paint = std({ ...paint, color: 0x75806f, roughness: 1, metalness: 0.35 });
   M.paintWhite = std({ ...paint, color: 0xd2d3cc, roughness: 1, metalness: 0.2 });
@@ -78,13 +95,25 @@ export function createMaterials(tf) {
   const win = tf.windowTex();
   M.window = std({ map: win.map, emissiveMap: win.map, emissive: 0xffffff, emissiveIntensity: 0.35, color: 0x222222, roughness: 0.08, metalness: 0.1 });
   M.tvScreen = new THREE.MeshBasicMaterial({ color: 0x8a9a9a, toneMapped: true });
+  // 主題道具
+  M.bodybag = std({ color: 0x0b0c0d, roughness: 0.3, metalness: 0.05 });
+  M.plush = std({ map: fabric.map, normalMap: fabric.normalMap, color: 0x8a5a34, roughness: 1, metalness: 0 });
+  M.canvas = std({ map: fabric.map, normalMap: fabric.normalMap, color: 0xc9bc9a, roughness: 1, metalness: 0 });
+  M.paintPink = std({ ...paint, color: 0xd9a3a3, roughness: 1, metalness: 0.1 });
+  M.paintMint = std({ ...paint, color: 0xa3cdb5, roughness: 1, metalness: 0.1 });
+  M.paintCream = std({ ...paint, color: 0xe0d6bc, roughness: 1, metalness: 0.1 });
+  M.paintBlue = std({ ...paint, color: 0x9db6d6, roughness: 1, metalness: 0.1 });
+  M.toyRed = std({ map: grime.map, color: 0xa3261c, roughness: 0.45, metalness: 0 });
+  M.toyYellow = std({ map: grime.map, color: 0xd6b12a, roughness: 0.45, metalness: 0 });
+  M.toyBlue = std({ map: grime.map, color: 0x2f5fa0, roughness: 0.45, metalness: 0 });
+  M.toyGreen = std({ map: grime.map, color: 0x3f8a46, roughness: 0.45, metalness: 0 });
   // 靜態合併時，顏色不同但其他參數相近的材質合併成一個（顏色烘進頂點色）以減少 draw call
   M.matte = std({ map: grime.map, roughnessMap: grime.roughnessMap, roughness: 0.9, metalness: 0, vertexColors: true });
   M.glossy = std({ roughness: 0.1, metalness: 0.12, vertexColors: true });
   M.paintTint = std({ ...paint, roughness: 1, metalness: 0.3, vertexColors: true });
-  for (const k of ['leather', 'leatherBrown', 'plasticDark', 'plasticBlue', 'plasticBeige', 'plasticWhite', 'plasticRed', 'cardboard', 'ceramicPot', 'deadPlant', 'dark', 'paperMat', 'rubber']) M[k].userData.bakeAs = M.matte;
-  for (const k of ['glass', 'bottle', 'screen']) M[k].userData.bakeAs = M.glossy;
-  for (const k of ['paint', 'paintWhite', 'paintYellow']) M[k].userData.bakeAs = M.paintTint;
+  for (const k of ['leather', 'leatherBrown', 'plasticDark', 'plasticBlue', 'plasticBeige', 'plasticWhite', 'plasticRed', 'cardboard', 'ceramicPot', 'deadPlant', 'dark', 'paperMat', 'rubber', 'toyRed', 'toyYellow', 'toyBlue', 'toyGreen']) M[k].userData.bakeAs = M.matte;
+  for (const k of ['glass', 'bottle', 'screen', 'bodybag']) M[k].userData.bakeAs = M.glossy;
+  for (const k of ['paint', 'paintWhite', 'paintYellow', 'paintPink', 'paintMint', 'paintCream', 'paintBlue']) M[k].userData.bakeAs = M.paintTint;
   M.decalBase = { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 };
   M.blood = std({ map: tf.bloodAtlas().map, roughness: 0.28, metalness: 0, ...M.decalBase });
   M.drag = std({ map: tf.dragAtlas().map, roughness: 0.35, metalness: 0, ...M.decalBase });

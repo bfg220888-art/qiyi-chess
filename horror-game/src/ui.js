@@ -19,7 +19,11 @@ export class UI {
     this.game = null;
     this.lastPrompt = '';
   }
-  bindGame(game) { this.game = game; }
+  bindGame(game) {
+    this.game = game;
+    const t = $('floorTag');
+    if (t) t.textContent = game.floorTitle || '';
+  }
 
   show(id) { $(id).hidden = false; }
   hide(id) { $(id).hidden = true; }
@@ -190,11 +194,11 @@ export class UI {
     ctx.fillStyle = '#2b2419';
     ctx.font = '700 26px "Noto Serif TC", serif';
     ctx.textAlign = 'center';
-    ctx.fillText('七樓（手繪）', W / 2, 38);
+    ctx.fillText(`${(g.themeInfo && g.themeInfo.board) || '七樓'}（手繪）`, W / 2, 38);
     drawFloorPlan(ctx, lv, {
       x0: ox, y0: oy, scale, explored: g.explored, wallColor: '#241d14', lineWidth: 3, doorColor: '#8a7a5a',
       roomColor: (room) => (room.type === 'generator' ? 'rgba(160,60,40,0.25)' : room.type === 'lobby' ? 'rgba(200,170,90,0.35)' : 'rgba(255,255,255,0.18)'),
-      labels: (room) => (room.type === 'generator' ? '發電機' : room.type === 'lobby' ? '大廳' : room.special ? '707' : null),
+      labels: (room) => (room.type === 'generator' ? '發電機' : room.type === 'lobby' ? '大廳' : room.special ? (room.tag || '707') : null),
       labelColor: '#3a2416', labelFont: '700 18px "Noto Sans TC", sans-serif',
     });
     // 已經插上的保險絲 / 撿到的東西不顯示；只標示玩家

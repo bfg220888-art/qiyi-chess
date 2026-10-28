@@ -56,6 +56,7 @@ async function startGame(page, opts = {}) {
   await page.waitForSelector('#btnStart');
   if (opts.menuShot) await shot(page, opts.menuShot);
   if (opts.diff) await page.click(`[data-diff="${opts.diff}"]`);
+  if (opts.theme) await page.click(`[data-theme="${opts.theme}"]`);
   if (opts.touch) await page.tap('#btnStart'); else await page.click('#btnStart');
   await page.waitForFunction(() => window.__SW && (window.__SW.state === 'intro' || window.__SW.state === 'playing'), null, { timeout: 180000 });
   for (let i = 0; i < 4; i++) {
@@ -130,7 +131,7 @@ const faceThing = (page, kind, idx = 0) => page.evaluate(([kind, idx]) => {
 }, [kind, idx]);
 
 // ---------------------------------------------------------------------------
-await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'high', qualityChosen: true, cfgVer: 2 }, async (page) => {
+await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'high', qualityChosen: true, cfgVer: 2, theme: 'ward' }, async (page) => {
   await startGame(page, { menuShot: 'menu-desktop' });
   const r0 = await render(page);
   log('render', JSON.stringify(r0));
@@ -207,7 +208,7 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   await shot(page, 'd9-win');
 });
 
-await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }, async (page) => {
+await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'pediatric' }, async (page) => {
   await startGame(page);
   // 1. 鬼魂在面前：相機閃光定住她
   const placed = await page.evaluate(() => {
@@ -361,7 +362,7 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   assert(a1 > 1, 'door opened');
 });
 
-await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low' }, async (page) => {
+await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low', theme: 'morgue' }, async (page) => {
   await startGame(page, { touch: true, menuShot: 'menu-mobile' });
   assert(await page.evaluate(() => window.__SW.input.touchMode && !document.getElementById('touch').hidden), 'touch controls visible');
   await render(page);
@@ -412,6 +413,38 @@ await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, has
   await shot(page, 'm3-pause');
   await page.tap('#btnResume');
   assert(await page.evaluate(() => document.getElementById('pause').hidden && !window.__SW.paused), 'resumed');
+});
+
+// 從主選單的「地圖」選精神科隔離區：設定會記住，載入畫面與 HUD 顯示樓層名稱
+await run('theme', { viewport: { width: 960, height: 540 } }, { quality: 'low' }, async (page) => {
+  await page.goto(base);
+  await page.waitForSelector('#themeSeg');
+  await page.click('[data-theme="psych"]');
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('silentward.settings')).theme);
+  assert(saved === 'psych', 'theme setting saved, got ' + saved);
+  await page.click('#btnStart');
+  await page.waitForFunction(() => !document.getElementById('loading').hidden || (window.__SW && window.__SW.state === 'playing'), null, { timeout: 30000 });
+  const loadText = await page.evaluate(() => document.getElementById('loadFloor').textContent);
+  log('loading floor', loadText);
+  assert(loadText.includes('精神科'), 'loading screen shows the floor');
+  await page.waitForFunction(() => window.__SW && window.__SW.state === 'playing', null, { timeout: 180000 });
+  await page.evaluate(() => { window.__SW.paused = true; });
+  const st = await page.evaluate(() => ({ theme: window.__SW.game.lv.theme, tag: document.getElementById('floorTag').textContent, obs: window.__SW.game.lv.obsOpenings.length }));
+  log('theme', JSON.stringify(st));
+  assert(st.theme === 'psych' && st.tag.includes('9F'), 'psych floor');
+  const r0 = await render(page);
+  log('render', JSON.stringify(r0));
+  await shot(page, 't1-psych');
+  const w0 = await sim(page, 0.05);
+  const w1 = await sim(page, 2, { my: 1 });
+  assert(Math.hypot(w1.x - w0.x, w1.z - w0.z) > 2, 'walk in psych floor');
+  // 同一個種子、同一個樓層再來一次：地圖完全一樣
+  const before = await page.evaluate(() => window.__SW.game.lv.ascii());
+  await page.evaluate(() => { window.__SW.paused = false; window.__SW.game.over = true; window.__SW.onGameOver(); document.getElementById('end').hidden = false; });
+  await page.click('#btnRetry');
+  await page.waitForFunction(() => window.__SW.state === 'playing' && window.__SW.game && !window.__SW.game.over, null, { timeout: 180000 });
+  const after = await page.evaluate(() => ({ ascii: window.__SW.game.lv.ascii(), theme: window.__SW.game.theme }));
+  assert(after.theme === 'psych' && after.ascii === before, 'retry regenerates the same floor');
 });
 
 await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low' }, async (page) => {

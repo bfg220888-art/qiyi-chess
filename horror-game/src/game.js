@@ -14,6 +14,7 @@ import { Post } from './post.js';
 import { fmtTime } from './ui.js';
 import { makeFallbackAvatar } from './mp.js';
 import { loadPlayerAssets, makePlayerModel } from './player-model.js';
+import { THEMES, resolveTheme, themeTitle } from './themes.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -29,6 +30,10 @@ export class Game {
     this.diff = DIFFICULTY[opts.difficulty];
     this.quality = app.quality;
     this.seed = opts.seed >>> 0;
+    // 樓層主題：'random' / 沒給 → 由 seed 決定（多人連線時每個人都會算出同一個）
+    this.theme = resolveTheme(opts.theme, this.seed);
+    this.themeInfo = THEMES[this.theme];
+    this.floorTitle = themeTitle(this.theme);
     this.time = 0;
     this.fusesInserted = 0;
     this.phase = 'explore';
@@ -57,13 +62,13 @@ export class Game {
   async build(progress) {
     progress(0.05, '正在畫出樓層平面圖……');
     await nextFrame();
-    this.lv = generateLevel(this.seed, this.diff, (l) => validateLevel(l));
+    this.lv = generateLevel(this.seed, this.diff, (l) => validateLevel(l), this.theme);
     this.explored = new Uint8Array(this.lv.W * this.lv.H);
     progress(0.15, '正在弄髒牆壁……');
     await nextFrame();
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x000000);
-    this.scene.fog = new THREE.FogExp2(0x000000, 0.055);
+    this.scene.fog = new THREE.FogExp2(this.themeInfo.look.fog, this.themeInfo.look.fogDensity);
     // 極弱的環境反射：讓金屬與濕地板有一點點反光
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const room = new RoomEnvironment();
@@ -79,8 +84,14 @@ export class Game {
     progress(0.18, '正在下載照片材質……');
     const photos = await this.app.photoAssets();
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
-    this.tf.wall(); progress(0.25, '正在鋪地磚……'); await nextFrame();
-    this.tf.floorVinyl(); this.tf.floorTile(); progress(0.35, '正在掛上天花板……'); await nextFrame();
+    // 只畫這一層用得到的牆面與地板貼圖
+    const look = this.themeInfo.look;
+    const wallTex = { paint: 'wall', tileWall: 'tileWall', wallpaper: 'wallpaper', padded: 'padded' };
+    const floorTex = { vinyl: 'floorVinyl', lobby: 'floorVinyl', tile: 'floorTile', kidFloor: 'kidFloor', padded: 'padded' };
+    for (const k of new Set(Object.values(look.wall))) this.tf[wallTex[k]]();
+    progress(0.25, '正在鋪地磚……'); await nextFrame();
+    for (const k of new Set(Object.values(look.floor))) this.tf[floorTex[k]]();
+    progress(0.35, '正在掛上天花板……'); await nextFrame();
     this.tf.ceiling(); this.tf.door(); this.tf.lockerDoor(); progress(0.45, '正在搬進病床……'); await nextFrame();
     this.tf.paintedMetal(); this.tf.steel(); this.tf.fabric(); this.tf.wood(); this.tf.grime(); progress(0.55, '正在灑上血跡……'); await nextFrame();
     this.world = new World(this.renderer, this.scene, this.lv, this.tf, this.quality);
@@ -149,6 +160,7 @@ export class Game {
     this.audio.setRain(0.1);
     this.audio.setMusic('explore');
     this.ui.updateHud();
+    this.ui.subtitle(`— ${this.floorTitle} —`, 1.3);
     // 開場：身後的大門砰一聲關上
     this.later(() => {
       if (this.over) return;
