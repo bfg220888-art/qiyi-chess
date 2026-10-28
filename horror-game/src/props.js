@@ -249,8 +249,12 @@ export class PropBuilder {
       const drop = r.range(0, 0.15);
       this.tube(g, M.steel, 0.006, [x, 2.84, 0], [x, 2.55 - drop, 0], 4);
       this.box(g, M.steel, 0.05, 0.05, 0.02, x, 2.53 - drop, 0);
-      const bag = this.sphere(g, M.bodybag, 0.5, x, 1.55 - drop, 0, 0.42, 1.95, 0.32, 14);
+      // 膠囊形的屍袋（頭腳圓鈍，不要像魚雷）
+      const bag = new THREE.Mesh(new THREE.CapsuleGeometry(0.21, 1.3, 4, 10), M.bodybag);
+      bag.scale.set(1, 1, 0.75);
+      bag.position.set(x, 1.55 - drop, 0);
       bag.rotation.z = r.range(-0.05, 0.05);
+      g.add(bag);
       this.sphere(g, M.bodybag, 0.15, x, 2.36 - drop, 0.0, 0.95, 1.1, 0.9, 10);
       this.box(g, M.steel, 0.012, 1.5, 0.01, x + 0.03, 1.6 - drop, 0.16, { uv: false });
       this.box(g, M.paperMat, 0.08, 0.1, 0.004, x - 0.08, 1.9 - drop, 0.165);
