@@ -24,7 +24,6 @@ const check = (ok, msg) => { if (!ok) { failed = true; console.log('  ✗', msg)
 const until = async (page, fn, arg, ms = 20000) => page.waitForFunction(fn, arg, { timeout: ms, polling: 100 });
 
 const pages = [];
-const t0g = Date.now();
 for (let i = 0; i < N; i++) {
   const ctx = await browser.newContext({ viewport: { width: 400, height: 240 } });
   await ctx.addInitScript(() => {
@@ -33,7 +32,6 @@ for (let i = 0; i < N; i++) {
   });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`[p${i}] pageerror: ${e.message}`));
-  page.on('console', (m) => { if (/^mp /.test(m.text())) console.log(`    [p${i}] ${m.text()} @${((Date.now() - t0g) / 1000).toFixed(0)}s`); });
   page.on('console', (m) => { if (m.type() === 'error' && !/WebGL|GPU|swiftshader|Failed to load resource/i.test(m.text())) errors.push(`[p${i}] ${m.text()}`); });
   await page.goto(base);
   await page.waitForFunction(() => window.__SW);
@@ -134,7 +132,7 @@ try {
 
   // 房主離開 → 其他人收到通知
   await host.close();
-  for (const c of clients) await until(c, () => window.__SW.game && window.__SW.game.over, null, 20000);
+  for (const c of clients) await until(c, () => window.__SW.game && window.__SW.game.over, null, 60000);
   check(true, 'host leaving ends game for clients');
 } catch (e) {
   failed = true;

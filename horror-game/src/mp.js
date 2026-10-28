@@ -3,10 +3,11 @@
 // 大家用同一組種子、難度、地圖產生一模一樣的醫院，所以門、道具、鐵櫃都用索引對應。
 import * as THREE from 'three';
 import { Net, normalizeCode, netErrorText } from './net.js';
+import { SLOT_COLORS } from './player-model.js';
 
 export const MAX_PLAYERS = 4;
-export const SLOT_COLORS = [0xd9534f, 0x4a90d9, 0x5cb85c, 0xe8c547];
-export const SLOT_CSS = ['#e0645f', '#5aa0e6', '#6cc86c', '#f0d050'];
+export { SLOT_COLORS } from './player-model.js';
+export const SLOT_CSS = ['#d0453e', '#4a7fe0', '#45b052', '#e8c030'];
 const SEND_HZ = 15;
 const NET_SFX = new Set(['bottleBreak']);
 const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx']);
@@ -101,7 +102,7 @@ export class MP {
     this.began = false;
     clearTimeout(this.readyTimer);
     this.readyTimer = null;
-    for (const p of this.players) p.ready = false;
+    for (const p of this.players) { p.ready = false; p.live = false; }
     this.net.broadcast({ t: 'start', ...opts });
     this.app.startMpGame(opts);
   }
@@ -193,6 +194,7 @@ export class MP {
           return;
         case 'go':
           this.began = true;
+          this.hostLive = false;
           this.app.mpBegin();
           return;
       }
@@ -229,20 +231,20 @@ export class MP {
   tick(dt) {
     const g = this.game;
     if (!g || !this.net) return;
-    // 玩家：房主 20 秒沒消息就當作斷線（分頁被直接關掉時連線不一定會立刻報告中斷）
-    if (!this.isHost && this.began && performance.now() - (this.lastMsg || performance.now()) > 20000) {
+    // 玩家：遊戲開始後房主 30 秒沒消息就當作斷線（分頁被直接關掉時連線不一定會立刻報告中斷）
+    if (!this.isHost && this.began && this.hostLive && performance.now() - this.lastMsg > 30000) {
       this.leave(true);
       this.setStatus('和房主的連線中斷了。');
       if (!g.over) g.mpHostLost();
       return;
     }
-    // 房主：玩家 30 秒沒消息就移出房間
+    // 房主：遊戲開始後玩家 45 秒沒消息就移出房間
     if (this.isHost && this.began) {
       const now = performance.now();
       for (const p of this.players) {
         if (p.slot === this.mySlot) continue;
         const t = this.seen && this.seen.get(p.id);
-        if (t && now - t > 30000) { this.seen.delete(p.id); this.net.kick(p.id); this.net.conns.delete(p.id); this.onLeave(p.id); break; }
+        if (t && p.live && now - t > 45000) { this.seen.delete(p.id); this.net.kick(p.id); this.net.conns.delete(p.id); this.onLeave(p.id); break; }
       }
     }
     this.sendT -= dt;
@@ -269,6 +271,8 @@ export class MP {
       // 玩家狀態
       case 'st':
         if (this.isHost && slot >= 0) {
+          const pl = this.players.find((q) => q.slot === slot);
+          if (pl) pl.live = true;
           g.mpApplyState(slot, m);
           const r = g.remotes.get(slot);
           if (r) r.last = { x: m.x, z: m.z, y: m.y, p: m.p, f: m.f, h: m.h, c: m.c, v: m.v, a: m.a, b: m.b, sa: m.sa, hb: m.hb };
@@ -276,6 +280,7 @@ export class MP {
         }
         break;
       case 'sts':
+        this.hostLive = true;
         for (const s of m.l) if (s.s !== this.mySlot) g.mpApplyState(s.s, s);
         break;
       case 'gh':

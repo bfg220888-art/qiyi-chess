@@ -12,7 +12,8 @@ import { RealGhostModel } from './ghost-real.js';
 import { Director } from './events.js';
 import { Post } from './post.js';
 import { fmtTime } from './ui.js';
-import { SLOT_COLORS, makeFallbackAvatar } from './mp.js';
+import { makeFallbackAvatar } from './mp.js';
+import { loadPlayerAssets, makePlayerModel } from './player-model.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -97,7 +98,11 @@ export class Game {
     this.ghostNav = new NavGrid(this.lv, GHOST_R, { ghost: true });
     this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
     this.player = new Player(this);
-    if (this.mp) this.mpSetup();
+    if (this.mp) {
+      progress(0.71, '正在接上其他玩家……');
+      this.playerAssets = await loadPlayerAssets(this.renderer, this.quality, 20000);
+      this.mpSetup();
+    }
     // 寫實女鬼模型（下載失敗就用程序化的備援）
     progress(0.72, '她正在醒來……（下載她的模型）');
     this.ghostAssets = await ghostP;
@@ -853,11 +858,16 @@ export class Game {
 
   mpAddRemote(slot) {
     if (this.remotes.has(slot)) return;
-    const av = (this.app.playerAvatar && this.app.playerAvatar(slot)) || makeFallbackAvatar(slot);
+    let av = null;
+    try { if (this.playerAssets) av = makePlayerModel(this.playerAssets, slot); } catch (e) { console.warn('player model', e); }
+    if (!av) av = makeFallbackAvatar(slot);
     const lv = this.lv;
+    // 手電筒掛在模型手上的燈頭（光線沿 +Z）
     const light = new THREE.SpotLight(0xfff1dc, 0, 18, 0.43, 0.5, 2);
     light.castShadow = false;
-    this.scene.add(av.root, light, light.target);
+    light.target.position.set(0, 0, 1);
+    av.lightSocket.add(light, light.target);
+    this.scene.add(av.root);
     const r = {
       slot, av, light,
       pos: new THREE.Vector3(lv.spawn.x, 1.6, lv.spawn.z), yaw: lv.spawn.yaw, pitch: 0,
@@ -872,9 +882,9 @@ export class Game {
   mpRemoveRemote(slot) {
     const r = this.remotes.get(slot);
     if (!r) return;
-    this.scene.remove(r.av.root, r.light, r.light.target);
-    r.av.dispose();
+    this.scene.remove(r.av.root);
     r.light.dispose();
+    r.av.dispose();
     this.remotes.delete(slot);
   }
 
@@ -942,15 +952,11 @@ export class Game {
       root.visible = !gone && !r.hiding;
       root.position.set(r.pos.x, 0, r.pos.z);
       root.rotation.y = r.yaw + Math.PI;
-      r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false });
+      if (root.visible) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false, pitch: r.pitch });
       // 手電筒
       const on = r.flashOn && root.visible;
-      const fx = -Math.sin(r.yaw) * Math.cos(r.pitch), fz = -Math.cos(r.yaw) * Math.cos(r.pitch), fy = Math.sin(r.pitch);
       r.light.intensity = on ? 22 : 0;
       if (r.av.setFlashlight) r.av.setFlashlight(on);
-      r.light.position.set(r.pos.x + Math.cos(r.yaw) * 0.2, eye - 0.25, r.pos.z - Math.sin(r.yaw) * 0.2);
-      r.light.target.position.set(r.light.position.x + fx * 6, r.light.position.y + fy * 6, r.light.position.z + fz * 6);
-      r.light.target.updateMatrixWorld();
       // 腳步聲
       if (root.visible && r.speed > 0.6) {
         r.stepT -= dt * (r.speed > 4 ? 2.6 : r.crouching ? 1.1 : 1.8);
