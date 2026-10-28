@@ -101,8 +101,8 @@ export class Game {
     const photos = await this.app.photoAssets();
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
     // 只畫用得到的牆面與地板貼圖（每一層的主題都要）
-    const wallTex = { paint: 'wall', tileWall: 'tileWall', wallpaper: 'wallpaper', padded: 'padded' };
-    const floorTex = { vinyl: 'floorVinyl', lobby: 'floorVinyl', tile: 'floorTile', kidFloor: 'kidFloor', padded: 'padded' };
+    const wallTex = { paint: 'wall', tileWall: 'tileWall', wallpaper: 'wallpaper', padded: 'padded', charred: 'charredWall' };
+    const floorTex = { vinyl: 'floorVinyl', lobby: 'floorVinyl', tile: 'floorTile', kidFloor: 'kidFloor', padded: 'padded', charred: 'charredFloor' };
     const looks = this.floors.map((F) => F.info.look);
     for (const k of new Set(looks.flatMap((l) => Object.values(l.wall)))) this.tf[wallTex[k]]();
     progress(0.22, '正在鋪地磚……'); await nextFrame();

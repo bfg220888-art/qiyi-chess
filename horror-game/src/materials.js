@@ -29,11 +29,12 @@ export function createMaterials(tf, theme = 'ward') {
 
   const M = {};
   // 牆：paint = 油漆 + 磁磚護牆板（原本的七樓）、tileWall = 整面磁磚、wallpaper = 粉彩壁紙、padded = 軟墊
-  const wallTex = { paint: () => tf.wall(), tileWall: () => tf.tileWall(), wallpaper: () => tf.wallpaper(), padded: () => tf.padded() };
+  const wallTex = { paint: () => tf.wall(), tileWall: () => tf.tileWall(), wallpaper: () => tf.wallpaper(), padded: () => tf.padded(), charred: () => tf.charredWall() };
   M.walls = {};
   for (const kind of new Set(Object.values(L.wall))) {
     M.walls[kind] = std({ ...wallTex[kind](), vertexColors: true, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(1, 1) });
     if (kind === 'paint') M.walls[kind].color.set(L.wallTint);
+    if (L.wallTints && L.wallTints[kind] !== undefined) M.walls[kind].color.set(L.wallTints[kind]);
   }
   M.wall = M.walls[L.wall.default];
   // 地板
@@ -43,6 +44,7 @@ export function createMaterials(tf, theme = 'ward') {
     lobby: () => std({ ...tf.floorVinyl(), color: 0xb9b0a0, roughness: 0.85, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) }),
     kidFloor: () => std({ ...tf.kidFloor(), roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.6, 0.6) }),
     padded: () => std({ ...tf.padded(), color: 0xc9c4b6, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.8, 0.8) }),
+    charred: () => std({ ...tf.charredFloor(), roughness: 1, metalness: 0, normalScale: new THREE.Vector2(0.9, 0.9) }),
   };
   M.floors = {};
   for (const kind of new Set(Object.values(L.floor))) M.floors[kind] = floorMat[kind]();
@@ -107,11 +109,26 @@ export function createMaterials(tf, theme = 'ward') {
   M.toyYellow = std({ map: grime.map, color: 0xd6b12a, roughness: 0.45, metalness: 0 });
   M.toyBlue = std({ map: grime.map, color: 0x2f5fa0, roughness: 0.45, metalness: 0 });
   M.toyGreen = std({ map: grime.map, color: 0x3f8a46, roughness: 0.45, metalness: 0 });
+  // 手術部 / 燒毀的舊院區
+  M.drape = std({ map: fabric.map, normalMap: fabric.normalMap, color: 0x3f6a5e, roughness: 1, metalness: 0 });
+  M.concrete = std({ map: grime.map, color: 0x8a847a, roughness: 1, metalness: 0 });
+  M.charcoal = std({ map: grime.map, color: 0x15110e, roughness: 0.8, metalness: 0 });
+  M.ash = std({ map: grime.map, color: 0x6a645c, roughness: 1, metalness: 0 });
+  // 瓦礫裡還在悶燒的餘燼（自發光，不打燈）
+  M.ember = std({ color: 0x1a0600, emissive: 0xff4a0c, emissiveIntensity: 2.4, roughness: 0.9, metalness: 0 });
+  // 無菌區的塑膠條門簾
+  M.stripPlastic = std({ color: 0xa8bcb6, roughness: 0.25, metalness: 0, transparent: true, opacity: 0.38, depthWrite: false, side: THREE.DoubleSide });
+  if (L.charred) {
+    // 整層樓燒過：布料、床墊、木頭、油漆都燻黑了（只改顏色，合併方式不變，不增加 draw call）
+    const dim = { fabric: 0x4a4038, curtain: 0x3a332c, mattress: 0x1e1a17, wood: 0x2e2620, paint: 0x2f2d29, paintWhite: 0x56524c, paintYellow: 0x4a3e1e,
+      plasticBeige: 0x4a443a, plasticWhite: 0x5a5650, cardboard: 0x3a2c1e, steel: 0x6a6660, leather: 0x141210, plasticBlue: 0x26303a };
+    for (const [k, col] of Object.entries(dim)) M[k].color.set(col);
+  }
   // 靜態合併時，顏色不同但其他參數相近的材質合併成一個（顏色烘進頂點色）以減少 draw call
   M.matte = std({ map: grime.map, roughnessMap: grime.roughnessMap, roughness: 0.9, metalness: 0, vertexColors: true });
   M.glossy = std({ roughness: 0.1, metalness: 0.12, vertexColors: true });
   M.paintTint = std({ ...paint, roughness: 1, metalness: 0.3, vertexColors: true });
-  for (const k of ['leather', 'leatherBrown', 'plasticDark', 'plasticBlue', 'plasticBeige', 'plasticWhite', 'plasticRed', 'cardboard', 'ceramicPot', 'deadPlant', 'dark', 'paperMat', 'rubber', 'toyRed', 'toyYellow', 'toyBlue', 'toyGreen']) M[k].userData.bakeAs = M.matte;
+  for (const k of ['leather', 'leatherBrown', 'plasticDark', 'plasticBlue', 'plasticBeige', 'plasticWhite', 'plasticRed', 'cardboard', 'ceramicPot', 'deadPlant', 'dark', 'paperMat', 'rubber', 'toyRed', 'toyYellow', 'toyBlue', 'toyGreen', 'drape', 'concrete', 'charcoal', 'ash']) M[k].userData.bakeAs = M.matte;
   for (const k of ['glass', 'bottle', 'screen', 'bodybag']) M[k].userData.bakeAs = M.glossy;
   for (const k of ['paint', 'paintWhite', 'paintYellow', 'paintPink', 'paintMint', 'paintCream', 'paintBlue']) M[k].userData.bakeAs = M.paintTint;
   M.decalBase = { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 };

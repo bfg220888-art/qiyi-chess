@@ -1273,6 +1273,131 @@ export class TextureFactory {
   }
 
   // 地上的排水孔（透明貼花）：圓形鐵蓋、鏽圈
+  // 燒毀的舊院區：被大火燻黑的牆（越往上越黑、火舌往上竄的形狀、碳化龜裂、起泡剝落的油漆，下半部是燻黑的磁磚護牆板）
+  charredWall() {
+    return this.get('charredWall', () => {
+      const S = this.q.tex, rng = this.rng, ppm = S / 3;
+      const c = mk(S, S), g = ctx2d(c);
+      const id = g.createImageData(S, S);
+      const big = fbm(S, S, rng, [[2, 0.45], [5, 0.35], [11, 0.2]]);
+      const streak = fbm(S, S, rng, [[3, 0.5], [7, 0.3], [15, 0.2]], 4);
+      const fine = fbm(S, S, rng, [[40, 0.5], [110, 0.5]]);
+      const cr = fbm(S, S, rng, [[14, 0.55], [30, 0.45]]);
+      const blis = fbm(S, S, rng, [[60, 1]]);
+      const hgt = new Float32Array(S * S), rough = new Float32Array(S * S);
+      const yRail = S - 1.12 * ppm, ySkirt = S - 0.12 * ppm;
+      const ts = 0.15 * ppm, nT = Math.round(S / ts), tsx = S / nT, gw = Math.max(2, S / 340);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const i = y * S + x, o = i * 4, v = y / S;
+        let r, gg, b, h = 0.5, ro = 0.92;
+        if (y >= ySkirt) { r = 0.16; gg = 0.15; b = 0.14; h = 0.6; }
+        else if (y >= yRail) {
+          const grout = (x % tsx) < gw || ((ySkirt - y) % ts) < gw;
+          if (grout) { r = 0.22; gg = 0.21; b = 0.19; h = 0.3; } else { r = 0.5; gg = 0.56; b = 0.5; h = 0.62; ro = 0.45; }
+        } else if (y >= yRail - ppm * 0.05) { r = 0.3; gg = 0.32; b = 0.3; h = 0.7; }
+        else { r = 0.6; gg = 0.58; b = 0.52; }
+        // 燻黑：上面幾乎全黑，下面一條一條往上竄
+        const sootRaw = (1 - v) * 0.85 + (streak[i] - 0.5) * 1.0 + (big[i] - 0.5) * 0.7 + 0.12;
+        const soot = smooth(0.18, 0.86, sootRaw);
+        // 焦褐色的邊緣
+        const fringe = smooth(0.12, 0.32, sootRaw) * (1 - smooth(0.35, 0.6, sootRaw));
+        r = r * (1 - fringe * 0.35) + 0.3 * fringe * 0.35; gg = gg * (1 - fringe * 0.45) + 0.18 * fringe * 0.45; b = b * (1 - fringe * 0.6) + 0.08 * fringe * 0.6;
+        const k = 1 - soot * 0.66;
+        r *= k; gg *= k; b *= k;
+        // 碳化龜裂（燒得最兇的地方）
+        const ch = smooth(0.72, 0.9, sootRaw + (big[i] - 0.5) * 0.25);
+        const crack = ch * smooth(0.035, 0.0, Math.abs(cr[i] - 0.5));
+        if (ch > 0) { r = r * (1 - ch) + 0.045 * ch; gg = gg * (1 - ch) + 0.04 * ch; b = b * (1 - ch) + 0.035 * ch; }
+        // 起泡剝落的油漆：露出底下較亮的灰泥
+        const peel = y < yRail && soot > 0.25 && soot < 0.8 && blis[i] > 0.78 ? smooth(0.78, 0.86, blis[i]) : 0;
+        if (peel) { r = r * (1 - peel) + 0.42 * peel; gg = gg * (1 - peel) + 0.38 * peel; b = b * (1 - peel) + 0.32 * peel; }
+        const f = 0.88 + fine[i] * 0.24;
+        id.data[o] = clamp01(r * f * (1 - crack * 0.8)) * 255;
+        id.data[o + 1] = clamp01(gg * f * (1 - crack * 0.8)) * 255;
+        id.data[o + 2] = clamp01(b * f * (1 - crack * 0.8)) * 255;
+        id.data[o + 3] = 255;
+        hgt[i] = h + (fine[i] - 0.5) * 0.12 + ch * 0.12 - crack * 0.5 + peel * 0.15;
+        rough[i] = ch > 0.5 ? 0.7 : Math.max(ro, 0.85 + soot * 0.12);
+      }
+      g.putImageData(id, 0, 0);
+      this.set('charredWall', c, hgt, rough, S, S, S / 256 * 2.2);
+    });
+  }
+
+  // 燒毀的地板：捲起、燒成焦黑的塑膠地磚，一片一片的灰燼
+  charredFloor() {
+    return this.get('charredFloor', () => {
+      const S = this.q.tex, rng = this.rng;
+      const c = mk(S, S), g = ctx2d(c);
+      const id = g.createImageData(S, S);
+      const n = 10, ts = S / n, gw = Math.max(2, S / 400);
+      const tv = Array.from({ length: n * n }, () => rng.next());
+      const burn = fbm(S, S, rng, [[2, 0.4], [5, 0.35], [12, 0.25]]);
+      const ash = fbm(S, S, rng, [[4, 0.5], [10, 0.3], [30, 0.2]]);
+      const fine = fbm(S, S, rng, [[64, 0.6], [160, 0.4]]);
+      const hgt = new Float32Array(S * S), rough = new Float32Array(S * S);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const i = y * S + x, o = i * 4;
+        const tx = Math.floor(x / ts), ty = Math.floor(y / ts), t = tv[ty * n + tx];
+        const fx = (x % ts) / ts, fy = (y % ts) / ts, edge = Math.min(fx, fy, 1 - fx, 1 - fy);
+        const seam = (x % ts) < gw || (y % ts) < gw;
+        let r = 0.47 * (0.85 + t * 0.3), gg = 0.45 * (0.85 + t * 0.3), b = 0.41 * (0.85 + t * 0.3);
+        const bu = smooth(0.38, 0.62, burn[i] + (t - 0.5) * 0.4);
+        r = r * (1 - bu) + 0.05 * bu; gg = gg * (1 - bu) + 0.045 * bu; b = b * (1 - bu) + 0.04 * bu;
+        const a = smooth(0.6, 0.78, ash[i]) * (0.5 + 0.5 * bu);
+        r = r * (1 - a) + 0.46 * a; gg = gg * (1 - a) + 0.44 * a; b = b * (1 - a) + 0.41 * a;
+        const f = 0.85 + fine[i] * 0.3;
+        const s = seam ? 0.45 : 1;
+        id.data[o] = clamp01(r * f * s) * 255; id.data[o + 1] = clamp01(gg * f * s) * 255; id.data[o + 2] = clamp01(b * f * s) * 255; id.data[o + 3] = 255;
+        // 燒過的地磚邊緣翹起來
+        hgt[i] = seam ? 0.2 : 0.55 + bu * smooth(0.12, 0.0, edge) * 0.35 + (fine[i] - 0.5) * 0.1 + a * 0.08;
+        rough[i] = a > 0.4 ? 1 : bu > 0.6 ? 0.68 : 0.6 + fine[i] * 0.2;
+      }
+      g.putImageData(id, 0, 0);
+      // 掉在地上的碎片
+      for (let k = 0; k < 160; k++) {
+        const x = rng.range(0, S), y = rng.range(0, S), s = rng.range(2, 9) * S / 1024;
+        g.fillStyle = rng.chance(0.5) ? 'rgba(18,15,12,0.9)' : 'rgba(120,112,100,0.7)';
+        g.fillRect(x, y, s, s * rng.range(0.4, 1));
+      }
+      this.set('charredFloor', c, hgt, rough, S, S, S / 256 * 1.6);
+    });
+  }
+
+  // 煙燻貼花圖集 2 × 2：牆上往上竄的黑煙兩種、門楣上方的燻痕、地上的焦痕
+  sootAtlas() {
+    return this.get('soot', () => {
+      const S = this.q.propTex, h = S / 2, rng = this.rng;
+      const c = mk(S, S), g = ctx2d(c);
+      const id = g.createImageData(S, S);
+      const nz = fbm(S, S, rng, [[4, 0.4], [9, 0.35], [22, 0.25]]);
+      const st = fbm(S, S, rng, [[3, 0.5], [6, 0.3], [12, 0.2]], 4);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const i = y * S + x, o = i * 4, cell = (y < h ? 0 : 2) + (x < h ? 0 : 1);
+        const u = ((x % h) / h) * 2 - 1, t = 1 - (y % h) / h; // t：0 = 下緣，1 = 上緣
+        const n = nz[i] - 0.5;
+        let a = 0, br = 0;
+        if (cell < 2) {
+          // 黑煙：越往上越寬、越濃；邊緣被火舌撕得參差不齊
+          const half = (cell ? 0.18 : 0.3) + 0.62 * t + (st[i] - 0.5) * 0.5;
+          a = smooth(half, half * 0.35, Math.abs(u)) * smooth(0.0, 0.3, t) * (0.62 + 0.38 * t) * (0.75 + n * 0.8);
+          a *= smooth(1.0, 0.9, t) * 0.3 + 0.7;
+          br = smooth(0.35, 0.0, t) * 0.5;
+        } else if (cell === 2) {
+          a = smooth(1.0, 0.55, Math.abs(u) + n * 0.4) * (0.55 + 0.35 * t + n * 0.5) * smooth(0, 0.1, t) * smooth(1, 0.92, t);
+        } else {
+          const v = (y % h) / h * 2 - 1, rr = Math.hypot(u, v) + n * 0.45;
+          a = smooth(0.95, 0.25, rr) * 0.92;
+          br = smooth(0.55, 0.85, rr) * 0.8;
+        }
+        a = clamp01(a);
+        id.data[o] = 12 + br * 50; id.data[o + 1] = 10 + br * 26; id.data[o + 2] = 8 + br * 8; id.data[o + 3] = a * 255;
+      }
+      g.putImageData(id, 0, 0);
+      this.cache.set('soot', { map: this.tex(c, { srgb: true, repeat: false }) });
+    });
+  }
+
   drainTex() {
     return this.get('drain', () => {
       const S = 256, rng = this.rng;

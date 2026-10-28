@@ -1,4 +1,5 @@
-// 關卡生成模糊測試：大量種子都必須產生合法、可通關的關卡（每個樓層主題輪流測）
+// 關卡生成模糊測試：大量種子都必須產生合法、可通關的關卡（每個樓層主題輪流測，含手術部與燒毀的舊院區）
+// 也檢查格局的變化：每個主題都要生出好幾種不同的走廊拓樸（棋盤格、環狀、天井、H 形、魚骨形……）
 //   node tests/level.test.mjs [數量] [主題]
 import { generateLevel, generateHospital, E, VOID, FURN } from '../src/level.js';
 import { validateLevel, NavGrid, Collision, sightClear } from '../src/nav.js';
@@ -10,7 +11,7 @@ const onlyTheme = process.argv[3];
 let fails = 0, retries = 0;
 const t0 = Date.now();
 const stats = {};
-for (const k of THEME_KEYS) stats[k] = { n: 0, rooms: 0, items: 0, lockers: 0, doors: 0, cells: 0, corpses: 0, shapes: {}, types: {} };
+for (const k of THEME_KEYS) stats[k] = { n: 0, rooms: 0, items: 0, lockers: 0, doors: 0, cells: 0, corpses: 0, shapes: {}, types: {}, inner: 0 };
 for (let s = 1; s <= N; s++) {
   const diff = DIFFICULTY[['easy', 'normal', 'nightmare'][s % 3]];
   const theme = onlyTheme || THEME_KEYS[s % THEME_KEYS.length];
@@ -31,6 +32,7 @@ for (let s = 1; s <= N; s++) {
   st.cells += lv.cells.reduce((a, v) => a + (v !== VOID ? 1 : 0), 0);
   st.corpses += lv.furniture.filter((f) => f.corpse).length;
   st.shapes[lv.shape] = (st.shapes[lv.shape] || 0) + 1;
+  st.inner += lv.rooms.filter((r) => r.inner).length;
   for (const r of lv.rooms) st.types[r.type] = (st.types[r.type] || 0) + 1;
   const fuses = lv.items.filter((i) => i.kind === 'fuse');
   const notes = lv.items.filter((i) => i.kind === 'note');
@@ -54,6 +56,8 @@ for (let s = 1; s <= N; s++) {
     const p = nav.findPath(lv.spawn.x, lv.spawn.z, room.cx, room.cz, 60000);
     assert(p && p.length, `ghost path to room ${room.id} ${room.type}`);
   }
+  // 內室（不貼走廊的房間）一定有門通到別的房間
+  for (const room of lv.rooms) if (room.inner) assert(room.doors.length > 0, `inner room ${room.id} has no door`);
   // 置物櫃前方必須不在牆裡
   for (const l of lv.lockers) assert(!col.overlapsAny(l.exitX, l.exitZ, 0.25), `locker exit blocked ${l.id}`);
   // 大門在通電前不透視
@@ -139,7 +143,9 @@ console.log(`levels: ${N}, failures: ${fails}, regenerated: ${retries}, avg ${(d
 for (const [k, st] of Object.entries(stats)) {
   if (!st.n) continue;
   const f = (v) => (v / st.n).toFixed(1);
-  console.log(`  ${k.padEnd(9)} n=${st.n} cells ${f(st.cells)} rooms ${f(st.rooms)} items ${f(st.items)} lockers ${f(st.lockers)} doors ${f(st.doors)} corpses ${f(st.corpses)} shapes ${JSON.stringify(st.shapes)}`);
+  console.log(`  ${k.padEnd(9)} n=${st.n} cells ${f(st.cells)} rooms ${f(st.rooms)} inner ${f(st.inner)} items ${f(st.items)} lockers ${f(st.lockers)} doors ${f(st.doors)} corpses ${f(st.corpses)} shapes ${JSON.stringify(st.shapes)}`);
+  // 格局變化：種子夠多時，每個主題至少要出現四種外形 / 拓樸
+  if (st.n >= 40 && Object.keys(st.shapes).length < 4) { fails++; console.error(`  ${k}: only ${Object.keys(st.shapes).length} layout shapes`); }
   console.log('            types', Object.entries(st.types).map(([t, n]) => `${t}:${f(n)}`).join(' '));
 }
 process.exit(fails ? 1 : 0);

@@ -1,5 +1,6 @@
 // 每個樓層主題拍幾張截圖（肉眼檢查用）：大廳、走廊、主題房間。
 //   node tests/themes-shots.mjs [輸出資料夾] [主題...]
+// 主題可以寫成「主題@種子」看同一個主題的不同格局，例如 ward@42 ward@77
 import { chromium } from 'playwright-core';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import { serveDir } from './serve.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.resolve(process.argv[2] || path.join(root, 'tests/output/themes'));
-const themes = process.argv.length > 3 ? process.argv.slice(3) : ['ward', 'morgue', 'pediatric', 'psych'];
+const themes = process.argv.length > 3 ? process.argv.slice(3) : ['ward', 'morgue', 'pediatric', 'psych', 'surgery', 'burned'];
 await mkdir(out, { recursive: true });
 const server = await serveDir(path.join(root, 'dist'));
 const base = `http://127.0.0.1:${server.address().port}/index.html?debug`;
@@ -23,8 +24,13 @@ const SIGNATURE = {
   morgue: [['morgue', 'drawers'], ['autopsy', 'autopsy'], ['coldstore', 'bagrail']],
   pediatric: [['kidward', 'crib'], ['playroom', 'rockinghorse'], ['nursery', 'bassinet']],
   psych: [['cell', 'bed'], ['nurse', 'counter'], ['therapy', 'ectchair'], ['dayroom', 'table']],
+  surgery: [['operating', 'optable'], ['icu', 'monitor'], ['scrub', 'scrubsink'], ['sterile', 'autoclave']],
+  burned: [['collapsed', 'rubble'], ['ward', 'bed'], ['lobby', 'rubble']],
 };
-for (const theme of themes) {
+for (const spec of themes) {
+  const [theme, seedArg] = spec.split('@');
+  const seed = seedArg ? Number(seedArg) : 1234567;
+  const tag = seedArg ? `${theme}-${seedArg}` : theme;
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await ctx.addInitScript(() => {
     localStorage.setItem('silentward.settings', JSON.stringify({ quality: 'medium', qualityChosen: true, cfgVer: 2 }));
@@ -40,22 +46,22 @@ for (const theme of themes) {
   await page.goto(base);
   await page.waitForSelector('#btnStart');
   const t0 = Date.now();
-  await page.evaluate((th) => { window.__SW.startGame(1234567, true, th); }, theme);
+  await page.evaluate(([th, sd]) => { window.__SW.startGame(sd, true, th); }, [theme, seed]);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(out, `${theme}-0-loading.png`), timeout: 60000 }).catch((e) => console.log('   loading shot failed', e.message.split('\n')[0]));
+  await page.screenshot({ path: path.join(out, `${tag}-0-loading.png`), timeout: 60000 }).catch((e) => console.log('   loading shot failed', e.message.split('\n')[0]));
   await page.waitForFunction(() => window.__SW.state === 'playing' && window.__SW.game, null, { timeout: 240000 });
   await page.evaluate(() => { window.__SW.paused = true; });
   const info = await page.evaluate(() => {
     const g = window.__SW.game, r = g.renderer.info;
     g.renderer.info.autoReset = false; g.renderer.info.reset(); g.render(0.016);
-    return { theme: g.lv.theme, title: g.floorTitle, W: g.lv.W, H: g.lv.H, shape: g.lv.shape, rooms: g.lv.rooms.length, calls: r.render.calls, tris: r.render.triangles, geos: r.memory.geometries, tex: r.memory.textures, corpses: g.world.corpseMeshes.length };
+    return { theme: g.lv.theme, title: g.floorTitle, W: g.lv.W, H: g.lv.H, shape: g.lv.shape, topo: g.lv.topo, rooms: g.lv.rooms.length, calls: r.render.calls, tris: r.render.triangles, geos: r.memory.geometries, tex: r.memory.textures, corpses: g.world.corpseMeshes.length };
   });
-  console.log(theme, `${((Date.now() - t0) / 1000).toFixed(0)}s`, JSON.stringify(info));
+  console.log(tag, `${((Date.now() - t0) / 1000).toFixed(0)}s`, JSON.stringify(info));
   const shot = async (name, setup, arg) => {
     const ok = await page.evaluate(setup, arg);
     if (!ok) { console.log('   skip', name); return; }
     await page.evaluate(() => { const g = window.__SW.game; for (let i = 0; i < 3; i++) g.update(0.05, { mx: 0, my: 0, look: { x: 0, y: 0 }, actions: [] }); g.render(0.05); });
-    await page.screenshot({ path: path.join(out, `${theme}-${name}.png`) });
+    await page.screenshot({ path: path.join(out, `${tag}-${name}.png`) });
   };
   // 1. 大廳（出生點往北看）
   await shot('1-lobby', () => { const g = window.__SW.game; g.ghost.state = 'dormant'; g.ghost.dormantUntil = 1e9; g.player.flashOn = true; return true; });
@@ -79,7 +85,7 @@ for (const theme of themes) {
   });
   // 3+. 主題房間
   let k = 3;
-  for (const [type, kind] of SIGNATURE[theme]) {
+  for (const [type, kind] of SIGNATURE[theme] || []) {
     await shot(`${k++}-${type}`, ([type, kind]) => {
       const g = window.__SW.game, lv = g.lv, P = g.player;
       const rooms = lv.rooms.filter((r) => r.type === type).sort((a, b) => b.area - a.area);
@@ -101,11 +107,11 @@ for (const theme of themes) {
       return false;
     }, [type, kind]);
   }
-  await page.screenshot({ path: path.join(out, `${theme}-z-last.png`) });
+  await page.screenshot({ path: path.join(out, `${tag}-z-last.png`) });
   // 地圖
   await page.evaluate(() => { const g = window.__SW.game; for (let i = 0; i < g.explored.length; i++) g.explored[i] = 1; g.update(0.05, { mx: 0, my: 0, look: { x: 0, y: 0 }, actions: ['map'] }); });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(out, `${theme}-9-map.png`) });
+  await page.screenshot({ path: path.join(out, `${tag}-9-map.png`) });
   await ctx.close();
 }
 await browser.close();
