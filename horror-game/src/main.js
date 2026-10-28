@@ -38,13 +38,14 @@ class App {
     this.canvas = $('game');
     const defaults = {
       volume: 0.85, music: 0.8, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
-      quality: null, difficulty: 'normal', fpsCap: 60,
+      quality: null, difficulty: 'normal', fpsCap: 60, aa: true,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
     clampNum('volume', 0, 1); clampNum('music', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
     this.settings.invertY = this.settings.invertY === true;
     this.settings.showFps = this.settings.showFps === true;
+    this.settings.aa = this.settings.aa !== false;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
     const touch = matchMedia('(pointer: coarse)').matches;
     // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
@@ -55,7 +56,7 @@ class App {
       this.settings.quality = touch && mem <= 3 ? 'low' : 'medium';
     }
     if (!DIFFICULTY[this.settings.difficulty]) this.settings.difficulty = 'normal';
-    this.quality = QUALITY[this.settings.quality];
+    this.quality = this.qualityPreset();
     this.resScale = 1;
     this.ui = new UI();
     this.audio = new AudioEngine();
@@ -151,9 +152,14 @@ class App {
     document.body.append(d);
   }
 
+  // 畫質預設加上玩家的抗鋸齒選項（Post 依此決定 FXAA / 多重取樣）
+  qualityPreset() {
+    return { ...QUALITY[this.settings.quality], aa: this.settings.aa };
+  }
+
   pixelRatio() {
     const q = this.quality;
-    return Math.max(0.5, Math.min(devicePixelRatio || 1, q.maxDpr) * q.scale * this.resScale);
+    return Math.max(0.55, Math.min(devicePixelRatio || 1, q.maxDpr) * q.scale * this.resScale);
   }
   resize() {
     if (this.game) this.game.resize();
@@ -256,6 +262,7 @@ class App {
       el.addEventListener('change', () => { this.settings[key] = el.checked; if (fn) fn(); this.saveSettings(); });
     };
     bindCheck('sInvert', 'invertY');
+    bindCheck('sAA', 'aa', () => { if (this.game && this.game.post) this.game.post.setAA(this.settings.aa); });
     bindCheck('sFps', 'showFps', () => this.ui.setFps(this.settings.showFps && this.state === 'playing'));
     // 鍵盤操作選單
     addEventListener('keydown', (e) => {
@@ -279,7 +286,7 @@ class App {
     this.busy = true;
     await this.audio.resume();
     if (this.game) { this.game.dispose(); this.game = null; }
-    this.quality = QUALITY[this.settings.quality];
+    this.quality = this.qualityPreset();
     this.resScale = 1;
     ['menu', 'end', 'pause', 'help', 'settings', 'note', 'mapView', 'hideOverlay'].forEach((id) => { $(id).hidden = true; });
     this.ui.setHiding(false);
@@ -437,9 +444,11 @@ class App {
     const avg = ft.reduce((a, b) => a + b, 0) / ft.length;
     ft.length = 0;
     if (this.settings.showFps) this.ui.setFps(true, `${(1 / avg).toFixed(0)} FPS・${this.quality.label}・${(this.pixelRatio()).toFixed(2)}x`);
+    // 不要一下子降太多：解析度太低畫面會糊成一片。偶爾一段慢不算，連續兩段慢（或非常慢）才降，每次降 0.08，最低 0.7
     let changed = false;
-    if (avg > 1.45 / target && this.resScale > 0.6) { this.resScale = Math.max(0.6, this.resScale - 0.1); changed = true; }
-    else if (avg < 1.08 / target && this.resScale < 1) { this.resScale = Math.min(1, this.resScale + 0.05); changed = true; }
+    this.slowRuns = avg > 1.45 / target ? (this.slowRuns || 0) + 1 : 0;
+    if ((this.slowRuns >= 2 || avg > 1.9 / target) && this.resScale > 0.7) { this.resScale = Math.max(0.7, this.resScale - 0.08); this.slowRuns = 0; changed = true; }
+    else if (avg < 1.08 / target && this.resScale < 1) { this.resScale = Math.min(1, this.resScale + 0.04); changed = true; }
     if (changed && this.game) this.game.resize();
   }
 }
