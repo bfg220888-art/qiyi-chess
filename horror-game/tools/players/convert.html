@@ -1,0 +1,489 @@
+<!doctype html><html><head><meta charset="utf-8"><title>convert</title></head><body>
+<script type="importmap">{"imports":{"three":"/three/build/three.module.js","three/addons/":"/three/examples/jsm/"}}</script>
+<script type="module">
+// 把兩個 Rocketbox 人物（男、女）與它們的動作轉成一個 GLB，給多人模式的其他玩家用。
+// 骨頭名稱加上 M_ / F_ 前綴，兩副骨架才能放進同一個檔案、動作軌道才不會綁錯人。
+// 除了原始的待機、走、跑、蹲姿，另外用原始資料合成「蹲著走」與「倒地」兩段動作。
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshoptSimplifier } from '/meshopt/meshopt_simplifier.module.js';
+
+const out = { log: [], files: {} };
+const log = (...a) => out.log.push(a.join(' '));
+const qs = new URLSearchParams(location.search);
+const MAX_TRIS = Number(qs.get('maxTris') || 9000);
+
+const AV = 'Assets/Avatars/Adults/';
+const AN = 'Assets/Animations/all_animations_max_motextr_';
+const AVATARS = [
+  { key: 'M', id: 'm023', fbx: AV + 'Male_Adult_18/Export/Male_Adult_18.fbx', g: 'm' },
+  { key: 'F', id: 'f008', fbx: AV + 'Female_Adult_08/Export/Female_Adult_08.fbx', g: 'f' },
+];
+// 動作名稱 → 檔案（{g} 換成 m / f）。ref 只用來當「站直」的參考姿勢，不輸出。
+const ANIMS = {
+  idle: 'static/{g}_idle_nervous_01',
+  walk: 'xy/{g}_walk_neutral_01',
+  run: 'xy/{g}_run_neutral_01',
+  ref: 'static/{g}_idle_neutral_01',
+};
+// 保留的骨頭：軀幹、四肢、頭（臉部骨頭與手指不需要動作軌道；手指由遊戲擺成握拳）
+const KEEP_BONE = /^(Bip01|Bip01_Pelvis|Bip01_Spine\d?|Bip01_Neck|Bip01_Head|Bip01_[LR]_(Clavicle|UpperArm|Forearm|Hand|Thigh|Calf|Foot|Toe0))$/;
+const V = () => new THREE.Vector3(), Q = () => new THREE.Quaternion();
+const loader = new FBXLoader();
+const load = (u) => loader.loadAsync('/rb/' + u);
+
+// ---------- 幾何 ----------
+function simplify(g, maxTris) {
+  const tris = g.index.count / 3;
+  if (tris <= maxTris) return g;
+  const keep = maxTris / tris;
+  const idx = g.index.array, P = g.attributes.position.array;
+  const parts = [];
+  for (const gr of g.groups) {
+    const sub = new Uint32Array(idx.subarray(gr.start, gr.start + gr.count));
+    const target = Math.max(3, Math.floor(sub.length * keep / 3) * 3);
+    const [res] = MeshoptSimplifier.simplify(sub, P, 3, target, 0.02, ['LockBorder']);
+    parts.push({ res, mi: gr.materialIndex });
+  }
+  const used = new Int32Array(g.attributes.position.count).fill(-1);
+  let nv = 0;
+  for (const p of parts) for (const i of p.res) if (used[i] < 0) used[i] = nv++;
+  const o2 = new THREE.BufferGeometry();
+  for (const [name, a] of Object.entries(g.attributes)) {
+    const arr = new a.array.constructor(nv * a.itemSize);
+    for (let i = 0; i < used.length; i++) if (used[i] >= 0) for (let k = 0; k < a.itemSize; k++) arr[used[i] * a.itemSize + k] = a.array[i * a.itemSize + k];
+    o2.setAttribute(name, new THREE.BufferAttribute(arr, a.itemSize, a.normalized));
+  }
+  parts.sort((a, b) => a.mi - b.mi);
+  const ni = new Uint32Array(parts.reduce((s, p) => s + p.res.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    const last = o2.groups[o2.groups.length - 1];
+    if (last && last.materialIndex === p.mi) last.count += p.res.length; else o2.addGroup(o, p.res.length, p.mi);
+    for (const i of p.res) ni[o++] = used[i];
+  }
+  o2.setIndex(new THREE.BufferAttribute(nv < 65536 ? Uint16Array.from(ni) : ni, 1));
+  return o2;
+}
+
+// 壓縮頂點資料（KHR_mesh_quantization）：法線 int8、UV uint16、骨頭編號與權重 uint8，每個頂點從 56 位元組降到 28
+function quantize(g) {
+  const n = g.attributes.normal, uv = g.attributes.uv, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+  const N = new Int8Array(n.count * 3);
+  for (let i = 0; i < n.count; i++) {
+    const x = n.getX(i), y = n.getY(i), z = n.getZ(i), l = Math.hypot(x, y, z) || 1;
+    N[i * 3] = Math.round(x / l * 127); N[i * 3 + 1] = Math.round(y / l * 127); N[i * 3 + 2] = Math.round(z / l * 127);
+  }
+  g.setAttribute('normal', new THREE.BufferAttribute(N, 3, true));
+  let lo = Infinity, hi = -Infinity;
+  for (const v of uv.array) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (lo >= 0 && hi <= 1) g.setAttribute('uv', new THREE.BufferAttribute(Uint16Array.from(uv.array, (v) => Math.round(v * 65535)), 2, true));
+  else log('uv out of 0..1, kept float', lo, hi);
+  const J = new Uint8Array(si.count * 4), W = new Uint8Array(si.count * 4);
+  for (let i = 0; i < si.count; i++) {
+    let sum = 0;
+    for (let k = 0; k < 4; k++) sum += sw.getComponent(i, k);
+    const w = [0, 1, 2, 3].map((k) => sw.getComponent(i, k) / (sum || 1));
+    const q = w.map((x) => Math.round(x * 255));
+    // 四捨五入後總和要剛好是 255：差額補到最大的那個權重
+    const big = q.indexOf(Math.max(...q));
+    q[big] += 255 - q.reduce((a, b) => a + b, 0);
+    for (let k = 0; k < 4; k++) { J[i * 4 + k] = q[k] ? si.getComponent(i, k) : 0; W[i * 4 + k] = q[k]; }
+  }
+  g.setAttribute('skinIndex', new THREE.BufferAttribute(J, 4));
+  g.setAttribute('skinWeight', new THREE.BufferAttribute(W, 4, true));
+}
+
+function prepareMesh(mesh) {
+  const g0 = mesh.geometry;
+  const g = new THREE.BufferGeometry();
+  for (const n of ['position', 'normal', 'uv', 'skinIndex', 'skinWeight']) g.setAttribute(n, g0.attributes[n].clone());
+  // 同一個材質的段落併在一起
+  const mats = [].concat(mesh.material);
+  const byMat = mats.map(() => []);
+  for (const gr of g0.groups) byMat[gr.materialIndex].push(gr);
+  const order = [];
+  byMat.forEach((list, mi) => { for (const gr of list) for (let i = gr.start; i < gr.start + gr.count; i++) order.push(i); });
+  const re = new THREE.BufferGeometry();
+  for (const [n, a] of Object.entries(g.attributes)) {
+    const arr = new a.array.constructor(order.length * a.itemSize);
+    order.forEach((src, i) => { for (let k = 0; k < a.itemSize; k++) arr[i * a.itemSize + k] = a.array[src * a.itemSize + k]; });
+    re.setAttribute(n, new THREE.BufferAttribute(arr, a.itemSize, a.normalized));
+  }
+  let s = 0;
+  byMat.forEach((list, mi) => { const c = list.reduce((t, gr) => t + gr.count, 0); if (c) re.addGroup(s, c, mi); s += c; });
+  // glTF 的 UV 原點在左上角：翻轉 v，載入時貼圖用 flipY = false
+  const uv = re.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+  let m = mergeVertices(re, 1e-4);
+  if (!m.groups.length) for (const gr of re.groups) m.addGroup(gr.start, gr.count, gr.materialIndex);
+  const before = m.index.count / 3;
+  m = simplify(m, MAX_TRIS);
+  quantize(m);
+  m.computeBoundingBox();
+  m.computeBoundingSphere();
+  log(mesh.name, 'tris', before, '->', m.index.count / 3, 'verts', m.attributes.position.count, 'groups', JSON.stringify(m.groups), 'mats', mats.map((x) => x.name).join(','));
+  return { geometry: m, matNames: mats.map((x) => x.name.replace(/^[mf]\d{3}_/, '')) };
+}
+
+// ---------- 動作 ----------
+function filterClip(clip, name, fps) {
+  clip = clip.clone();
+  clip.name = name;
+  clip.tracks = clip.tracks.filter((t) => {
+    const [bone, prop] = t.name.split('.');
+    if (!KEEP_BONE.test(bone)) return false;
+    if (prop === 'scale') return false;
+    if (prop === 'position' && bone !== 'Bip01') return false;
+    return true;
+  });
+  if (fps) clip = resample(clip, fps);
+  // 原始動作會往前移動：去掉水平方向的線性位移變成原地動作（保留上下起伏與左右晃動），並記下移動速度
+  const tr = clip.tracks.find((t) => t.name === 'Bip01.position');
+  if (tr) {
+    const v = tr.values, n = tr.times.length, T = tr.times[n - 1] - tr.times[0] || 1;
+    const x0 = v[0], z0 = v[2], dx = v[(n - 1) * 3] - x0, dz = v[(n - 1) * 3 + 2] - z0;
+    for (let i = 0; i < n; i++) {
+      const k = (tr.times[i] - tr.times[0]) / T;
+      v[i * 3] -= x0 + dx * k;
+      v[i * 3 + 2] -= z0 + dz * k;
+    }
+    clip.userData = { travel: Math.hypot(dx, dz) / T };
+  }
+  return clip;
+}
+// 太長的待機動作：只取前 seconds 秒，最後 blend 秒漸漸回到第一格，循環時才不會跳
+function trimLoop(clip, seconds, blend, fps) {
+  clip = resample(clip, fps);
+  const n = Math.round(seconds * fps) + 1;
+  clip.tracks = clip.tracks.map((t) => {
+    const size = t.getValueSize();
+    const times = t.times.slice(0, n), vals = t.values.slice(0, n * size);
+    const q = Q(), q0 = Q();
+    for (let i = 0; i < n; i++) {
+      const w = THREE.MathUtils.smoothstep(times[i], seconds - blend, seconds);
+      if (w <= 0) continue;
+      if (size === 4) {
+        q.fromArray(vals, i * 4); q0.fromArray(vals, 0);
+        q.slerp(q0, w).toArray(vals, i * 4);
+      } else for (let k = 0; k < size; k++) vals[i * size + k] += (vals[k] - vals[i * size + k]) * w;
+    }
+    return new t.constructor(t.name, times, vals);
+  });
+  clip.duration = seconds;
+  return clip;
+}
+function resample(clip, fps) {
+  const n = Math.max(2, Math.round(clip.duration * fps) + 1);
+  clip.tracks = clip.tracks.map((t) => {
+    const times = new Float32Array(n), size = t.getValueSize(), vals = new Float32Array(n * size);
+    const it = t.createInterpolant();
+    for (let i = 0; i < n; i++) { times[i] = Math.min(clip.duration, i / fps); vals.set(it.evaluate(times[i]), i * size); }
+    return new t.constructor(t.name, times, vals);
+  });
+  return clip;
+}
+
+// 每個頂點的主要骨頭
+function dominantBones(mesh) {
+  const si = mesh.geometry.attributes.skinIndex, sw = mesh.geometry.attributes.skinWeight;
+  const dom = new Int32Array(si.count);
+  for (let i = 0; i < si.count; i++) { let b = 0, w = -1; for (let k = 0; k < 4; k++) { const x = sw.getComponent(i, k); if (x > w) { w = x; b = si.getComponent(i, k); } } dom[i] = b; }
+  return dom;
+}
+
+class Rig {
+  constructor(obj, mesh) {
+    this.obj = obj; this.mesh = mesh;
+    this.bones = mesh.skeleton.bones;
+    // 骨架的 bones 不一定包含沒有蒙皮權重的根骨頭，所以從整棵樹找
+    this.byName = new Map();
+    obj.traverse((o) => { if (o.isBone) this.byName.set(o.name, o); });
+    this.root = this.bone('Bip01');
+    this.keep = [...this.byName.values()].filter((b) => KEEP_BONE.test(b.name));
+    obj.updateMatrixWorld(true);
+    this.rest = this.capture();
+    this.rootRestWorld = this.root.getWorldQuaternion(Q());
+    const dom = dominantBones(mesh);
+    const footIdx = new Set(['L_Foot', 'R_Foot', 'L_Toe0', 'R_Toe0'].map((n) => this.bones.indexOf(this.bone(n))));
+    this.footVerts = []; this.someVerts = [];
+    for (let i = 0; i < dom.length; i++) { if (footIdx.has(dom[i])) this.footVerts.push(i); if (i % 3 === 0) this.someVerts.push(i); }
+  }
+  bone(n) { return this.byName.get(n.startsWith('Bip01') ? n : 'Bip01_' + n); }
+  capture() {
+    const p = { q: new Map(), pos: this.root.position.clone() };
+    for (const b of this.keep) p.q.set(b.name, b.quaternion.clone());
+    return p;
+  }
+  apply(p) {
+    for (const b of this.keep) b.quaternion.copy(p.q.get(b.name));
+    this.root.position.copy(p.pos);
+    this.obj.updateMatrixWorld(true);
+  }
+  minY(verts) {
+    const v = V();
+    let m = Infinity;
+    for (const i of verts) { this.mesh.getVertexPosition(i, v); this.mesh.localToWorld(v); if (v.y < m) m = v.y; }
+    return m;
+  }
+  // 讓骨頭指向下一個關節的方向等於 want（世界座標）
+  aim(name, childName, want) {
+    const bone = this.bone(name), child = this.bone(childName);
+    const p = bone.getWorldPosition(V()), c = child.getWorldPosition(V());
+    const d = Q().setFromUnitVectors(c.sub(p).normalize(), want.clone().normalize());
+    const wq = d.multiply(bone.getWorldQuaternion(Q()));
+    bone.quaternion.copy(bone.parent.getWorldQuaternion(Q()).invert().multiply(wq));
+    bone.updateMatrixWorld(true);
+  }
+  // 頭：臉朝 face、頭頂朝 up（世界座標）
+  aimHead(face, up) {
+    const head = this.bone('Head');
+    if (!this.faceLocal) {
+      const save = this.capture();
+      this.apply(this.rest);
+      const hq = head.getWorldQuaternion(Q()).invert();
+      this.faceLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(hq);
+      this.upLocal = new THREE.Vector3(0, 1, 0).applyQuaternion(hq);
+      this.apply(save);
+    }
+    const hq = head.getWorldQuaternion(Q());
+    const cur = basis(this.faceLocal.clone().applyQuaternion(hq), this.upLocal.clone().applyQuaternion(hq));
+    const want = basis(face, up);
+    const d = Q().setFromRotationMatrix(want.multiply(cur.transpose()));
+    head.quaternion.copy(head.parent.getWorldQuaternion(Q()).invert().multiply(d.multiply(hq)));
+    head.updateMatrixWorld(true);
+  }
+  // 依身體座標描述的骨頭方向擺姿勢（L 邊的方向會自動鏡射給 R 邊）
+  pose(dirs) {
+    const CHILD = { Spine: 'Spine1', Spine1: 'Spine2', Spine2: 'Neck', Neck: 'Head', UpperArm: 'Forearm', Forearm: 'Hand', Hand: 'Finger2', Thigh: 'Calf', Calf: 'Foot', Foot: 'Toe0' };
+    const full = { ...dirs };
+    for (const [k, v] of Object.entries(dirs)) if (k.startsWith('L_') && !(('R_' + k.slice(2)) in dirs)) full['R_' + k.slice(2)] = [-v[0], v[1], v[2]];
+    for (const k of ['Spine', 'Spine1', 'Spine2', 'Neck', 'L_UpperArm', 'L_Forearm', 'L_Hand', 'R_UpperArm', 'R_Forearm', 'R_Hand', 'L_Thigh', 'L_Calf', 'L_Foot', 'R_Thigh', 'R_Calf', 'R_Foot']) {
+      if (!full[k]) continue;
+      const side = /^[LR]_/.test(k) ? k.slice(0, 2) : '';
+      const child = side + CHILD[k.slice(side.length)];
+      if (!this.bone(child)) continue;
+      this.aim(k, child, new THREE.Vector3(...full[k]));
+    }
+  }
+}
+function basis(face, up) {
+  const f = face.clone().normalize();
+  const u = up.clone().sub(f.clone().multiplyScalar(up.dot(f))).normalize();
+  return new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(u, f), u, f);
+}
+const n3 = (x, y, z) => { const l = Math.hypot(x, y, z); return [x / l, y / l, z / l]; };
+
+// 套用某段動作在時間 t 的姿勢
+function sampleClip(rig, clip, t) {
+  const mixer = new THREE.AnimationMixer(rig.obj);
+  const a = mixer.clipAction(clip);
+  a.play();
+  mixer.setTime(t);
+  rig.obj.updateMatrixWorld(true);
+  const p = rig.capture();
+  mixer.stopAllAction();
+  mixer.uncacheRoot(rig.obj);
+  return p;
+}
+
+// 量原地動作的步行速度：腳著地時相對身體往後移動的速度（公分 / 秒）
+function measureSpeed(rig, clip) {
+  const N = 120, dt = clip.duration / N;
+  const feet = ['L_Foot', 'R_Foot'].map((n) => rig.bone(n));
+  const samples = feet.map(() => []);
+  for (let i = 0; i <= N; i++) {
+    rig.apply(sampleClip(rig, clip, i * dt));
+    feet.forEach((f, k) => { const p = f.getWorldPosition(V()); samples[k].push(p); });
+  }
+  const vs = [];
+  if (qs.get('debug')) for (const s of samples) log('foot', ['x', 'y', 'z'].map((c) => c + ' ' + Math.min(...s.map((p) => p[c])).toFixed(1) + '..' + Math.max(...s.map((p) => p[c])).toFixed(1)).join(' '));
+  for (const s of samples) {
+    const minY = Math.min(...s.map((p) => p.y));
+    for (let i = 1; i < s.length; i++) if (s[i].y < minY + 1.5 && s[i - 1].y < minY + 1.5) vs.push(-(s[i].z - s[i - 1].z) / dt);
+  }
+  vs.sort((a, b) => a - b);
+  // 相位：左腳跨到最前面（腳跟著地）的時間點佔整段的比例，遊戲用它對齊走路與跑步的步伐
+  let best = 0;
+  samples[0].forEach((p, i) => { if (p.z > samples[0][best].z) best = i; });
+  return { speed: vs.length ? vs[vs.length >> 1] / 100 : 0, phase: best / N };
+}
+
+function lerpPose(a, b, k) {
+  const p = { q: new Map(), pos: a.pos.clone().lerp(b.pos, k) };
+  for (const [n, q] of a.q) p.q.set(n, q.clone().slerp(b.q.get(n), k));
+  return p;
+}
+function clipFromPoses(rig, name, frames, fps) {
+  const times = new Float32Array(frames.length).map((_, i) => i / fps);
+  const tracks = [];
+  for (const b of rig.keep) {
+    const vals = new Float32Array(frames.length * 4);
+    frames.forEach((f, i) => f.q.get(b.name).toArray(vals, i * 4));
+    tracks.push(new THREE.QuaternionKeyframeTrack(b.name + '.quaternion', times, vals));
+  }
+  const pv = new Float32Array(frames.length * 3);
+  frames.forEach((f, i) => f.pos.toArray(pv, i * 3));
+  tracks.push(new THREE.VectorKeyframeTrack('Bip01.position', times, pv));
+  return new THREE.AnimationClip(name, -1, tracks);
+}
+
+// 自己擺的蹲姿（Rocketbox 的蹲姿待機是整個蹲到底或單膝跪地，不適合拿來走路）：
+// 膝蓋彎、上身前傾、頭看前方，腳掌維持原本的方向
+function makeCrouchPose(rig, ref) {
+  rig.apply(ref);
+  const footDir = {};
+  for (const s of ['L', 'R']) footDir[s] = rig.bone(s + '_Toe0').getWorldPosition(V()).sub(rig.bone(s + '_Foot').getWorldPosition(V())).normalize();
+  rig.pose({
+    Spine: n3(0, 1, 0.42), Spine1: n3(0, 1, 0.32), Spine2: n3(0, 1, 0.2), Neck: n3(0, 1, 0.1),
+    L_Thigh: n3(0.16, -0.55, 0.82), L_Calf: n3(0.03, -0.93, -0.36),
+  });
+  for (const s of ['L', 'R']) rig.aim(s + '_Foot', s + '_Toe0', footDir[s]);
+  rig.aimHead(new THREE.Vector3(0, -0.1, 1), new THREE.Vector3(0, 1, 0.1));
+  rig.root.position.y -= rig.minY(rig.footVerts);
+  rig.obj.updateMatrixWorld(true);
+  return rig.capture();
+}
+
+// 把一段站姿動作改成蹲著做：每一格疊上「蹲姿相對站姿」的差（只套在軀幹與腿），再把身體降到最低的腳剛好踩地
+function crouchify(rig, clip, name, ref, crouch, fps) {
+  const N = Math.round(clip.duration * fps);
+  const delta = new Map();
+  const ADD = /^Bip01(_Pelvis|_Spine\d?|_Neck|_Head|_[LR]_(Thigh|Calf|Foot|Toe0))?$/;
+  for (const b of rig.keep) if (ADD.test(b.name)) delta.set(b.name, ref.q.get(b.name).clone().invert().multiply(crouch.q.get(b.name)));
+  const frames = [];
+  for (let i = 0; i <= N; i++) {
+    const p = sampleClip(rig, clip, Math.min(clip.duration, i / fps));
+    for (const [n, d] of delta) p.q.get(n).multiply(d);
+    rig.apply(p);
+    p.pos.y -= rig.minY(rig.footVerts);
+    frames.push(p);
+  }
+  // 頭尾要一樣才能無縫循環
+  frames[frames.length - 1] = frames[0];
+  return clipFromPoses(rig, name, frames, fps);
+}
+
+// 倒地：膝蓋一軟跪下，再往前撲倒、臉側向一邊趴在地上
+function makeDead(rig, ref) {
+  // 跪姿（身體座標：+X 是人物左邊、+Y 上、+Z 前方）
+  rig.apply(ref);
+  rig.pose({
+    Spine: n3(0, 1, 0.3), Spine1: n3(0, 1, 0.45), Spine2: n3(0, 1, 0.55), Neck: n3(0, 0.75, 0.66),
+    L_UpperArm: n3(0.2, -1, 0.25), L_Forearm: n3(0.05, -1, 0.45), L_Hand: n3(0.0, -1, 0.3),
+    L_Thigh: n3(0.1, -1, 0.3), L_Calf: n3(0.02, -0.12, -1), L_Foot: n3(0, -0.25, -1),
+  });
+  rig.aimHead(new THREE.Vector3(0.1, -0.75, 0.66), new THREE.Vector3(0, 0.66, 0.75));
+  rig.root.position.y -= rig.minY(rig.someVerts);
+  rig.obj.updateMatrixWorld(true);
+  const kneel = rig.capture();
+  const knee = rig.bone('L_Calf').getWorldPosition(V()).add(rig.bone('R_Calf').getWorldPosition(V())).multiplyScalar(0.5);
+  // 趴姿：骨盆→頭朝 +Z、胸口朝下
+  rig.apply(ref);
+  const B = new THREE.Quaternion().setFromRotationMatrix(basis(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, 0, 1)));
+  rig.root.quaternion.copy(B.multiply(rig.rootRestWorld));
+  rig.bone('Pelvis').quaternion.copy(rig.rest.q.get('Bip01_Pelvis'));
+  rig.obj.updateMatrixWorld(true);
+  rig.pose({
+    Spine: n3(0, 0.03, 1), Spine1: n3(0, 0.02, 1), Spine2: n3(0, 0, 1), Neck: n3(0.05, 0.05, 1),
+    L_UpperArm: n3(0.45, -0.12, 1), L_Forearm: n3(0.05, -0.1, 1), L_Hand: n3(0.05, -0.3, 1),
+    R_UpperArm: n3(-0.4, -0.15, -1), R_Forearm: n3(-0.12, -0.1, -1), R_Hand: n3(-0.1, -0.35, -1),
+    L_Thigh: n3(0.15, -0.02, -1), L_Calf: n3(0.06, 0.05, -1), L_Foot: n3(0.2, -0.8, -0.55),
+    R_Thigh: n3(-0.28, -0.02, -1), R_Calf: n3(-0.1, 0.25, -1), R_Foot: n3(-0.2, -0.5, -0.85),
+  });
+  // 臉轉向左邊、側臉貼地
+  rig.aimHead(new THREE.Vector3(0.92, -0.35, 0.1), new THREE.Vector3(0.05, 0.1, 1));
+  const knee2 = rig.bone('L_Calf').getWorldPosition(V()).add(rig.bone('R_Calf').getWorldPosition(V())).multiplyScalar(0.5);
+  rig.root.position.x += knee.x - knee2.x;
+  rig.root.position.z += knee.z - knee2.z;
+  rig.obj.updateMatrixWorld(true);
+  rig.root.position.y -= rig.minY(rig.someVerts) - 0.3;
+  rig.obj.updateMatrixWorld(true);
+  const prone = rig.capture();
+  // 取樣：0 → 0.4 秒跪下（先快後慢），0.4 → 1.0 秒撲倒（重力加速），之後停住
+  const fps = 30, frames = [];
+  const ease = (k) => k * k * (3 - 2 * k);
+  for (let i = 0; i <= 36; i++) {
+    const t = i / fps;
+    let p;
+    if (t <= 0.4) p = lerpPose(ref, kneel, ease(t / 0.4));
+    else if (t <= 1.0) { const k = (t - 0.4) / 0.6; p = lerpPose(kneel, prone, k * k); }
+    else { const k = (t - 1.0) / 0.2; p = lerpPose(prone, prone, 0); p.pos.y += Math.sin(Math.min(1, k) * Math.PI) * 1.5; }
+    rig.apply(p);
+    const m = rig.minY(rig.someVerts);
+    if (m < 0) p.pos.y -= m;
+    frames.push(p);
+  }
+  return clipFromPoses(rig, 'dead', frames, fps);
+}
+
+try {
+  await MeshoptSimplifier.ready;
+  const scene = new THREE.Group();
+  scene.name = 'players';
+  const clips = [];
+  for (const av of AVATARS) {
+    const obj = await load(av.fbx);
+    let mesh = null;
+    const junk = [];
+    obj.traverse((o) => { if (o.isSkinnedMesh) mesh = o; else if (!o.isBone && o !== obj) junk.push(o); });
+    for (const o of junk) o.parent.remove(o);
+    obj.updateMatrixWorld(true);
+    const rig = new Rig(obj, mesh);
+    // --- 動作（先用原始骨頭名稱處理，最後再加前綴）
+    const raw = {};
+    for (const [name, file] of Object.entries(ANIMS)) {
+      const a = await load(AN + file.replace('{g}', av.g) + '.max.fbx');
+      const src = a.animations[0];
+      raw[name] = filterClip(src, name, src.duration > 3 ? 15 : 0);
+      log(av.key, name, 'duration', src.duration.toFixed(2));
+    }
+    // 待機動作太長（30 秒以上）：只取一段
+    raw.idle = trimLoop(raw.idle, 10, 1.2, 15);
+    for (const k of ['walk', 'run']) log(av.key, k, 'travel m/s', (raw[k].userData.travel / 100).toFixed(3));
+    const ref = sampleClip(rig, raw.ref, 0);
+    const crouchPose = makeCrouchPose(rig, ref);
+    raw.crouch = crouchify(rig, raw.idle, 'crouch', ref, crouchPose, 15);
+    raw.crouchwalk = crouchify(rig, raw.walk, 'crouchwalk', ref, crouchPose, 30);
+    raw.dead = makeDead(rig, ref);
+    delete raw.ref;
+    // 每段移動動作的原始速度（公尺 / 秒）與步伐相位
+    const gait = {};
+    for (const k of ['walk', 'run', 'crouchwalk']) { const r = measureSpeed(rig, raw[k]); gait[k] = { speed: +r.speed.toFixed(3), phase: +r.phase.toFixed(3) }; }
+    log(av.key, 'gait', JSON.stringify(gait));
+    rig.apply(rig.rest);
+    // --- 網格
+    const { geometry, matNames } = prepareMesh(mesh);
+    mesh.geometry = geometry;
+    mesh.material = matNames.map((n) => new THREE.MeshStandardMaterial({ name: n }));
+    mesh.name = av.key + '_mesh';
+    // --- 前綴
+    for (const b of rig.byName.values()) b.name = av.key + '_' + b.name;
+    for (const [name, clip] of Object.entries(raw)) {
+      clip.name = av.key + '_' + name;
+      for (const t of clip.tracks) t.name = av.key + '_' + t.name;
+      clip.optimize();
+      clip.resetDuration();
+      let keys = 0;
+      for (const t of clip.tracks) keys += t.times.length;
+      log(clip.name, clip.duration.toFixed(2), 's tracks', clip.tracks.length, 'keys', keys);
+      clips.push(clip);
+    }
+    // FBXLoader 在 userData 留了很多轉換資料，匯出會變成一大串 extras
+    obj.traverse((o) => { o.userData = {}; });
+    obj.name = av.key;
+    obj.userData = { id: av.id, gait };
+    scene.add(obj);
+  }
+  const glb = await new GLTFExporter().parseAsync(scene, { binary: true, animations: clips, onlyVisible: false });
+  const bytes = new Uint8Array(glb);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  out.files['player.glb'] = btoa(s);
+  log('glb bytes', bytes.length);
+} catch (e) { out.error = String(e && e.stack || e); }
+window.__out = out;
+document.title = 'done';
+</script></body></html>
