@@ -32,8 +32,13 @@ html, body {
     radial-gradient(ellipse at 50% 35%, rgba(120, 20, 14, 0.18), transparent 60%),
     radial-gradient(ellipse at 50% 120%, rgba(30, 50, 45, 0.35), transparent 60%),
     var(--bg);
+  overflow-x: hidden;
   overflow-y: auto;
+  /* 內容比畫面高時從上面開始排、可以捲動（置中會把上半部切掉） */
+  align-items: flex-start;
+  justify-content: flex-start;
 }
+#menu > .menu-inner { margin: auto; }
 #menu::before, #loading::before, #intro::before {
   content: ""; position: absolute; inset: -50%; pointer-events: none; opacity: 0.09;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
@@ -251,3 +256,9 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 .mp-status { color: #e0645f; min-height: 1em; }
 .mp-status:empty { display: none; }
 .mp-note { opacity: 0.55; }
+/* 筆電螢幕：選單項目變多了，省下標語的空間讓整個選單放得進一個畫面 */
+@media (max-height: 820px) {
+  .pitch { display: none; }
+  .title { font-size: clamp(48px, 13vh, 110px); }
+  .menu-actions { gap: 9px; }
+}
