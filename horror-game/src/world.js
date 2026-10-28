@@ -614,11 +614,14 @@ export class World {
     g.position.set(f.x, 0, f.z);
     g.rotation.y = f.rot;
     const sw = w - 0.12;
+    // 階梯邊緣的夜光防滑條（逃生梯常見的螢光綠）：沒開手電筒也看得出樓梯在哪
+    if (!this.glowStripMat) this.glowStripMat = new THREE.MeshStandardMaterial({ color: 0x1a3a22, emissive: 0x4dff88, emissiveIntensity: 0.55, roughness: 0.8 });
+    const strip = this.glowStripMat;
     if (f.dir === 'up') {
       for (let k = 0; k < N; k++) {
         const top = (k + 1) * rise, z1 = d / 2 - k * run, z0 = z1 - run;
         P.box(g, M.paintWhite, sw, top, run, 0, top / 2, (z0 + z1) / 2);
-        P.box(g, M.rubber, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03); // 防滑條
+        P.box(g, strip, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03); // 防滑條
       }
       // 兩側的斜扶手與立柱
       for (const sx of [-1, 1]) {
@@ -640,7 +643,7 @@ export class World {
       for (let k = 0; k < N; k++) {
         const top = -(k + 1) * rise, z1 = d / 2 - k * run, z0 = z1 - run;
         P.box(g, M.paintWhite, sw, deep + top, run, 0, (top - deep) / 2, (z0 + z1) / 2);
-        P.box(g, M.rubber, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03);
+        P.box(g, strip, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03);
       }
       // 洞的三面牆（往下延伸）與底
       P.box(g, M.dark, 0.06, deep, d, -w / 2 + 0.03, -deep / 2, 0);
@@ -648,6 +651,7 @@ export class World {
       P.box(g, M.dark, w, deep, 0.06, 0, -deep / 2, -d / 2 + 0.03);
       // 洞口邊緣的黃黑警示條
       P.box(g, M.hazard, w, 0.012, 0.1, 0, 0.006, d / 2 + 0.05);
+      P.box(g, strip, w, 0.014, 0.03, 0, 0.007, d / 2 + 0.115);
       // 欄杆：左右與後面，正面是樓梯口
       for (const sx of [-1, 1]) {
         const x = sx * (w / 2 - 0.02);
