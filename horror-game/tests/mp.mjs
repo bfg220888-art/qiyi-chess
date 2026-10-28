@@ -91,7 +91,14 @@ try {
   check(bats.filter((b) => b > 0.5).length === 1, `item taken once (batteries ${bats.map((b) => b.toFixed(2))})`);
 
   // 保險絲
+  // 保險絲：沒撿就插不進去（房主會拒絕），撿了才算
   await clients[0].evaluate(() => { const g = window.__SW.game; g.player.fuses = 1; g.useFusebox(); });
+  await host.waitForTimeout(800);
+  check(await host.evaluate(() => window.__SW.game.fusesInserted === 0), 'fake fuse refused');
+  const f0 = await host.evaluate(() => window.__SW.game.lv.items.findIndex((it) => it.kind === 'fuse' && !it.taken));
+  await clients[0].evaluate((i) => { const g = window.__SW.game; g.mpRequestPick(g.lv.items[i]); }, f0);
+  await until(clients[0], () => window.__SW.game.player.fuses === 1);
+  await clients[0].evaluate(() => window.__SW.game.useFusebox());
   for (const p of pages) await until(p, () => window.__SW.game.fusesInserted === 1);
   check(true, 'fuse count sync');
 
@@ -103,6 +110,16 @@ try {
   log('ghost', JSON.stringify(gp.map((g) => [g[0].toFixed(1), g[1].toFixed(1), g[2]])));
   check(gp.every((g) => Math.hypot(g[0] - gp[0][0], g[1] - gp[0][1]) < 1.5), 'ghost position sync');
 
+  // 玩家 2 撿起一個保險絲，等一下被抓走時它要回到原處
+  const fuseI = await host.evaluate(() => window.__SW.game.lv.items.findIndex((it) => it.kind === 'fuse' && !it.taken));
+  await clients[0].evaluate((i) => { const g = window.__SW.game; g.mpRequestPick(g.lv.items[i]); }, fuseI);
+  for (const p of pages) await until(p, (i) => window.__SW.game.lv.items[i].taken, fuseI);
+  check(await clients[0].evaluate(() => window.__SW.game.player.fuses === 1), 'fuse picked by player 2');
+  // 惡意資料：角度給超大的數字不能讓房主卡死
+  await clients[0].evaluate(() => window.__SW.mp.net.broadcast({ t: 'st', x: 1e300, z: 'a', y: 1e300, p: NaN, a: 'x', v: -5 }));
+  await host.waitForTimeout(500);
+  check(await host.evaluate(() => { const g = window.__SW.game; return [...g.remotes.values()].every((r) => Number.isFinite(r.yaw) && Number.isFinite(r.pos.x)); }), 'bad state is sanitized');
+
   // 被抓：房主的女鬼抓到玩家 2 → 玩家 2 看到跳嚇然後觀戰
   const s1 = slots[1];
   await host.evaluate((s) => { const g = window.__SW.game; g.onCaught(false, g.remotes.get(s)); }, s1);
@@ -112,6 +129,8 @@ try {
   await until(clients[0], () => window.__SW.game.mpStatus === 1, null, 15000);
   await until(host, (s) => window.__SW.game.remotes.get(s).a === 1, s1);
   check(true, 'catch → dead → spectating');
+  for (const p of pages) await until(p, (i) => !window.__SW.game.lv.items[i].taken, fuseI);
+  check(true, 'dropped fuse respawned for everyone');
   const spec = await clients[0].evaluate(() => window.__SW.game.spectate);
   check(spec >= 0 || N === 2, `spectating slot ${spec}`);
 

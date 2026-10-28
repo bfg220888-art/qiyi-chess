@@ -7,6 +7,8 @@ import { sightClear } from './nav.js';
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
 
+const NET_STATES = new Set(['dormant', 'wander', 'investigate', 'search', 'chase', 'stunned', 'kill']);
+
 export class GhostModel {
   constructor(tf, M) {
     this.root = new THREE.Group();
@@ -602,8 +604,12 @@ export class Ghost {
     };
   }
   applyNet(m) {
+    if (![m.x, m.z, m.y].every(Number.isFinite) || !NET_STATES.has(m.s)) return;
     const first = !this.net;
     this.net = m;
+    // 房主那邊瞬間移動（防卡住的傳送）：直接跳過去，不要滑過牆
+    const far = Math.hypot(m.x - this.pos.x, m.z - this.pos.z) > 3;
+    if (far) { this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
     if (m.s !== this.state) {
       const prev = this.state;
       // 從消失的狀態現身：直接出現在新位置

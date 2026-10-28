@@ -16,7 +16,9 @@ export function normalizeCode(s) {
 }
 
 function peerOptions() {
-  const q = new URLSearchParams(location.search).get('peer');
+  // 只有在本機開發 / 測試時才允許改用別的配對伺服器（避免被惡意連結導到別人的伺服器）
+  const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  const q = local ? new URLSearchParams(location.search).get('peer') : null;
   if (q) {
     const [host, port] = q.split(':');
     return { host, port: Number(port) || 9000, path: '/', secure: false, debug: 0, config: { iceServers: [] } };
@@ -62,9 +64,11 @@ export class Net {
 
   attachPeerErrors() {
     this.peer.on('error', (e) => this.emit('error', e));
-    this.peer.on('disconnected', () => {
+    const p = this.peer;
+    p.on('disconnected', () => {
       // 和配對伺服器斷線不影響已建立的點對點連線；試著重連，讓之後的人還能加入
-      try { if (!this.peer.destroyed) this.peer.reconnect(); } catch (e) { /* 忽略 */ }
+      // （自己關閉時 PeerJS 也會先觸發這個事件，那時不能重連）
+      try { if (this.peer === p && !this.closing && !p.destroyed) p.reconnect(); } catch (e) { /* 忽略 */ }
     });
   }
 
@@ -125,6 +129,7 @@ export class Net {
   kick(id) { const c = this.conns.get(id); if (c) c.close(); }
 
   close() {
+    this.closing = true;
     for (const c of this.conns.values()) { try { c.close(); } catch (e) { /* 已關閉 */ } }
     this.conns.clear();
     if (this.peer) { try { this.peer.destroy(); } catch (e) { /* 已關閉 */ } }

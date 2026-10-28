@@ -320,6 +320,8 @@ class App {
     $('btnMpJoin').addEventListener('click', join);
     $('mpCode').addEventListener('keydown', (e) => { if (e.code === 'Enter') { e.stopPropagation(); join(); } });
     $('btnMpLeave').addEventListener('click', () => { mp.leave(); this.renderLobby(); });
+    // 等待其他玩家時可以放棄、離開房間
+    $('loadCancel').addEventListener('click', () => { mp.leave(); this.busy = false; this.state = 'menu'; this.toMenu(); this.renderLobby(); });
     $('btnMpStart').addEventListener('click', () => {
       if (!mp.isHost || this.busy) return;
       mp.start({ difficulty: this.settings.difficulty, seed: (Math.random() * 2 ** 31) | 0, theme: this.settings.theme || null });
@@ -363,7 +365,7 @@ class App {
     const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
     if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
     this.mpGo = false;
-    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : undefined, { difficulty: diff });
+    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff });
   }
   mpBegin() {
     this.mpGo = true;
@@ -448,6 +450,7 @@ class App {
     const begin = () => {
       if (this.game !== game) return;
       $('loading').hidden = true;
+      $('loadCancel').hidden = true;
       this.audio.resume();
       this.state = 'playing';
       this.paused = false;
@@ -471,6 +474,7 @@ class App {
       else {
         this.pendingBegin = () => { this.busy = true; begin(); };
         $('loading').hidden = false;
+        $('loadCancel').hidden = false;
         $('loadBar').style.width = '100%';
         document.querySelector('.load-title').textContent = '等待其他玩家載入……';
         this.mp.localReady();
@@ -546,6 +550,9 @@ class App {
   }
   onGameOver() {
     this.state = 'over';
+    this.paused = false;
+    $('pause').hidden = true;
+    $('loadCancel').hidden = true;
     const mpg = !!(this.game && this.game.mp);
     $('btnRetry').hidden = mpg;
     $('btnNew').hidden = mpg;

@@ -16,7 +16,8 @@ import { makeFallbackAvatar } from './mp.js';
 import { loadPlayerAssets, makePlayerModel } from './player-model.js';
 import { THEMES, resolveTheme, themeTitle } from './themes.js';
 
-const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+// 分頁在背景時 requestAnimationFrame 不會觸發：改用計時器，多人時房主切到背景也能載入完
+const nextFrame = () => new Promise((r) => (document.hidden ? setTimeout(r, 0) : requestAnimationFrame(() => r())));
 
 export class Game {
   constructor(app, opts) {
@@ -568,7 +569,7 @@ export class Game {
         }, 2500);
       } else if (this.fusesInserted === 2) {
         this.ui.subtitle('只剩最後一個了。她越來越焦躁。', 4);
-        this.director.trigger('writing');
+        if (!this.mp || this.mp.isHost) this.director.trigger('writing');
       }
     }, 900);
     if (this.fusesInserted >= 3) this.startEscape();
@@ -918,15 +919,14 @@ export class Game {
   }
 
   mpApplyState(slot, s) {
-    if (slot === this.mp.mySlot) return;
+    if (slot === this.mp.mySlot || !this.mp.players.some((p) => p.slot === slot)) return;
     if (!this.remotes.has(slot)) this.mpAddRemote(slot);
     const r = this.remotes.get(slot);
-    if (!Number.isFinite(s.x) || !Number.isFinite(s.z)) return;
-    r.tx = s.x; r.tz = s.z; r.ty = s.y || 0; r.tp = s.p || 0;
+    r.tx = s.x; r.tz = s.z; r.ty = s.y; r.tp = s.p;
     if (!r.got) { r.got = true; r.pos.x = s.x; r.pos.z = s.z; r.yaw = r.ty; }
-    r.flashOn = !!s.f; r.crouching = !!s.c; r.holdingBreath = !!s.hb; r.speed = s.v || 0;
-    r.sanity = Number.isFinite(s.sa) ? s.sa : 1;
-    const h = Number.isInteger(s.h) ? s.h : -1;
+    r.flashOn = !!s.f; r.crouching = !!s.c; r.holdingBreath = !!s.hb; r.speed = s.v;
+    r.sanity = s.sa;
+    const h = s.h;
     if (h !== r.h) {
       // 別人進出鐵櫃：櫃門開一下再關上
       const l = this.lv.lockers[h >= 0 ? h : r.h];
@@ -939,12 +939,21 @@ export class Game {
     }
     r.hiding = h >= 0 ? this.lv.lockers[h] || null : null;
     r.dying = !!s.b;
-    if (s.a !== r.a) {
+    if (s.a !== r.a && r.a === 0) {
       const name = this.mp.slotName(slot);
       if (s.a === 1) this.ui.subtitle(`${name} 被她帶走了。`, 4);
       else if (s.a === 2) this.ui.subtitle(`${name} 逃出去了。`, 4);
       r.a = s.a;
+      if (this.mp.isHost) this.mp.dropFuses(slot);
     }
+  }
+
+  // 人物的網格顯示 / 隱藏（燈要一直留在場景裡：燈的數量一變，所有材質都得重新編譯，會卡一下）
+  mpSetBody(r, v) {
+    if (r.bodyShown === v) return;
+    r.bodyShown = v;
+    if (!r.meshes) { r.meshes = []; r.av.root.traverse((o) => { if (o.isMesh || o.isSprite) r.meshes.push(o); }); }
+    for (const m of r.meshes) m.visible = v;
   }
 
   // 其他玩家的人物、手電筒、腳步聲
@@ -959,18 +968,18 @@ export class Game {
       const eye = r.crouching ? 1.0 : 1.6;
       r.pos.y = eye;
       r.camera.position.set(r.pos.x, eye, r.pos.z);
-      const gone = r.a !== 0;
+      const present = r.a === 0 && !r.hiding;
       const root = r.av.root;
-      root.visible = !gone && !r.hiding;
+      this.mpSetBody(r, present && this.spectate !== r.slot);
       root.position.set(r.pos.x, 0, r.pos.z);
       root.rotation.y = r.yaw + Math.PI;
-      if (root.visible) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false, pitch: r.pitch });
+      if (present) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false, pitch: r.pitch });
       // 手電筒
-      const on = r.flashOn && root.visible;
+      const on = r.flashOn && present;
       r.light.intensity = on ? 22 : 0;
       if (r.av.setFlashlight) r.av.setFlashlight(on);
       // 腳步聲
-      if (root.visible && r.speed > 0.6) {
+      if (present && r.speed > 0.6) {
         r.stepT -= dt * (r.speed > 4 ? 2.6 : r.crouching ? 1.1 : 1.8);
         if (r.stepT <= 0) {
           r.stepT = 1;
@@ -1017,15 +1026,16 @@ export class Game {
 
   mpApplyDoor(m) {
     const d = Number.isInteger(m.i) ? this.lv.doors[m.i] : null;
-    if (!d || !Number.isFinite(m.tg)) return;
-    m.tg = Math.max(-1.7, Math.min(1.7, m.tg));
+    if (!d || !Number.isFinite(m.tg) || !Number.isFinite(m.sp)) return null;
+    m = { t: 'door', i: m.i, tg: Math.max(-1.7, Math.min(1.7, m.tg)), sp: Math.max(0.5, Math.min(12, m.sp)) };
     const was = d.target;
     this.mpApplying = true;
-    this.world.setDoor(d, m.tg, Number.isFinite(m.sp) ? m.sp : 2.6);
+    this.world.setDoor(d, m.tg, m.sp);
     this.mpApplying = false;
     const pos = { x: d.x, y: 1.2, z: d.z };
     if (m.tg > was) this.audio.play(m.sp >= 7 ? 'doorBang' : 'doorOpen', { pos });
     else if (m.tg < was) this.audio.play(m.sp >= 10 ? 'doorSlam' : 'doorClose', { pos });
+    return m;
   }
 
   // 撿道具：先問房主，房主確定沒人搶先才給
@@ -1041,20 +1051,39 @@ export class Game {
   mpHostPick(i, slot) {
     const it = Number.isInteger(i) ? this.lv.items[i] : null;
     if (!it || it.taken) return;
+    const r = this.remotes.get(slot);
+    if (slot === this.mp.mySlot ? this.mpStatus !== 0 || this.dying : !r || r.a !== 0) return;
+    if (it.kind === 'fuse') this.mp.carry(slot, i);
     this.mp.send({ t: 'took', i, by: slot });
     this.mpTook(i, slot);
   }
   mpTook(i, by) {
     const it = Number.isInteger(i) ? this.lv.items[i] : null;
     if (!it || it.taken) return;
-    if (by === this.mp.mySlot) { it.pending = false; this.pickup(it); return; }
+    if (by === this.mp.mySlot) {
+      it.pending = false;
+      if (this.mpStatus === 0 && !this.dying) { this.pickup(it); return; }
+    }
     this.world.removeItem(it);
     if (it.kind === 'fuse') this.ui.hint(`${this.mp.slotName(by)} 撿到了一個保險絲。`, 2.5);
   }
 
+  // 帶著保險絲的人被抓走或離開：保險絲回到原本的位置
+  mpRespawnItem(i) {
+    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+    if (!it || !it.taken || !it.mesh) return;
+    const W = this.world;
+    it.taken = false;
+    it.pending = false;
+    W.root.add(it.mesh);
+    if (!W.interactables.includes(it.mesh)) W.interactables.push(it.mesh);
+    const k = W.removed.indexOf(it.mesh);
+    if (k >= 0) W.removed.splice(k, 1);
+  }
+
   // 保險絲：房主統一計數，避免兩人同時插而重複
   mpHostFuse(slot) {
-    if (this.fusesInserted >= 3) return;
+    if (this.fusesInserted >= 3 || !this.mp.useCarried(slot)) return;
     const n = this.fusesInserted + 1;
     this.mp.send({ t: 'fuses', n, by: slot });
     this.mpApplyFuse(n, slot);
@@ -1092,7 +1121,7 @@ export class Game {
     if (this.mpStatus !== 0) return;
     this.mpStatus = 1;
     this.mpSpectateBegin('你被她帶走了……');
-    if (this.mp.isHost) { this.mpGhostRetreat(0.2); this.mp.checkEnd(); }
+    if (this.mp.isHost) { this.mp.dropFuses(this.mp.mySlot); this.mpGhostRetreat(0.2); this.mp.checkEnd(); }
   }
   // 自己逃出去了
   mpEscaped() {
@@ -1105,6 +1134,7 @@ export class Game {
   mpSpectateBegin(text) {
     const P = this.player;
     this.dying = null;
+    P.fuses = 0;
     this.post.u.uFade.value = 0;
     this.post.u.uRed.value = 0;
     this.post.u.uDistort.value = 0;
@@ -1131,7 +1161,10 @@ export class Game {
 
   updateSpectator(dt, inp) {
     const P = this.player;
-    if (inp.interact) this.mpNextSpectate();
+    for (const a of inp.actions) {
+      if (a === 'interact' || a === 'tap') this.mpNextSpectate();
+      else if (a === 'pause') { this.app.pause(); return; }
+    }
     let r = this.remotes.get(this.spectate);
     if (!r || r.a !== 0) { this.mpNextSpectate(); r = this.remotes.get(this.spectate); }
     if (r) {
@@ -1148,7 +1181,6 @@ export class Game {
     if (this.mp.isHost) this.director.update(dt);
     this.world.update(dt, P.camera, false);
     this.mpUpdateRemotes(dt);
-    if (r) r.av.root.visible = false;
     this.mp.tick(dt);
     this.ghostDist = r && this.ghost.state !== 'dormant' ? Math.hypot(this.ghost.pos.x - r.pos.x, this.ghost.pos.z - r.pos.z) : 99;
     this.updateMood(dt);
@@ -1164,12 +1196,12 @@ export class Game {
     this.audio.setMusic(anyOut ? 'win' : 'lose');
     this.input.exitLock();
     this.ui.prompt('');
-    const rows = res.map((p) => [this.mp.slotName(p.s) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
+    const rows = res.map((p) => [(p.n || this.mp.slotName(p.s)) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
     rows.push(...this.statRows());
     const text = anyOut
       ? (res.every((p) => p.a === 2) ? '所有人都活著走出了大門。身後的燈一盞一盞熄滅。' : '有人逃了出來。被留下的人，再也沒有出來過。')
       : '沒有人走出那扇門。隔天早上，警衛只找到幾台還在錄影的攝影機。';
-    this.ui.showEnd(anyOut, rows, text);
+    this.ui.showEnd(this.mpStatus === 2, rows, text);
     this.app.onGameOver(this.mpStatus === 2);
   }
 
