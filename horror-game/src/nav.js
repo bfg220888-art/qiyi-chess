@@ -1,5 +1,5 @@
 // 碰撞、尋路（A*）與視線判定。純邏輯，可在 Node 測試。
-import { CELL, NAV_RES, DOOR_W, GATE_W } from './config.js';
+import { CELL, NAV_RES, DOOR_W, GATE_W, GHOST_R } from './config.js';
 import { E, VOID, FURN } from './level.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -445,6 +445,14 @@ export function validateLevel(lv, playerRadius = 0.3) {
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
     if (!near(room.cx, room.cz, CELL * 0.75 * Math.max(room.w, room.h))) return `room ${room.id} unreachable`;
+  }
+  // 鬼魂的尋路網格比較粗：家具擠在一起時她可能進不了房間，這種樓層重新生成
+  const gnav = new NavGrid(lv, GHOST_R, { ghost: true });
+  const gseen = gnav.reachable(lv.spawn.x, lv.spawn.z);
+  for (const room of lv.rooms) {
+    if (room.id === 0) continue;
+    const k = gnav.nearestFree(room.cx, room.cz);
+    if (k < 0 || !gseen[k]) return `room ${room.id} unreachable for ghost`;
   }
   return null;
 }

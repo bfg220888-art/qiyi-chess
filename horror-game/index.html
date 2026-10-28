@@ -26,12 +26,22 @@
     <p class="pitch">直播訊號在你踏進大廳的那一刻中斷，身後的大門也鎖上了。<br>找到三個保險絲、恢復電力，從大門逃出去。<br>她一直在哼歌。歌聲停下來的時候，快跑。</p>
     <div class="menu-actions">
       <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
+      <p class="seg-label">難度</p>
       <div class="seg" role="radiogroup" aria-label="難度" id="diffSeg">
         <button type="button" role="radio" data-diff="easy">簡單</button>
         <button type="button" role="radio" data-diff="normal" aria-checked="true">普通</button>
         <button type="button" role="radio" data-diff="nightmare">惡夢</button>
       </div>
       <p id="diffDesc" class="diff-desc"></p>
+      <p class="seg-label">地圖</p>
+      <div class="seg seg-map" role="radiogroup" aria-label="地圖" id="themeSeg">
+        <button type="button" role="radio" data-theme="random" aria-checked="true">隨機</button>
+        <button type="button" role="radio" data-theme="ward">病房</button>
+        <button type="button" role="radio" data-theme="morgue">太平間</button>
+        <button type="button" role="radio" data-theme="pediatric">兒童</button>
+        <button type="button" role="radio" data-theme="psych">精神科</button>
+      </div>
+      <p id="themeDesc" class="diff-desc"></p>
       <div class="menu-row">
         <button id="btnHelp" class="btn ghost" type="button">操作說明</button>
         <button id="btnSettings" class="btn ghost" type="button">設定</button>
@@ -45,6 +55,7 @@
 <!-- 載入 -->
 <section id="loading" class="screen" hidden>
   <div class="load-inner">
+    <p id="loadFloor" class="load-floor"></p>
     <p class="load-title">正在生成醫院……</p>
     <div class="bar"><span id="loadBar"></span></div>
     <p id="loadTip" class="load-tip"></p>
@@ -61,7 +72,7 @@
 <div id="hud" hidden>
   <div class="frame tl"></div><div class="frame tr"></div><div class="frame bl"></div><div class="frame br"></div>
   <div class="hud-tl">
-    <div class="rec"><span class="dot"></span>REC <span id="timecode">00:00:00</span></div>
+    <div class="rec"><span class="dot"></span>REC <span id="timecode">00:00:00</span><span id="floorTag" class="floor-tag"></span></div>
     <div id="objective" class="objective"></div>
   </div>
   <div class="hud-tr">

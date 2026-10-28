@@ -104,8 +104,11 @@ export function makeCorpse(assets, name, mirror) {
 // 擺到病床或推床上（沿著床的方向挪一點，讓頭和腳都在床頭板與床尾板之間）
 export function placeCorpse(c, f) {
   const gurney = f.kind === 'gurney';
-  const shift = corpseShift(c.userData.corpse, f.kind);
-  c.position.set(f.x + Math.sin(f.rot) * shift, gurney ? 0.895 : 0.64, f.z + Math.cos(f.rot) * shift);
+  let shift = corpseShift(c.userData.corpse, f.kind), y = gurney ? 0.895 : 0.64;
+  // 解剖台比病床高；冷藏抽屜上的屍體頭還在櫃子裡、腳伸出來
+  if (f.kind === 'autopsy') y = 0.955;
+  else if (f.kind === 'tray') { y = f.trayTop + 0.01; shift = -0.42; }
+  c.position.set(f.x + Math.sin(f.rot) * shift, y, f.z + Math.cos(f.rot) * shift);
   c.rotation.y = f.rot + (gurney ? Math.PI / 2 : 0);
   c.userData.furn = f;
 }
