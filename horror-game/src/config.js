@@ -19,6 +19,9 @@ export const QUALITY = {
   high:   { label: '高', maxDpr: 2,   scale: 1,   tex: 1024, propTex: 1024, shadow: 2048, bloom: true, msaa: 4, lights: 6, dust: true,  aniso: 8 },
 };
 
+// 多人連線的樓層數依難度：簡單 1 層、普通 2 層、惡夢 3 層（單人固定 1 層）
+export const MP_FLOORS = { easy: 1, normal: 2, nightmare: 3 };
+
 export const DIFFICULTY = {
   easy: {
     label: '簡單', desc: '鬼魂較慢、資源較多，可以被抓到一次。',

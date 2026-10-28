@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CELL, GHOST_R, DIFFICULTY, WALL_H } from './config.js';
-import { generateLevel, NOTES, E } from './level.js';
+import { generateHospital, NOTES, E, MAX_FLOORS } from './level.js';
 import { Collision, NavGrid, validateLevel, sightClear, wallsBetween } from './nav.js';
 import { TextureFactory } from './textures.js';
 import { World } from './world.js';
@@ -35,6 +35,12 @@ export class Game {
     this.theme = resolveTheme(opts.theme, this.seed);
     this.themeInfo = THEMES[this.theme];
     this.floorTitle = themeTitle(this.theme);
+    // 樓層數：單人預設 1 層（網址 ?floors=N 可以測試多層）；多人依難度 1～3 層
+    this.floorCount = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(opts.floors)) || 1));
+    this.floorIdx = 0;
+    this.floors = [];
+    this.stairT = null;
+    this.visited = new Set([0]);
     this.time = 0;
     this.fusesInserted = 0;
     this.phase = 'explore';
@@ -63,8 +69,17 @@ export class Game {
   async build(progress) {
     progress(0.05, '正在畫出樓層平面圖……');
     await nextFrame();
-    this.lv = generateLevel(this.seed, this.diff, (l) => validateLevel(l), this.theme);
-    this.explored = new Uint8Array(this.lv.W * this.lv.H);
+    // 每一層：關卡、世界（three.js 群組）、碰撞、她的尋路網格、地圖探索紀錄
+    const lvs = generateHospital(this.seed, this.diff, (l) => validateLevel(l), this.theme, this.floorCount);
+    this.floors = lvs.map((lv, i) => ({
+      index: i, lv, theme: lv.theme, info: THEMES[lv.theme], title: themeTitle(lv.theme), ord: lv.plan.ord,
+      explored: new Uint8Array(lv.W * lv.H), world: null, collision: null, ghostNav: null,
+    }));
+    this.floorCount = this.floors.length;
+    for (const F of this.floors) for (const it of F.lv.items) it.floor = F.index;
+    this.ground = this.floors[0];
+    this.genFloor = this.floors.find((F) => F.lv.generatorRoom) || this.ground;
+    this.setFloor(0);
     progress(0.15, '正在弄髒牆壁……');
     await nextFrame();
     this.scene = new THREE.Scene();
@@ -85,30 +100,41 @@ export class Game {
     progress(0.18, '正在下載照片材質……');
     const photos = await this.app.photoAssets();
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
-    // 只畫這一層用得到的牆面與地板貼圖
-    const look = this.themeInfo.look;
+    // 只畫用得到的牆面與地板貼圖（每一層的主題都要）
     const wallTex = { paint: 'wall', tileWall: 'tileWall', wallpaper: 'wallpaper', padded: 'padded' };
     const floorTex = { vinyl: 'floorVinyl', lobby: 'floorVinyl', tile: 'floorTile', kidFloor: 'kidFloor', padded: 'padded' };
-    for (const k of new Set(Object.values(look.wall))) this.tf[wallTex[k]]();
-    progress(0.25, '正在鋪地磚……'); await nextFrame();
-    for (const k of new Set(Object.values(look.floor))) this.tf[floorTex[k]]();
-    progress(0.35, '正在掛上天花板……'); await nextFrame();
-    this.tf.ceiling(); this.tf.door(); this.tf.lockerDoor(); progress(0.45, '正在搬進病床……'); await nextFrame();
-    this.tf.paintedMetal(); this.tf.steel(); this.tf.fabric(); this.tf.wood(); this.tf.grime(); progress(0.55, '正在灑上血跡……'); await nextFrame();
-    this.world = new World(this.renderer, this.scene, this.lv, this.tf, this.quality);
-    this.world.corpses = await corpseP;
-    this.world.build();
+    const looks = this.floors.map((F) => F.info.look);
+    for (const k of new Set(looks.flatMap((l) => Object.values(l.wall)))) this.tf[wallTex[k]]();
+    progress(0.22, '正在鋪地磚……'); await nextFrame();
+    for (const k of new Set(looks.flatMap((l) => Object.values(l.floor)))) this.tf[floorTex[k]]();
+    progress(0.28, '正在掛上天花板……'); await nextFrame();
+    this.tf.ceiling(); this.tf.door(); this.tf.lockerDoor(); progress(0.33, '正在搬進病床……'); await nextFrame();
+    this.tf.paintedMetal(); this.tf.steel(); this.tf.fabric(); this.tf.wood(); this.tf.grime(); progress(0.38, '正在灑上血跡……'); await nextFrame();
+    const corpses = await corpseP;
+    const n = this.floorCount, G = this.ground, GF = this.genFloor;
+    const boardNote = n > 1 && GF !== G ? `發電機房在 ${GF.title}（走樓梯${GF.ord > G.ord ? '上樓' : '下樓'}）` : '';
+    for (const F of this.floors) {
+      const k = F.index;
+      progress(0.4 + 0.3 * (k / n), n > 1 ? `正在佈置 ${F.title}……（${k + 1}/${n}）` : '正在灑上血跡……');
+      await nextFrame();
+      const W = new World(this.renderer, this.scene, F.lv, this.tf, this.quality, { floorIndex: k, boardNote: k === 0 ? boardNote : '' });
+      W.corpses = corpses;
+      W.build();
+      const C = new Collision(F.lv);
+      for (const d of F.lv.doors) C.dynamic.push(d);
+      if (F.lv.gate) C.dynamic.push(F.lv.gate);
+      for (const f of W.dynamicProps) {
+        C.removeStaticFurniture(f);
+        C.dynamic.push({ getBox: () => f.box });
+      }
+      W.propBlocked = (x, z) => C.overlapsStatic(x, z, 0.4) || C.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !W.dynamicProps.some((f) => f.box === b); });
+      F.world = W;
+      F.collision = C;
+      F.ghostNav = new NavGrid(F.lv, GHOST_R, { ghost: true });
+    }
     progress(0.7, '她正在醒來……');
     await nextFrame();
-    this.collision = new Collision(this.lv);
-    for (const d of this.lv.doors) this.collision.dynamic.push(d);
-    this.collision.dynamic.push(this.lv.gate);
-    for (const f of this.world.dynamicProps) {
-      this.collision.removeStaticFurniture(f);
-      this.collision.dynamic.push({ getBox: () => f.box });
-    }
-    this.ghostNav = new NavGrid(this.lv, GHOST_R, { ghost: true });
-    this.world.propBlocked = (x, z) => this.collision.overlapsStatic(x, z, 0.4) || this.collision.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !this.world.dynamicProps.some((f) => f.box === b); });
+    this.setFloor(0);
     this.player = new Player(this);
     if (this.mp) {
       progress(0.71, '正在接上其他玩家……');
@@ -144,6 +170,83 @@ export class Game {
     if (this.mp) this.mp.attach(this);
   }
 
+  // =====================================================================
+  // 多層樓：切換「目前這一層」。this.lv / world / collision / ghostNav 永遠指向玩家（或觀戰對象）所在的樓層，
+  // 只有這一層的 World 會被畫出來
+  setFloor(i) {
+    const F = this.floors[i];
+    if (!F) return;
+    this.floorIdx = i;
+    this.F = F;
+    this.lv = F.lv;
+    this.world = F.world;
+    this.collision = F.collision;
+    this.ghostNav = F.ghostNav;
+    this.explored = F.explored;
+    this.themeInfo = F.info;
+    this.floorTitle = F.title;
+    for (const o of this.floors) if (o.world) o.world.root.visible = o === F;
+    if (this.scene && this.scene.fog) { this.scene.fog.color.set(F.info.look.fog); this.scene.fog.density = F.info.look.fogDensity; }
+    if (this.player) this.player.floor = i;
+    if (F.world) F.world.poolTimer = 0;
+    this.lastCell = -1;
+    this.visited.add(i);
+    if (this.ui.game === this) this.ui.setFloor(F.title);
+  }
+
+  // 走樓梯：畫面很快地暗下來、樓梯上的腳步聲、換到另一層對應的樓梯口、再亮起來（不到一秒）
+  useStairs(s) {
+    const P = this.player;
+    if (this.stairT || !s || P.hiding || P.hideAnim || this.dying || !this.floors[s.to]) return;
+    this.stairT = { t: 0, s, steps: 0, done: false };
+    P.locked = true;
+    P.vel.set(0, 0);
+    this.target = null;
+    this.ui.prompt('');
+    this.ui.fade(1, 0.25);
+    this.makeNoise(s.use.x, s.use.z, 7, 'stairs');
+  }
+  updateStairs(dt) {
+    const st = this.stairT, P = this.player;
+    st.t += dt;
+    while (st.steps < 5 && st.t >= 0.03 + st.steps * 0.13) { st.steps++; this.audio.play('footstep', { surface: 'tile' }); }
+    if (!st.done && st.t >= 0.3) {
+      st.done = true;
+      this.arriveFloor(st.s);
+      this.ui.fade(0, 0.4);
+    }
+    if (st.t >= 0.72) {
+      this.stairT = null;
+      if (!this.ui.noteOpen) P.locked = false;
+    }
+  }
+  arriveFloor(s) {
+    const from = this.floorIdx, P = this.player, dest = this.floors[s.to];
+    const back = dest.lv.stairs.find((x) => x.to === from) || dest.lv.stairs[0];
+    this.setFloor(s.to);
+    P.pos.x = back.arrive.x; P.pos.z = back.arrive.z;
+    P.yaw = back.arrive.yaw; P.pitch = 0;
+    P.vel.set(0, 0);
+    P.applyCamera(0, 0);
+    // 上一層留下的東西：飛到一半的瓶子、幻影、電話鈴
+    for (const p of this.projectiles) { this.scene.remove(p.mesh); p.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); }
+    this.projectiles.length = 0;
+    this.director.vanishApparition(false);
+    if (this.director.phoneRinging) { this.director.phoneRinging = false; this.audio.stopPhone(); }
+    this.buzzFix = null; this.buzzT = 0; this.rainT = 0;
+    this.audio.setBuzz(null, 0);
+    this.markExplored(true);
+    if (this.mapOpen) this.ui.drawMap();
+    this.ui.subtitle(`— ${dest.title} —`, 2.5);
+    this.ui.updateHud();
+    if (this.mp) this.mp.sendT = 0; // 馬上告訴其他人換樓層了
+  }
+  // 玩家所在的樓層完整更新；其他樓層只跑門與鐵櫃的動畫
+  updateWorlds(dt, cam, flashOn) {
+    this.world.update(dt, cam, flashOn);
+    for (const F of this.floors) if (F !== this.F) F.world.updateMechanics(dt);
+  }
+
   resize() {
     const w = innerWidth, h = innerHeight;
     const pr = this.app.pixelRatio();
@@ -165,8 +268,8 @@ export class Game {
     // 開場：身後的大門砰一聲關上
     this.later(() => {
       if (this.over) return;
-      this.audio.play('doorSlam', { pos: { x: this.lv.gate.x, y: 1.2, z: this.lv.gate.z } });
-      this.audio.play('metalClank', { pos: { x: this.lv.gate.x, y: 1, z: this.lv.gate.z } });
+      this.audio.play('doorSlam', { pos: { x: this.ground.lv.gate.x, y: 1.2, z: this.ground.lv.gate.z } });
+      this.audio.play('metalClank', { pos: { x: this.ground.lv.gate.x, y: 1, z: this.ground.lv.gate.z } });
       this.player.shake = 0.8;
       this.ui.subtitle('（大門在身後鎖上了）', 3.5);
     }, 1400);
@@ -195,11 +298,11 @@ export class Game {
     return id;
   }
 
-  // 噪音：會吸引她
-  makeNoise(x, z, radius, kind = '') {
+  // 噪音：會吸引她（只有同一層聽得到）
+  makeNoise(x, z, radius, kind = '', floor = this.floorIdx) {
     if (radius <= 0 || !this.ghost) return;
-    if (this.mp && !this.mp.isHost) { this.mp.send({ t: 'noise', x: +x.toFixed(2), z: +z.toFixed(2), r: radius, k: kind }); return; }
-    this.ghost.hearNoise(x, z, radius, kind);
+    if (this.mp && !this.mp.isHost) { this.mp.send({ t: 'noise', f: floor, x: +x.toFixed(2), z: +z.toFixed(2), r: radius, k: kind }); return; }
+    this.ghost.hearNoise(x, z, radius, kind, floor);
   }
 
   // ---------------------------------------------------------------------
@@ -219,7 +322,7 @@ export class Game {
         continue;
       }
       switch (a) {
-        case 'interact': case 'tap': this.interact(); break;
+        case 'interact': case 'tap': if (!this.stairT) this.interact(); break;
         case 'flashlight': P.toggleFlash(); break;
         case 'camera': P.takePhoto(); break;
         case 'throw': this.throwBottle(); break;
@@ -235,11 +338,12 @@ export class Game {
     if (this.ui.noteOpen) P.locked = true;
 
     P.update(dt, inp);
+    if (this.stairT) this.updateStairs(dt);
     this.updateProjectiles(dt);
     this.ghost.update(dt);
     if (this.over || this.dying) return;
     this.director.update(dt);
-    this.world.update(dt, P.camera, P.flashOn && P.battery > 0 && !P.hiding);
+    this.updateWorlds(dt, P.camera, P.flashOn && P.battery > 0 && !P.hiding);
     // 日光燈電流聲：每 0.25 秒挑一次最近的亮燈，音量每格跟著閃爍
     this.buzzT = (this.buzzT || 0) - dt;
     if (this.buzzT <= 0) {
@@ -258,9 +362,9 @@ export class Game {
     this.markExplored(false);
     if (this.mapOpen && Math.floor(this.time * 4) !== Math.floor((this.time - dt) * 4)) this.ui.drawMap();
 
-    // 她在畫面上嗎？
+    // 她在畫面上嗎？（在別層就當作很遠）
     const gh = this.ghost;
-    this.ghostDist = gh.state === 'dormant' ? 99 : Math.hypot(gh.pos.x - P.pos.x, gh.pos.z - P.pos.z);
+    this.ghostDist = gh.state === 'dormant' || gh.floor !== this.floorIdx ? 99 : Math.hypot(gh.pos.x - P.pos.x, gh.pos.z - P.pos.z);
     this.ghostOnScreen = false;
     if (gh.state !== 'dormant' && this.ghostDist < 18) {
       const v = new THREE.Vector3(gh.pos.x, 1.55, gh.pos.z).project(P.camera);
@@ -275,8 +379,9 @@ export class Game {
       }
     }
 
-    // 逃出大門
-    if (this.lv.gate.open && P.pos.z > this.lv.gate.z + 0.7) { if (this.mp) this.mpEscaped(); else this.win(); return; }
+    // 逃出大門（大門在第 0 層）
+    const gate = this.ground.lv.gate;
+    if (this.floorIdx === 0 && gate.open && P.pos.z > gate.z + 0.7) { if (this.mp) this.mpEscaped(); else this.win(); return; }
     // 進入發電機房
     if (!this.seenGenerator) {
       const room = this.lv.roomAtWorld(P.pos.x, P.pos.z);
@@ -302,7 +407,7 @@ export class Game {
   // 氣氛：心跳、雜訊、追逐配樂、畫面濾鏡
   updateMood(dt) {
     const P = this.player, gh = this.ghost, A = this.audio, u = this.post.u;
-    const chase = gh.state === 'chase' ? 1 : 0;
+    const chase = gh.state === 'chase' && gh.floor === this.floorIdx ? 1 : 0;
     const near = gh.state === 'dormant' ? 0 : Math.max(0, 1 - this.ghostDist / 14);
     const fear = Math.max(chase, near * 0.9, (1 - P.sanity) * 0.55, P.hiding && near > 0.2 ? 0.8 : 0);
     this.fear = (this.fear || 0) + (fear - (this.fear || 0)) * Math.min(1, dt * 2);
@@ -347,7 +452,7 @@ export class Game {
       this.ui.prompt('離開鐵櫃');
       return;
     }
-    if (P.hideAnim) { this.target = null; this.ui.prompt(''); return; }
+    if (P.hideAnim || this.stairT) { this.target = null; this.ui.prompt(''); return; }
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), P.camera);
     const hits = this.raycaster.intersectObjects(this.world.interactables, true);
     let target = null;
@@ -375,6 +480,9 @@ export class Game {
         target = { kind, label: '大門' };
       } else if (kind === 'phone') {
         target = { kind, label: this.director.phoneRinging ? '接電話' : '電話' };
+      } else if (kind === 'stairs') {
+        const st = o.userData.stair, to = st && this.floors[st.to];
+        if (to) target = { kind, stair: st, label: `${st.dir === 'up' ? '上樓' : '下樓'}：${to.title}` };
       }
       if (target) break;
     }
@@ -421,12 +529,16 @@ export class Game {
       case 'phone':
         this.director.answerPhone();
         break;
+      case 'stairs':
+        this.useStairs(t.stair);
+        break;
     }
   }
 
   pickup(it) {
     const P = this.player, A = this.audio;
-    this.world.removeItem(it);
+    const W = (this.floors[it.floor] || this.F).world;
+    W.removeItem(it);
     switch (it.kind) {
       case 'fuse':
         P.fuses++;
@@ -447,8 +559,8 @@ export class Game {
         if (P.bottles >= 3) {
           // 拿不下了：放回去
           it.taken = false;
-          this.world.root.add(it.mesh);
-          this.world.interactables.push(it.mesh);
+          W.root.add(it.mesh);
+          W.interactables.push(it.mesh);
           this.ui.hint('最多只能帶三個瓶子。', 2);
           return;
         }
@@ -464,7 +576,10 @@ export class Game {
       case 'note': {
         A.play('paper');
         this.notesRead.add(it.note);
-        this.ui.showNote(NOTES[it.note]);
+        const note = NOTES[it.note];
+        // 多層樓：維修工的紙條寫的是發電機房在哪一層
+        if (it.note === 1 && this.floorCount > 1) this.ui.showNote({ ...note, body: note.body.replace('發電機房在這層樓最裡面', `發電機房在${this.genFloor.info.board}最裡面`) });
+        else this.ui.showNote(note);
         this.input.exitLock();
         P.locked = true;
         break;
@@ -506,7 +621,7 @@ export class Game {
         this.scene.remove(p.mesh);
         this.projectiles.splice(i, 1);
         this.audio.play('bottleBreak', { pos: { x: at.x, y: at.y, z: at.z } });
-        if (this.mp) this.mp.send({ t: 'sfx', n: 'bottleBreak', x: +at.x.toFixed(2), y: +at.y.toFixed(2), z: +at.z.toFixed(2) });
+        if (this.mp) this.mp.send({ t: 'sfx', f: this.floorIdx, n: 'bottleBreak', x: +at.x.toFixed(2), y: +at.y.toFixed(2), z: +at.z.toFixed(2) });
         this.makeNoise(at.x, at.z, 20, 'bottle');
         p.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
         continue;
@@ -541,10 +656,10 @@ export class Game {
 
   // 插上第 i 個保險絲（多人時由房主決定順序，大家一起套用）
   applyFuse(i) {
-    const A = this.audio, W = this.world;
+    const A = this.audio, W = this.genFloor.world;
     const fb = W.fusebox;
     const pos = fb.getWorldPosition(new THREE.Vector3());
-    A.play('fuseInsert', { pos });
+    if (this.floorIdx === this.genFloor.index) A.play('fuseInsert', { pos });
     // 插槽裡出現保險絲、燈號轉綠
     const sock = fb.userData.sockets[i];
     const fuse = W.props.pickup('fuse');
@@ -560,7 +675,7 @@ export class Game {
     this.later(() => {
       if (this.over) return;
       A.play('powerUp');
-      W.setPower(this.fusesInserted);
+      for (const F of this.floors) F.world.setPower(this.fusesInserted);
       if (this.fusesInserted === 1) {
         this.ui.subtitle('有些燈亮了。遠處傳來一聲尖叫。', 4);
         this.later(() => {
@@ -582,18 +697,22 @@ export class Game {
     this.later(() => {
       if (this.over) return;
       A.setAlarm(true);
-      this.world.setPower(3);
-      for (const f of this.lv.fixtures) if (f.on && Math.random() < 0.4) f.mode = 'flicker';
-      this.ui.subtitle('全部的燈都亮了。大門的電子鎖「喀」地一聲打開——', 4);
-      A.play('gateOpen', { pos: { x: this.lv.gate.x, y: 1.2, z: this.lv.gate.z } });
-      this.world.openGate();
-      this.collision.allowOutside = true;
+      const G = this.ground, gate = G.lv.gate;
+      for (const F of this.floors) {
+        F.world.setPower(3);
+        for (const f of F.lv.fixtures) if (f.on && Math.random() < 0.4) f.mode = 'flicker';
+      }
+      this.ui.subtitle(this.floorIdx === 0 ? '全部的燈都亮了。大門的電子鎖「喀」地一聲打開——' : `全部的燈都亮了。${G.title}的大門電子鎖「喀」地一聲打開——`, 4);
+      if (this.floorIdx === 0) A.play('gateOpen', { pos: { x: gate.x, y: 1.2, z: gate.z } });
+      G.world.openGate();
+      G.collision.allowOutside = true;
       this.ghost.enraged = true;
       this.ghost.aggression = 1.5;
       this.later(() => {
         if (this.over) return;
-        A.play('ghostScream', { pos: this.ghost.state === 'dormant' ? { x: this.player.pos.x + 12, y: 1.6, z: this.player.pos.z } : this.ghost.pos });
-        this.ui.hint('往大門跑，不要回頭！', 4);
+        const gh = this.ghost;
+        A.play('ghostScream', { pos: gh.state === 'dormant' || gh.floor !== this.floorIdx ? { x: this.player.pos.x + 12, y: 1.6, z: this.player.pos.z } : gh.pos });
+        this.ui.hint(this.floorIdx === 0 ? '往大門跑，不要回頭！' : `回到 ${G.title}，往大門跑，不要回頭！`, 4);
         if (this.ghost.state === 'dormant') this.ghost.dormantUntil = this.time + 2;
       }, 2500);
       this.ui.updateHud();
@@ -664,7 +783,7 @@ export class Game {
   updateDying(dt) {
     const d = this.dying, P = this.player, m = this.ghost.model, cam = P.camera, u = this.post.u;
     d.t += dt;
-    this.world.update(dt, cam, false);
+    this.updateWorlds(dt, cam, false);
     const k = Math.min(1, d.t / 0.18);
     let dy = d.targetYaw - d.yaw0;
     while (dy > Math.PI) dy -= Math.PI * 2;
@@ -770,7 +889,7 @@ export class Game {
         return facing ? 2 : 1;
       };
       const gh = this.ghost;
-      const shotHer = Math.max(gh.state !== 'dormant' ? inShot(gh.model, gh.pos.x, gh.pos.z, gh.yaw) : 0,
+      const shotHer = Math.max(gh.state !== 'dormant' && gh.floor === this.floorIdx ? inShot(gh.model, gh.pos.x, gh.pos.z, gh.yaw) : 0,
         D.apparition && D.apparition.visible ? inShot(am, D.apparition.position.x, D.apparition.position.z, D.apparition.rotation.y) : 0);
       // 偶爾（一局最多一次）：照片裡出現一個現場根本不存在的她（用水平方向找位置，確定臉會在照片裡才算數）
       if (!shotHer && !this.photoTrick && this.time > 90 && am && !D.apparition.visible && Math.random() < 0.18) {
@@ -820,6 +939,7 @@ export class Game {
       ['拍到她的臉', `${this.stats.photos} 張`],
       ['躲進鐵櫃', `${this.stats.hides} 次`],
       ['被抓到', `${this.stats.caught} 次`],
+      ...(this.floorCount > 1 ? [['走過的樓層', `${this.visited.size}/${this.floorCount}`]] : []),
     ];
   }
 
@@ -861,12 +981,14 @@ export class Game {
     const sx = lv.spawn.x + Math.cos(lv.spawn.yaw) * off, sz = lv.spawn.z - Math.sin(lv.spawn.yaw) * off;
     if (!this.collision.overlapsStatic(sx, sz, 0.35)) { P.pos.x = sx; P.pos.z = sz; P.camera.position.set(sx, P.camera.position.y, sz); }
     for (const p of mp.players) if (p.slot !== mp.mySlot) this.mpAddRemote(p.slot);
-    // 門被我開關時告訴其他人（收到別人的門就不再轉送）
-    const W = this.world, setDoor = W.setDoor.bind(W);
-    W.setDoor = (d, target, speed = 2.6) => {
-      setDoor(d, target, speed);
-      if (!this.mpApplying) this.mp.send({ t: 'door', i: lv.doors.indexOf(d), tg: target, sp: speed });
-    };
+    // 門被我開關時告訴其他人（收到別人的門就不再轉送）；每一層各自包一次，訊息帶樓層
+    for (const F of this.floors) {
+      const W = F.world, setDoor = W.setDoor.bind(W);
+      W.setDoor = (d, target, speed = 2.6) => {
+        setDoor(d, target, speed);
+        if (!this.mpApplying) this.mp.send({ t: 'door', f: F.index, i: F.lv.doors.indexOf(d), tg: target, sp: speed });
+      };
+    }
   }
 
   mpAddRemote(slot) {
@@ -884,7 +1006,7 @@ export class Game {
     const r = {
       slot, av, light,
       pos: new THREE.Vector3(lv.spawn.x, 1.6, lv.spawn.z), yaw: lv.spawn.yaw, pitch: 0,
-      tx: lv.spawn.x, tz: lv.spawn.z, ty: lv.spawn.yaw, tp: 0,
+      tx: lv.spawn.x, tz: lv.spawn.z, ty: lv.spawn.yaw, tp: 0, floor: 0,
       camera: { position: new THREE.Vector3(lv.spawn.x, 1.6, lv.spawn.z) },
       flashOn: true, crouching: false, holdingBreath: false, sanity: 1, hiding: null, hideAnim: null,
       speed: 0, a: 0, h: -1, stepT: 0, got: false,
@@ -912,7 +1034,7 @@ export class Game {
     const h = P.hiding || (P.hideAnim && P.hideAnim.entering ? P.hideAnim.locker : null);
     return {
       x: +P.pos.x.toFixed(2), z: +P.pos.z.toFixed(2), y: +P.yaw.toFixed(2), p: +P.pitch.toFixed(2),
-      f: P.flashOn && P.battery > 0 ? 1 : 0, h: h ? this.lv.lockers.indexOf(h) : -1,
+      fl: this.floorIdx, f: P.flashOn && P.battery > 0 ? 1 : 0, h: h ? this.lv.lockers.indexOf(h) : -1,
       c: P.crouchNow || P.crouching ? 1 : 0, v: +(P.speed || 0).toFixed(1), a: this.mpStatus,
       hb: P.holdingBreath ? 1 : 0, sa: +P.sanity.toFixed(2), b: this.dying ? 1 : 0,
     };
@@ -922,22 +1044,27 @@ export class Game {
     if (slot === this.mp.mySlot || !this.mp.players.some((p) => p.slot === slot)) return;
     if (!this.remotes.has(slot)) this.mpAddRemote(slot);
     const r = this.remotes.get(slot);
+    const fl = Number.isInteger(s.fl) && s.fl >= 0 && s.fl < this.floors.length ? s.fl : 0;
+    // 換了樓層：直接跳過去，不要從上一層的位置滑過來
+    if (fl !== r.floor) { r.floor = fl; r.pos.x = s.x; r.pos.z = s.z; r.yaw = s.y; }
     r.tx = s.x; r.tz = s.z; r.ty = s.y; r.tp = s.p;
     if (!r.got) { r.got = true; r.pos.x = s.x; r.pos.z = s.z; r.yaw = r.ty; }
     r.flashOn = !!s.f; r.crouching = !!s.c; r.holdingBreath = !!s.hb; r.speed = s.v;
     r.sanity = s.sa;
     const h = s.h;
+    const lockers = this.floors[r.floor].lv.lockers;
     if (h !== r.h) {
-      // 別人進出鐵櫃：櫃門開一下再關上
-      const l = this.lv.lockers[h >= 0 ? h : r.h];
+      // 別人進出鐵櫃：櫃門開一下再關上（聲音只有同一層聽得到）
+      const l = lockers[h >= 0 ? h : r.h];
       if (l) {
-        this.audio.play('lockerOpen', { pos: { x: l.x, y: 1, z: l.z } });
+        const here = () => r.floor === this.floorIdx;
+        if (here()) this.audio.play('lockerOpen', { pos: { x: l.x, y: 1, z: l.z } });
         l.target = 1.7;
-        this.later(() => { l.target = 0; this.audio.play('lockerClose', { pos: { x: l.x, y: 1, z: l.z } }); }, 650);
+        this.later(() => { l.target = 0; if (here()) this.audio.play('lockerClose', { pos: { x: l.x, y: 1, z: l.z } }); }, 650);
       }
       r.h = h;
     }
-    r.hiding = h >= 0 ? this.lv.lockers[h] || null : null;
+    r.hiding = h >= 0 ? lockers[h] || null : null;
     r.dying = !!s.b;
     if (s.a !== r.a && r.a === 0) {
       const name = this.mp.slotName(slot);
@@ -968,7 +1095,9 @@ export class Game {
       const eye = r.crouching ? 1.0 : 1.6;
       r.pos.y = eye;
       r.camera.position.set(r.pos.x, eye, r.pos.z);
-      const present = r.a === 0 && !r.hiding;
+      // 不在同一層的人：人物、手電筒、腳步聲都不出現（燈還留在場景裡，只是不亮）
+      const here = r.floor === this.floorIdx;
+      const present = r.a === 0 && !r.hiding && here;
       const root = r.av.root;
       this.mpSetBody(r, present && this.spectate !== r.slot);
       root.position.set(r.pos.x, 0, r.pos.z);
@@ -991,7 +1120,7 @@ export class Game {
 
   ghostNetState() { return this.ghost.netState(); }
 
-  // 房主：女鬼要追誰——追逐中盯住同一個人，否則找最近的
+  // 房主：女鬼要追誰——追逐中盯住同一個人，否則找最近的（同一層的人優先）
   mpGhostTarget(gh) {
     const list = [];
     if (this.mpStatus === 0 && !this.dying) list.push(this.player);
@@ -1002,7 +1131,7 @@ export class Game {
     if (!(cur && gh.state === 'chase' && gh.lostT < 2)) {
       let best = 1e9;
       for (const p of list) {
-        const d = Math.hypot(p.pos.x - gh.pos.x, p.pos.z - gh.pos.z) + (p === cur ? -2 : 0);
+        const d = Math.hypot(p.pos.x - gh.pos.x, p.pos.z - gh.pos.z) + (p === cur ? -2 : 0) + (Ghost.floorOf(p) === gh.floor ? 0 : 1000);
         if (d < best) { best = d; pick = p; }
       }
     }
@@ -1024,17 +1153,23 @@ export class Game {
     }, delay * 1000);
   }
 
+  // 收到的樓層索引：一定要是整數而且在範圍內（不可信任的輸入）
+  mpFloor(f) { return Number.isInteger(f) && f >= 0 && f < this.floors.length ? this.floors[f] : null; }
+
   mpApplyDoor(m) {
-    const d = Number.isInteger(m.i) ? this.lv.doors[m.i] : null;
+    const F = this.mpFloor(m.f);
+    const d = F && Number.isInteger(m.i) ? F.lv.doors[m.i] : null;
     if (!d || !Number.isFinite(m.tg) || !Number.isFinite(m.sp)) return null;
-    m = { t: 'door', i: m.i, tg: Math.max(-1.7, Math.min(1.7, m.tg)), sp: Math.max(0.5, Math.min(12, m.sp)) };
+    m = { t: 'door', f: F.index, i: m.i, tg: Math.max(-1.7, Math.min(1.7, m.tg)), sp: Math.max(0.5, Math.min(12, m.sp)) };
     const was = d.target;
     this.mpApplying = true;
-    this.world.setDoor(d, m.tg, m.sp);
+    F.world.setDoor(d, m.tg, m.sp);
     this.mpApplying = false;
-    const pos = { x: d.x, y: 1.2, z: d.z };
-    if (m.tg > was) this.audio.play(m.sp >= 7 ? 'doorBang' : 'doorOpen', { pos });
-    else if (m.tg < was) this.audio.play(m.sp >= 10 ? 'doorSlam' : 'doorClose', { pos });
+    if (F === this.F) {
+      const pos = { x: d.cx, y: 1.2, z: d.cz };
+      if (m.tg > was) this.audio.play(m.sp >= 7 ? 'doorBang' : 'doorOpen', { pos });
+      else if (m.tg < was) this.audio.play(m.sp >= 10 ? 'doorSlam' : 'doorClose', { pos });
+    }
     return m;
   }
 
@@ -1042,37 +1177,41 @@ export class Game {
   mpRequestPick(it) {
     if (it.kind === 'bottle' && this.player.bottles >= 3) { this.ui.hint('最多只能帶三個瓶子。', 2); return; }
     if (it.pending) return;
-    const i = this.lv.items.indexOf(it);
-    if (this.mp.isHost) { this.mpHostPick(i, this.mp.mySlot); return; }
+    const F = this.floors[it.floor] || this.F;
+    const i = F.lv.items.indexOf(it);
+    if (this.mp.isHost) { this.mpHostPick(F.index, i, this.mp.mySlot); return; }
     it.pending = true;
     setTimeout(() => { it.pending = false; }, 2000);
-    this.mp.send({ t: 'pick', i });
+    this.mp.send({ t: 'pick', f: F.index, i });
   }
-  mpHostPick(i, slot) {
-    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+  mpHostPick(f, i, slot) {
+    const F = this.mpFloor(f);
+    const it = F && Number.isInteger(i) ? F.lv.items[i] : null;
     if (!it || it.taken) return;
     const r = this.remotes.get(slot);
     if (slot === this.mp.mySlot ? this.mpStatus !== 0 || this.dying : !r || r.a !== 0) return;
-    if (it.kind === 'fuse') this.mp.carry(slot, i);
-    this.mp.send({ t: 'took', i, by: slot });
-    this.mpTook(i, slot);
+    if (it.kind === 'fuse') this.mp.carry(slot, { f: F.index, i });
+    this.mp.send({ t: 'took', f: F.index, i, by: slot });
+    this.mpTook(F.index, i, slot);
   }
-  mpTook(i, by) {
-    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+  mpTook(f, i, by) {
+    const F = this.mpFloor(f);
+    const it = F && Number.isInteger(i) ? F.lv.items[i] : null;
     if (!it || it.taken) return;
     if (by === this.mp.mySlot) {
       it.pending = false;
       if (this.mpStatus === 0 && !this.dying) { this.pickup(it); return; }
     }
-    this.world.removeItem(it);
+    F.world.removeItem(it);
     if (it.kind === 'fuse') this.ui.hint(`${this.mp.slotName(by)} 撿到了一個保險絲。`, 2.5);
   }
 
-  // 帶著保險絲的人被抓走或離開：保險絲回到原本的位置
-  mpRespawnItem(i) {
-    const it = Number.isInteger(i) ? this.lv.items[i] : null;
+  // 帶著保險絲的人被抓走或離開：保險絲回到原本的位置（原本那一層）
+  mpRespawnItem(f, i) {
+    const F = this.mpFloor(f);
+    const it = F && Number.isInteger(i) ? F.lv.items[i] : null;
     if (!it || !it.taken || !it.mesh) return;
-    const W = this.world;
+    const W = F.world;
     it.taken = false;
     it.pending = false;
     W.root.add(it.mesh);
@@ -1099,19 +1238,20 @@ export class Game {
 
   // 房主決定的世界事件（牆上的字、熄燈、屍體換姿勢）
   mpApplyEvent(m) {
-    const D = this.director;
+    const D = this.director, F = this.mpFloor(m.f);
+    if (!F) return;
     switch (m.k) {
       case 'write':
-        if (typeof m.text === 'string' && [m.x, m.y, m.z, m.rot].every(Number.isFinite)) this.world.addWallWriting(m.text.slice(0, 40), m.x, m.y, m.z, m.rot);
+        if (typeof m.text === 'string' && [m.x, m.y, m.z, m.rot].every(Number.isFinite)) F.world.addWallWriting(m.text.slice(0, 40), m.x, m.y, m.z, m.rot);
         break;
       case 'lightsOut':
         if ([m.x, m.z, m.r, m.d].every(Number.isFinite)) {
-          this.world.lightsOut(m.x, m.z, m.r, m.d);
-          this.audio.play('distantBang', { pos: { x: m.x, y: 2.5, z: m.z } });
+          F.world.lightsOut(m.x, m.z, m.r, m.d);
+          if (F === this.F) this.audio.play('distantBang', { pos: { x: m.x, y: 2.5, z: m.z } });
         }
         break;
       case 'corpse':
-        if (D.applyCorpseSwap) D.applyCorpseSwap(m.i, m.n);
+        if (D.applyCorpseSwap) D.applyCorpseSwap(m.i, m.n, F.index);
         break;
     }
   }
@@ -1134,6 +1274,9 @@ export class Game {
   mpSpectateBegin(text) {
     const P = this.player;
     this.dying = null;
+    this.stairT = null;
+    P.locked = false;
+    this.ui.fade(0, 0.2);
     P.fuses = 0;
     this.post.u.uFade.value = 0;
     this.post.u.uRed.value = 0;
@@ -1168,7 +1311,8 @@ export class Game {
     let r = this.remotes.get(this.spectate);
     if (!r || r.a !== 0) { this.mpNextSpectate(); r = this.remotes.get(this.spectate); }
     if (r) {
-      // 從他的眼睛看出去
+      // 從他的眼睛看出去（他在哪一層就看哪一層）
+      if (r.floor !== this.floorIdx) { this.setFloor(r.floor); this.markExplored(true); }
       P.pos.x = r.pos.x; P.pos.z = r.pos.z;
       P.yaw = r.yaw; P.pitch = r.pitch;
       P.sanity = r.sanity;
@@ -1179,10 +1323,10 @@ export class Game {
     }
     this.ghost.update(dt);
     if (this.mp.isHost) this.director.update(dt);
-    this.world.update(dt, P.camera, false);
+    this.updateWorlds(dt, P.camera, false);
     this.mpUpdateRemotes(dt);
     this.mp.tick(dt);
-    this.ghostDist = r && this.ghost.state !== 'dormant' ? Math.hypot(this.ghost.pos.x - r.pos.x, this.ghost.pos.z - r.pos.z) : 99;
+    this.ghostDist = r && this.ghost.state !== 'dormant' && this.ghost.floor === this.floorIdx ? Math.hypot(this.ghost.pos.x - r.pos.x, this.ghost.pos.z - r.pos.z) : 99;
     this.updateMood(dt);
     this.audio.setListener(P.camera);
   }
@@ -1228,7 +1372,7 @@ export class Game {
     if (this.ui.game === this) this.ui.game = null;
     this.input.exitLock();
     // 已經從場景移除的物件也要釋放
-    for (const o of this.world.removed) this.scene.add(o);
+    for (const F of this.floors) if (F.world) for (const o of F.world.removed) this.scene.add(o);
     for (const p of this.projectiles) this.scene.add(p.mesh);
     const disposeMat = (m) => {
       for (const k of Object.keys(m)) {
@@ -1247,7 +1391,7 @@ export class Game {
     });
     for (const m of mats) disposeMat(m);
     for (const v of this.tf.cache.values()) for (const t of Object.values(v)) if (t && t.isTexture) t.dispose();
-    if (this.world.aoTex) this.world.aoTex.dispose();
+    for (const F of this.floors) if (F.world && F.world.aoTex) F.world.aoTex.dispose();
     if (this.envRT) this.envRT.dispose();
     this.ui.hidePhoto();
     this.post.dispose();

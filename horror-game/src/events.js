@@ -39,6 +39,8 @@ export class Director {
     if (authority && gh.state === 'dormant') {
       const ready = gh.dormantUntil ? t > gh.dormantUntil : (t > g.diff.grace || g.fusesInserted > 0 || P.fuses > 0);
       if (ready && !g.dying) {
+        // 在她要找的人那一層出現
+        gh.setFloor(gh.constructor.floorOf(gh.target || P));
         const spot = gh.findSpot(g.phase === 'escape' ? 12 : 18, g.phase === 'escape' ? 24 : 34) || gh.findSpot(10, 60);
         if (spot) {
           gh.spawnAt(spot.x, spot.z, g.phase === 'escape' ? 'chase' : 'wander');
@@ -151,7 +153,7 @@ export class Director {
         break;
       case 'lightsOut':
         g.world.lightsOut(pp.x, pp.z, 10, 6);
-        if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'lightsOut', x: +pp.x.toFixed(2), z: +pp.z.toFixed(2), r: 10, d: 6 });
+        if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'lightsOut', f: g.floorIdx, x: +pp.x.toFixed(2), z: +pp.z.toFixed(2), r: 10, d: 6 });
         A.play('static', { dur: 0.4, vol: 0.4 });
         A.play('distantBang', { pos: { x: pp.x + rnd(-6, 6), y: 2.5, z: pp.z + rnd(-6, 6) } });
         break;
@@ -202,13 +204,14 @@ export class Director {
     const name = opts[Math.floor(Math.random() * opts.length)];
     const idx = W.corpseMeshes.indexOf(old);
     if (!this.applyCorpseSwap(idx, name)) return false;
-    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'corpse', i: idx, n: name });
+    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'corpse', f: g.floorIdx, i: idx, n: name });
     return true;
   }
 
-  // 第 i 具屍體換成 name 這個姿勢（多人時其他人收到房主的指令也呼叫這裡）
-  applyCorpseSwap(i, name) {
-    const g = this.game, W = g.world;
+  // 第 f 層的第 i 具屍體換成 name 這個姿勢（多人時其他人收到房主的指令也呼叫這裡）
+  applyCorpseSwap(i, name, fl = this.game.floorIdx) {
+    const g = this.game, F = g.floors[fl], W = F && F.world;
+    if (!W) return false;
     const old = Number.isInteger(i) && W.corpseMeshes ? W.corpseMeshes[i] : null;
     if (!old || !W.corpses || typeof name !== 'string' || !Object.hasOwn(W.corpses.meshes, name)) return false;
     const f = old.userData.furn;
@@ -220,7 +223,7 @@ export class Director {
     W.corpseMeshes[W.corpseMeshes.indexOf(old)] = c;
     f.corpse = { ...f.corpse, name, pose: name.split('_')[1] };
     this.corpseMoves = (this.corpseMoves || 0) + 1;
-    g.audio.play('doorCreak', { pos: { x: c.position.x, y: 0.7, z: c.position.z }, short: true });
+    if (fl === g.floorIdx) g.audio.play('doorCreak', { pos: { x: c.position.x, y: 0.7, z: c.position.z }, short: true });
     return true;
   }
 
@@ -352,7 +355,7 @@ export class Director {
     this.writings++;
     const text = words[Math.floor(Math.random() * words.length)];
     g.world.addWallWriting(text, best.x, 1.5, best.z, best.rot);
-    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'write', text, x: best.x, y: 1.5, z: best.z, rot: best.rot });
+    if (g.mp && g.mp.isHost) g.mp.send({ t: 'ev', k: 'write', f: g.floorIdx, text, x: best.x, y: 1.5, z: best.z, rot: best.rot });
     g.audio.play('whisper', { pos: { x: best.x, y: 1.5, z: best.z }, dur: 1.2 });
   }
 }

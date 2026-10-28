@@ -1,6 +1,6 @@
 // 進入點：選單、設定、主迴圈
 import * as THREE from 'three';
-import { QUALITY, DIFFICULTY } from './config.js';
+import { QUALITY, DIFFICULTY, MP_FLOORS } from './config.js';
 import { AudioEngine } from './audio.js';
 import { Input } from './input.js';
 import { UI, fmtTime } from './ui.js';
@@ -355,7 +355,7 @@ class App {
     }
     $('btnMpStart').hidden = !mp.isHost;
     $('mpRoomInfo').textContent = mp.isHost
-      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}・地圖：${this.settings.theme === RANDOM_THEME ? '隨機' : themeTitle(this.settings.theme)}（在主選單切換）`
+      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}・樓層：${MP_FLOORS[this.settings.difficulty]} 層・地圖：${this.settings.theme === RANDOM_THEME ? '隨機' : themeTitle(this.settings.theme)}（在主選單切換）`
       : '等待房主開始遊戲……';
   }
 
@@ -365,7 +365,8 @@ class App {
     const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
     if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
     this.mpGo = false;
-    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff });
+    // 樓層數由難度決定（每個人自己算，不相信訊息裡的數字）
+    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff, floors: MP_FLOORS[diff] });
   }
   mpBegin() {
     this.mpGo = true;
@@ -421,7 +422,9 @@ class App {
     $('loadTip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
     seed = seed ?? (Math.random() * 2 ** 31) | 0;
     theme = resolveTheme(theme ?? this.settings.theme, seed >>> 0);
-    $('loadFloor').textContent = themeTitle(theme);
+    // 樓層數：多人依難度；單人 1 層（網址加 ?floors=2 或 3 可以測試多層樓）
+    const floors = mpOpts ? mpOpts.floors : Math.max(1, Math.min(3, Number(new URLSearchParams(location.search).get('floors')) || 1));
+    $('loadFloor').textContent = themeTitle(theme) + (floors > 1 ? `・共 ${floors} 層` : '');
     const touch = this.input.touchMode;
     if (touch) {
       try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { /* 不支援全螢幕 */ }
@@ -429,7 +432,7 @@ class App {
     }
     const game = new Game(this, {
       difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
-      seed, theme,
+      seed, theme, floors,
       mp: mpOpts ? this.mp : null,
     });
     try {

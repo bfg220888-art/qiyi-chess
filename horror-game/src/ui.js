@@ -21,8 +21,12 @@ export class UI {
   }
   bindGame(game) {
     this.game = game;
+    this.setFloor(game.floorTitle || '');
+  }
+  // HUD 右上角的樓層名稱（走樓梯換層時更新）
+  setFloor(text) {
     const t = $('floorTag');
-    if (t) t.textContent = game.floorTitle || '';
+    if (t) t.textContent = text;
   }
 
   show(id) { $(id).hidden = false; }
@@ -195,10 +199,24 @@ export class UI {
     ctx.font = '700 26px "Noto Serif TC", serif';
     ctx.textAlign = 'center';
     ctx.fillText(`${(g.themeInfo && g.themeInfo.board) || '七樓'}（手繪）`, W / 2, 38);
+    // 多層樓：左上角列出每一層（由上往下），目前這一層畫框
+    if (g.floors && g.floors.length > 1) {
+      const list = g.floors.slice().sort((a, b) => b.ord - a.ord);
+      ctx.save();
+      ctx.textAlign = 'left';
+      ctx.font = '700 15px "Noto Sans TC", sans-serif';
+      list.forEach((F, k) => {
+        const y = 24 + k * 22;
+        const cur = F.index === g.floorIdx;
+        ctx.fillStyle = cur ? '#7a1a10' : 'rgba(43,36,25,0.55)';
+        ctx.fillText(`${cur ? '▶ ' : '　'}${F.title}${F === g.genFloor ? '（發電機）' : ''}${F.index === 0 ? '（大門）' : ''}`, 14, y);
+      });
+      ctx.restore();
+    }
     drawFloorPlan(ctx, lv, {
       x0: ox, y0: oy, scale, explored: g.explored, wallColor: '#241d14', lineWidth: 3, doorColor: '#8a7a5a',
       roomColor: (room) => (room.type === 'generator' ? 'rgba(160,60,40,0.25)' : room.type === 'lobby' ? 'rgba(200,170,90,0.35)' : 'rgba(255,255,255,0.18)'),
-      labels: (room) => (room.type === 'generator' ? '發電機' : room.type === 'lobby' ? '大廳' : room.special ? (room.tag || '707') : null),
+      labels: (room) => (room.type === 'generator' ? '發電機' : room.type === 'lobby' ? '大廳' : room.type === 'landing' || room.type === 'stairs' ? null : room.special ? (room.tag || '707') : null),
       labelColor: '#3a2416', labelFont: '700 18px "Noto Sans TC", sans-serif',
     });
     // 已經插上的保險絲 / 撿到的東西不顯示；只標示玩家
@@ -215,7 +233,26 @@ export class UI {
     // 大門
     ctx.fillStyle = '#2b2419';
     ctx.font = '700 16px "Noto Sans TC", sans-serif';
-    ctx.fillText('大門', ox + lv.gate.x * scale, oy + lv.gate.z * scale + 22);
+    if (lv.gate) ctx.fillText('大門', ox + lv.gate.x * scale, oy + lv.gate.z * scale + 22);
+    // 樓梯：走過的地方才畫（長方形 + 箭頭 + 通往的樓層）
+    for (const s of lv.stairs || []) {
+      const cx = Math.floor(s.x / CELL), cy = Math.floor(s.z / CELL);
+      if (!g.explored[cy * lv.W + cx]) continue;
+      const to = g.floors && g.floors[s.to];
+      ctx.save();
+      ctx.translate(ox + s.x * scale, oy + s.z * scale);
+      ctx.rotate(-s.rot);
+      const w = s.w * scale, d = s.d * scale;
+      ctx.strokeStyle = '#2b2419'; ctx.lineWidth = 2;
+      ctx.strokeRect(-w / 2, -d / 2, w, d);
+      ctx.beginPath();
+      for (let k = 1; k < 6; k++) { const z = -d / 2 + (d * k) / 6; ctx.moveTo(-w / 2, z); ctx.lineTo(w / 2, z); }
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#7a1a10';
+      ctx.font = '700 15px "Noto Sans TC", sans-serif';
+      ctx.fillText(`${s.dir === 'up' ? '▲ 上樓' : '▼ 下樓'}${to ? ' ' + to.info.floor : ''}`, ox + s.x * scale, oy + s.z * scale - Math.max(s.w, s.d) * scale * 0.5 - 8);
+    }
   }
   toggleMap(on) {
     this.el.map.hidden = !on;

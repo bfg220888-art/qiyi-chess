@@ -3,7 +3,7 @@
 import { RNG } from './rng.js';
 import { CORPSE_POSES, corpseShift } from './corpse-poses.js';
 import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
-import { THEMES, resolveTheme } from './themes.js';
+import { THEMES, THEME_KEYS, resolveTheme } from './themes.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
 export const VOID = -1;
@@ -52,13 +52,15 @@ export const FURN = {
   ectchair:   { w: 0.74, d: 0.92, h: 1.38 },
   ectmachine: { w: 0.64, d: 0.5,  h: 1.15 },
   table:      { w: 1.3, d: 0.86,  h: 0.75, surf: { y: 0.76, hx: 0.5, hz: 0.25 } },
+  // 樓梯（多層樓）：上樓是一段往天花板爬的階梯，下樓是地上一個圍著欄杆往下的樓梯口
+  stairs:     { w: 1.5, d: 2.6,  h: 3.0, tall: true },
 };
 
 export const ROOM_NAMES = {
   ward: '病房', office: '醫師辦公室', storage: '儲藏室', utility: '工具間', operating: '手術室',
   morgue: '太平間', nurse: '護理站', generator: '發電機房', lobby: '大廳', corridor: '走廊',
   autopsy: '解剖室', coldstore: '屍袋冷藏室', kidward: '兒童病房', nursery: '嬰兒室', playroom: '遊戲室',
-  cell: '隔離室', therapy: '電療室', dayroom: '交誼廳',
+  cell: '隔離室', therapy: '電療室', dayroom: '交誼廳', landing: '樓梯間', stairs: '樓梯間',
 };
 
 export class Level {
@@ -195,12 +197,13 @@ export const WALL_WRITINGS = ['救救我', '她在看你', '不要回頭', '707'
 // ---------------------------------------------------------------------------
 // theme：主題 key（'ward' / 'morgue' / 'pediatric' / 'psych'），或 'random' / 不給 = 由 seed 決定。
 // 主題在重試之前就決定好（不受 validator 重試影響），結果存在 lv.theme。
-export function generateLevel(seed, diff, validator, theme) {
+// plan：多層樓時這一層的配置（planHospital 產生）；不給 = 單層樓（大廳、發電機房、全部的道具都在這一層）。
+export function generateLevel(seed, diff, validator, theme, plan = null) {
   const themeKey = resolveTheme(theme, seed >>> 0);
   let lastErr = null;
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
-      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey);
+      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey, plan);
       if (validator) {
         const problem = validator(lv);
         if (problem) { lastErr = new Error(problem); continue; }
@@ -212,6 +215,67 @@ export function generateLevel(seed, diff, validator, theme) {
     }
   }
   throw lastErr || new Error('level generation failed');
+}
+
+// ---------------------------------------------------------------------------
+// 多層樓的醫院：決定每一層的主題、上下順序、樓梯怎麼接、發電機房 / 保險絲 / 紙條 / 道具放哪一層。
+// 只用 seed（與主題、層數、難度）決定，多人連線時每個人都會算出一樣的結果。
+// 第 0 層是有大廳與大門的那一層（玩家的起點）；其他樓層的大廳位置換成樓梯間。
+export const MAX_FLOORS = 3;
+const ITEM_KINDS = [['batteries', 6], ['bottles', 4], ['film', 3], ['pills', 3]];
+export function planHospital(seed, theme, count = 1, diff = null) {
+  count = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(count)) || 1));
+  const t0 = resolveTheme(theme, seed >>> 0);
+  const all = [0, 1, 2, 3, 4, 5, 6];
+  if (count === 1) return [{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts: null }];
+  const rng = new RNG((seed ^ 0x3c6ef372) >>> 0);
+  const keys = [t0, ...rng.shuffle(THEME_KEYS.filter((k) => k !== t0)).slice(0, count - 1)];
+  // 上下順序：照主題的樓層編號由低到高
+  const order = keys.map((k, i) => i).sort((a, b) => THEMES[keys[a]].level - THEMES[keys[b]].level);
+  const ord = [];
+  order.forEach((fi, p) => { ord[fi] = p; });
+  const floors = keys.map((k, i) => ({
+    index: i, count, theme: k, level: THEMES[k].level, ord: ord[i], entry: i === 0 ? 'lobby' : 'landing',
+    generator: false, fuses: 0, notes: [], stairs: [], counts: {},
+  }));
+  for (let p = 0; p + 1 < count; p++) {
+    const a = order[p], b = order[p + 1];
+    floors[a].stairs.push({ dir: 'up', to: b, label: THEMES[keys[b]].floor });
+    floors[b].stairs.push({ dir: 'down', to: a, label: THEMES[keys[a]].floor });
+  }
+  // 發電機房：離大門那一層最遠（要爬最多段樓梯）的樓層
+  const hops = (i) => Math.abs(ord[i] - ord[0]);
+  const far = Math.max(...floors.slice(1).map((f) => hops(f.index)));
+  const gen = rng.pick(floors.filter((f) => f.index > 0 && hops(f.index) === far));
+  gen.generator = true;
+  // 保險絲：每一層至少一個
+  if (count === 2) { floors[0].fuses = rng.int(1, 2); floors[1].fuses = 3 - floors[0].fuses; }
+  else for (const f of floors) f.fuses = 1;
+  // 紙條：交班紀錄在大廳、錄音逐字稿在發電機房，其他的分散到每一層
+  floors[0].notes.push(0);
+  gen.notes.push(6);
+  rng.shuffle([1, 2, 3, 4, 5]).forEach((n, k) => floors[k % count].notes.push(n));
+  for (const f of floors) f.notes.sort((a, b) => a - b);
+  // 電池、瓶子、底片、鎮定劑：總量比單層多一半左右，平均分到每一層
+  for (const [kind, def] of ITEM_KINDS) {
+    const base = diff && Number.isFinite(diff[kind]) ? diff[kind] : def;
+    const total = Math.round(base * (1 + 0.5 * (count - 1)));
+    for (const f of floors) f.counts[kind] = Math.floor(total / count) + (f.index < total % count ? 1 : 0);
+  }
+  return floors;
+}
+
+// 每一層各自生成（各自重試直到通過驗證）；回傳樓層陣列，index 0 是有大門的那一層
+export function floorSeed(seed, i) { return i ? (seed ^ Math.imul(i, 0x85ebca6b)) >>> 0 : seed >>> 0; }
+export function generateHospital(seed, diff, validator, theme, count = 1) {
+  const plan = planHospital(seed >>> 0, theme, count, diff);
+  return plan.map((p) => {
+    const lv = generateLevel(floorSeed(seed >>> 0, p.index), diff, validator, p.theme, plan.length > 1 ? p : null);
+    lv.floorIndex = p.index;
+    lv.plan = p;
+    lv.requestedSeed = seed;
+    return lv;
+  });
 }
 
 function segmentLengths(rng, L, pref = { p3: 0.3, p1: 0.12 }) {
@@ -230,8 +294,11 @@ function segmentLengths(rng, L, pref = { p3: 0.3, p1: 0.12 }) {
   return rng.shuffle(out);
 }
 
-function buildLevel(seed, diff, themeKey = 'ward') {
+function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
   const T = THEMES[themeKey], LY = T.layout;
+  // 單層樓：大廳、大門、發電機房、三個保險絲、七張紙條都在這一層
+  const P0 = plan || { entry: 'lobby', generator: true, fuses: 3, notes: [0, 1, 2, 3, 4, 5, 6], stairs: [], counts: null };
+  const isLobby = P0.entry !== 'landing';
   const rng = new RNG(seed);
   const M = LY.margin;
   // --- 走廊格線：欄 / 列數、寬度（寬走廊 = 2 格）與街區大小都依主題變化
@@ -346,8 +413,14 @@ function buildLevel(seed, diff, themeKey = 'ward') {
     lobbyX = c[k] + (colW[k] === 2 ? rng.int(0, 1) : 0);
   } else lobbyX = Math.round((c[0] + cEnd) / 2);
   const lobbyTop = rEnd + 1;
-  const lobby = addRoom(lobbyX - 1, lobbyTop, lobbyX + 1, H - 1, 'lobby');
+  // 有大門的那一層是大廳；其他樓層同一個位置是樓梯間（landing）
+  const lobby = addRoom(lobbyX - 1, lobbyTop, lobbyX + 1, H - 1, isLobby ? 'lobby' : 'landing');
   lv.lobby = lobby;
+  lv.floorIndex = plan ? plan.index : 0;
+  lv.stairPlan = P0.stairs;
+  lv.stairs = [];
+  lv.floorHoles = [];
+  lv.ceilHoles = [];
   lv.lobbyX = lobbyX;
   lv.lobbyTop = lobbyTop;
   // --- 外圍房間帶（被支線、缺角切開）
@@ -407,8 +480,10 @@ function buildLevel(seed, diff, themeKey = 'ward') {
 
   // --- 大廳開口與大門
   lv.setH(lobbyX, lobbyTop, E.OPEN);
-  lv.setH(lobbyX, H, E.GATE);
-  lv.gate = { x: (lobbyX + 0.5) * CELL, z: H * CELL, open: false, angle: 0 };
+  if (isLobby) {
+    lv.setH(lobbyX, H, E.GATE);
+    lv.gate = { x: (lobbyX + 0.5) * CELL, z: H * CELL, open: false, angle: 0 };
+  } else lv.gate = null;
 
   // --- 門
   const roomEdges = (room) => {
@@ -445,7 +520,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   };
 
   for (const room of lv.rooms) {
-    if (room.id === 0 || room.type === 'lobby') continue;
+    if (room.id === 0 || room === lobby) continue;
     const edges = roomEdges(room).filter((e) => lv.cellAt(e.ox, e.oy) === CORRIDOR);
     if (!edges.length) throw new Error('room without corridor access');
     const first = rng.pick(edges);
@@ -457,11 +532,11 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   }
   // 房間之間的門（製造繞圈逃跑路線）
   for (const room of lv.rooms) {
-    if (room.id === 0 || room.type === 'lobby') continue;
+    if (room.id === 0 || room === lobby) continue;
     if (!rng.chance(0.22)) continue;
     const edges = roomEdges(room).filter((e) => {
       const o = lv.cellAt(e.ox, e.oy);
-      return o > 0 && lv.rooms[o].type !== 'lobby' && edgeType(e) === E.WALL;
+      return o > 0 && lv.rooms[o] !== lobby && edgeType(e) === E.WALL;
     });
     if (edges.length) addDoor(rng.pick(edges));
   }
@@ -469,9 +544,10 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   // --- 窗戶（朝外的牆；地下室沒有窗）
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
-    const p = room.type === 'lobby' ? T.lobbyWindows : T.windows;
+    const p = room === lobby ? T.lobbyWindows : T.windows;
     for (const e of roomEdges(room)) {
       if (lv.cellAt(e.ox, e.oy) !== VOID || edgeType(e) !== E.WALL) continue;
+      if (room === lobby && !isLobby && e.side === 'S') continue; // 樓梯靠著的那面牆不開窗
       if (p > 0 && rng.chance(p)) setEdge(e, E.WINDOW);
     }
   }
@@ -513,7 +589,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   const dist = lv.bfs(lobbyX, H - 1);
   lv.distFromLobby = dist;
   for (let i = 0; i < W * H; i++) if (lv.cells[i] !== VOID && !lv.blockedCell[i] && dist[i] < 0) throw new Error('unreachable cell');
-  const normal = lv.rooms.filter((rm) => rm.id > 0 && rm.type !== 'lobby');
+  const normal = lv.rooms.filter((rm) => rm.id > 0 && rm !== lobby);
   for (const rm of normal) {
     let best = 1e9;
     for (let y = rm.y0; y <= rm.y1; y++) for (let x = rm.x0; x <= rm.x1; x++) best = Math.min(best, dist[idx(x, y)]);
@@ -521,12 +597,29 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   }
   const R = T.rooms;
   const byDist = normal.slice().sort((a, b) => b.dist - a.dist);
-  const gen = byDist.find((rm) => rm.area >= 2 && rm.area <= 6) || byDist[0];
-  gen.type = 'generator';
+  let gen = null;
+  if (P0.generator) {
+    gen = byDist.find((rm) => rm.area >= 2 && rm.area <= 6) || byDist[0];
+    gen.type = 'generator';
+  }
   lv.generatorRoom = gen;
   if (R.nurse) {
     const nurse = normal.filter((rm) => !rm.type && rm.area >= 2 && rm.area <= 6).sort((a, b) => a.dist - b.dist)[0];
     if (nurse) nurse.type = 'nurse';
+  }
+  // 樓梯間：有大門的那一層另外挑一間中等距離的房間；其他樓層的樓梯就在大廳位置的樓梯間裡
+  lv.stairRoom = null;
+  if (P0.stairs.length) {
+    if (isLobby) {
+      const need = P0.stairs.length > 1 ? 3 : 2;
+      const maxD = Math.max(...normal.map((rm) => rm.dist));
+      const cands = normal.filter((rm) => !rm.type && rm.area >= need && rm.area <= 6)
+        .sort((a, b) => Math.abs(a.dist - maxD * 0.5) - Math.abs(b.dist - maxD * 0.5));
+      if (!cands.length) throw new Error('no stairwell room');
+      const st = rng.pick(cands.slice(0, 3));
+      st.type = 'stairs';
+      lv.stairRoom = st;
+    } else lv.stairRoom = lobby;
   }
   const big = rng.shuffle(normal.filter((rm) => !rm.type && rm.area >= 4));
   for (const [t, p] of R.specials) if (big.length && rng.chance(p)) big.shift().type = t;
@@ -541,7 +634,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   for (const rm of numbered) { while (num.skip.includes(n)) n++; rm.label = num.fmt(n++); }
   // 劇情房間（707 病房 / 嬰兒室 / 0713 隔離室……）：離大廳最遠的那一間
   let specialCands = normal.filter((rm) => R.special.types.includes(rm.type));
-  if (!specialCands.length) specialCands = normal.filter((rm) => rm !== gen && rm.type !== 'nurse');
+  if (!specialCands.length) specialCands = normal.filter((rm) => rm !== gen && rm.type !== 'nurse' && rm.type !== 'stairs');
   if (specialCands.length) {
     const special = specialCands.reduce((a, b) => (b.dist > a.dist ? b : a));
     special.label = R.special.label;
@@ -553,9 +646,11 @@ function buildLevel(seed, diff, themeKey = 'ward') {
 
   // --- 保險絲房間：彼此分散
   const chosen = [];
-  const anchors = [[lobby.cx, lobby.cz], [gen.cx, gen.cz]];
-  const fuseCandidates = normal.filter((rm) => rm !== gen);
-  for (let k = 0; k < 3; k++) {
+  const anchors = [[lobby.cx, lobby.cz]];
+  if (gen) anchors.push([gen.cx, gen.cz]);
+  if (lv.stairRoom && lv.stairRoom !== lobby) anchors.push([lv.stairRoom.cx, lv.stairRoom.cz]);
+  const fuseCandidates = normal.filter((rm) => rm !== gen && rm !== lv.stairRoom);
+  for (let k = 0; k < P0.fuses; k++) {
     let best = null, bestScore = -1;
     for (const rm of fuseCandidates) {
       if (chosen.includes(rm)) continue;
@@ -584,7 +679,7 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   furnish(lv, rng, T);
 
   // --- 道具
-  placeItems(lv, rng, diff || { batteries: 6, film: 3, pills: 3, bottles: 4 });
+  placeItems(lv, rng, P0.counts || diff || { batteries: 6, film: 3, pills: 3, bottles: 4 }, P0.notes);
 
   // --- 燈具
   placeLights(lv, rng, T);
@@ -598,8 +693,8 @@ function buildLevel(seed, diff, themeKey = 'ward') {
   // --- 牆體幾何
   buildWallPieces(lv);
 
-  // 出生點：大廳靠大門處，面向北方（-z）
-  lv.spawn = { x: (lobbyX + 0.5) * CELL, z: H * CELL - 1.3, yaw: 0 };
+  // 出生點：大廳靠大門處，面向北方（-z）；沒有大廳的樓層就是第一座樓梯的出口
+  lv.spawn = isLobby ? { x: (lobbyX + 0.5) * CELL, z: H * CELL - 1.3, yaw: 0 } : { ...lv.stairs[0].arrive };
   return lv;
 }
 // ---------------------------------------------------------------------------
@@ -686,9 +781,9 @@ function roomStaysConnected(lv, room, extra) {
     const plane = (d.o === 'h' ? d.y : d.x) * CELL;
     for (const s of [-0.6, 0.6]) entries.push(d.o === 'h' ? [along, plane + s] : [plane + s, along]);
   }
-  if (room.type === 'lobby') {
+  if (room === lv.lobby) {
     entries.push([(lv.lobbyX + 0.5) * CELL, lv.lobbyTop * CELL + 0.6]);
-    entries.push([lv.gate.x, lv.gate.z - 0.8]);
+    if (lv.gate) entries.push([lv.gate.x, lv.gate.z - 0.8]);
   }
   for (const [x, z] of entries) {
     const i = Math.floor((x - b.minX) / res), j = Math.floor((z - b.minZ) / res);
@@ -788,7 +883,7 @@ function doorClearance(lv) {
   // 大廳開口與大門
   const ox = (lv.lobbyX + 0.5) * CELL, oz = lv.lobbyTop * CELL;
   lv.blockers.push({ minX: ox - 1.6, maxX: ox + 1.6, minZ: oz - 1.6, maxZ: oz + 1.6, clearance: true });
-  lv.blockers.push({ minX: ox - 1.9, maxX: ox + 1.9, minZ: lv.H * CELL - 2.4, maxZ: lv.H * CELL, clearance: true });
+  if (lv.gate) lv.blockers.push({ minX: ox - 1.9, maxX: ox + 1.9, minZ: lv.H * CELL - 2.4, maxZ: lv.H * CELL, clearance: true });
   // 大廳中央通道保持淨空（最後逃跑的路線）
   lv.blockers.push({ minX: ox - 1.0, maxX: ox + 1.0, minZ: oz, maxZ: lv.H * CELL, clearance: true });
   // 路障
@@ -867,11 +962,87 @@ function furnish(lv, rng, T) {
     return h;
   };
 
+  // 樓梯：家具的正面（+z）是樓梯口，玩家從這一側走上去 / 走下去
+  const stairsAt = (room, pose, st, clear) => {
+    const it = P.add('stairs', room, pose, { dir: st.dir, to: st.to });
+    clear.clearance = true;
+    lv.blockers.push(clear);
+    const [fx, fz] = frontVec(pose.rot);
+    const f = FURN.stairs;
+    const s = {
+      id: lv.stairs.length, dir: st.dir, to: st.to, label: st.label || '', furn: it, room: room.id,
+      x: pose.x, z: pose.z, rot: pose.rot, w: f.w, d: f.d,
+      use: { x: pose.x + fx * (f.d / 2 + 0.55), z: pose.z + fz * (f.d / 2 + 0.55) },
+      arrive: { x: pose.x + fx * (f.d / 2 + 0.95), z: pose.z + fz * (f.d / 2 + 0.95), yaw: pose.rot + Math.PI },
+    };
+    it.stair = s;
+    lv.stairs.push(s);
+    // 下樓：地板挖一個洞；上樓：樓梯頂端的天花板開一個洞（往上是黑漆漆的樓梯井）
+    const L = (lx, lz) => [pose.x + lx * Math.cos(pose.rot) + lz * Math.sin(pose.rot), pose.z - lx * Math.sin(pose.rot) + lz * Math.cos(pose.rot)];
+    const rect = (lx0, lz0, lx1, lz1) => {
+      const a = L(lx0, lz0), b = L(lx1, lz1);
+      return { minX: Math.min(a[0], b[0]), maxX: Math.max(a[0], b[0]), minZ: Math.min(a[1], b[1]), maxZ: Math.max(a[1], b[1]) };
+    };
+    if (st.dir === 'down') lv.floorHoles.push(rect(-f.w / 2 + 0.06, -f.d / 2 + 0.06, f.w / 2 - 0.06, f.d / 2));
+    else lv.ceilHoles.push(rect(-f.w / 2 + 0.04, -f.d / 2 + 0.04, f.w / 2 - 0.04, -f.d / 2 + 1.3));
+    // 樓梯口上方吊一塊「上樓 9F」的牌子
+    const [sx, sz] = L(0, f.d / 2 - 0.05);
+    lv.signs.push({ kind: 'roomSign', text: `${st.dir === 'up' ? '上樓' : '下樓'} ${st.label || ''}`.trim(), x: sx, y: 2.62, z: sz, rot: pose.rot });
+    return it;
+  };
+  const placeStairs = (room) => {
+    const f = FURN.stairs;
+    for (const st of lv.stairPlan) {
+      if (room === lv.lobby) {
+        // 樓梯間（大廳的位置）：左右兩格靠南牆，樓梯口朝北；中間的走道保持淨空
+        const side = lv.stairs.length === 0 ? -1 : 1;
+        const x = side < 0 ? (lv.lobbyX - 1) * CELL + HT + f.w / 2 + 0.3 : (lv.lobbyX + 2) * CELL - HT - f.w / 2 - 0.3;
+        const pose = { x, z: lv.H * CELL - HT - f.d / 2 - 0.03, rot: Math.PI };
+        const box = footprint(pose.x, pose.z, pose.rot, f.w, f.d);
+        if (!P.free(box)) throw new Error('no landing stair slot');
+        stairsAt(room, pose, st, footprint(pose.x, pose.z - f.d / 2 - 0.75, 0, f.w + 0.4, 1.5));
+        continue;
+      }
+      // 一般房間改成的樓梯間：靠牆、正面要留走得到的空間（不能伸出房間）
+      const bounds = roomBounds(room);
+      let ok = false;
+      for (const slot of rng.shuffle(wallSlots(lv, room).filter((sl) => !sl.window))) {
+        const along = (slot.a0 + slot.a1) / 2;
+        const pose = slotPose(slot, along, f, 0.03);
+        const box = footprint(pose.x, pose.z, pose.rot, f.w, f.d);
+        if (!inside(box, bounds) || !P.free(box)) continue;
+        const [fx, fz] = frontVec(pose.rot);
+        const clear = footprint(pose.x + fx * (f.d / 2 + 0.7), pose.z + fz * (f.d / 2 + 0.7), pose.rot, f.w + 0.3, 1.4);
+        if (!inside(clear, bounds) || !P.free(clear)) continue;
+        if (!roomStaysConnected(lv, room, box)) continue;
+        stairsAt(room, pose, st, clear);
+        ok = true;
+        break;
+      }
+      if (!ok) throw new Error('no stair slot');
+    }
+  };
+
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
     const t = room.type;
     const bounds = roomBounds(room);
     switch (t) {
+      case 'landing': {
+        placeStairs(room);
+        for (let i = 0; i < 2; i++) P.againstWall('bench', room, { noWindow: false });
+        P.againstWall('plant', room);
+        if (rng.chance(0.5)) P.againstWall('bin', room);
+        if (rng.chance(0.5)) P.freeStanding('wheelchair', room, { margin: 0.6 });
+        break;
+      }
+      case 'stairs': {
+        placeStairs(room);
+        if (rng.chance(0.6)) P.againstWall('boxes', room);
+        if (rng.chance(0.5)) P.againstWall('bin', room);
+        if (rng.chance(0.3)) addLocker(room);
+        break;
+      }
       case 'lobby': {
         P.againstWall('counter', room, { sides: ['E', 'W'], clearance: 0.9 });
         if (lv.theme === 'morgue') {
@@ -1183,7 +1354,8 @@ function floorPoint(lv, rng, bounds, margin = 0.45) {
   return null;
 }
 
-function placeItems(lv, rng, diff) {
+function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6]) {
+  const has = (n) => notes.includes(n);
   const usedRooms = new Map();
   const spotInRoom = (room, preferSurface = true) => {
     const furn = lv.furniture.filter((f) => f.room === room.id && FURN[f.kind].surf && f.kind !== 'locker');
@@ -1219,22 +1391,30 @@ function placeItems(lv, rng, diff) {
 
   for (const room of lv.fuseRooms) add('fuse', () => spotInRoom(room), { room: room.id });
 
-  // 筆記
+  // 筆記（多層樓時只放分配到這一層的那幾張）
   const lobby = lv.lobby;
-  const counter = lv.furniture.find((f) => f.room === lobby.id && f.kind === 'counter');
-  add('note', () => (counter ? surfacePoint(rng, counter) : spotInRoom(lobby)), { note: 0 });
-  const others = lv.rooms.filter((rm) => rm.id > 0 && rm.type !== 'lobby');
-  const nurse = lv.rooms.find((rm) => rm.type === 'nurse');
-  const nurseRoom = nurse || rng.pick(others);
-  add('note', () => spotInRoom(nurseRoom), { note: 1 });
-  const fallback = rng.pick(others);
-  add('note', () => spotInCorridor() || spotInRoom(fallback), { note: 2 });
-  const office = rng.shuffle(others.filter((rm) => rm.type === 'office' || rm.type === 'operating'))[0] || rng.pick(others);
-  add('note', () => spotInRoom(office), { note: 3 });
-  const r707 = lv.room707 || rng.pick(others);
-  add('note', () => spotInRoom(r707), { note: 4 });
-  add('note', () => spotInRoom(r707), { note: 5 });
-  add('note', () => spotInRoom(lv.generatorRoom), { note: 6 });
+  if (has(0)) {
+    const counter = lv.furniture.find((f) => f.room === lobby.id && f.kind === 'counter');
+    add('note', () => (counter ? surfacePoint(rng, counter) : spotInRoom(lobby)), { note: 0 });
+  }
+  const others = lv.rooms.filter((rm) => rm.id > 0 && rm !== lobby);
+  if (has(1)) {
+    const nurse = lv.rooms.find((rm) => rm.type === 'nurse');
+    const nurseRoom = nurse || rng.pick(others);
+    add('note', () => spotInRoom(nurseRoom), { note: 1 });
+  }
+  if (has(2)) {
+    const fallback = rng.pick(others);
+    add('note', () => spotInCorridor() || spotInRoom(fallback), { note: 2 });
+  }
+  if (has(3)) {
+    const office = rng.shuffle(others.filter((rm) => rm.type === 'office' || rm.type === 'operating'))[0] || rng.pick(others);
+    add('note', () => spotInRoom(office), { note: 3 });
+  }
+  const r707 = (has(4) || has(5)) ? lv.room707 || rng.pick(others) : null;
+  if (has(4)) add('note', () => spotInRoom(r707), { note: 4 });
+  if (has(5)) add('note', () => spotInRoom(r707), { note: 5 });
+  if (has(6) && lv.generatorRoom) add('note', () => spotInRoom(lv.generatorRoom), { note: 6 });
 
   const scatter = (kind, n) => {
     const pool = rng.shuffle(others.slice());
@@ -1271,6 +1451,7 @@ function placeLights(lv, rng, T) {
     let stage = stageOf();
     if (room.type === 'generator') stage = 1;
     if (room.type === 'lobby') stage = 3;
+    if (room.type === 'landing' && stage === 0) stage = 1; // 樓梯間至少有一盞會亮
     if (room.type === 'nurse' && stage === 0) stage = 2;
     const mode = stage === 0 ? 'broken' : rng.chance(L.flicker) ? 'flicker' : 'steady';
     // 走廊燈管順著走廊方向
@@ -1283,9 +1464,11 @@ function placeLights(lv, rng, T) {
   for (const [x, y] of rng.shuffle(inter).slice(0, L.emergencyN)) {
     lv.emergency.push({ x: (x + 0.5) * CELL + rng.range(-0.8, 0.8), y: WALL_H - 0.25, z: (y + 0.5) * CELL + rng.range(-0.8, 0.8), phase: rng.range(0, 10) });
   }
-  // 出口標示
-  lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: DOOR_H + 0.35, z: lv.lobbyTop * CELL - HT - 0.05, rot: Math.PI });
-  lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: GATE_H + 0.25, z: lv.H * CELL - HT - 0.05, rot: Math.PI });
+  // 出口標示（只有大廳那一層）
+  if (lv.gate) {
+    lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: DOOR_H + 0.35, z: lv.lobbyTop * CELL - HT - 0.05, rot: Math.PI });
+    lv.exitSigns.push({ x: (lv.lobbyX + 0.5) * CELL, y: GATE_H + 0.25, z: lv.H * CELL - HT - 0.05, rot: Math.PI });
+  }
 }
 
 // ---------------------------------------------------------------------------

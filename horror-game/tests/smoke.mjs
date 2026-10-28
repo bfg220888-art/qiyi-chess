@@ -52,7 +52,7 @@ const shot = (page, n) => page.screenshot({ path: path.join(out, n + '.png') });
 const assert = (c, msg) => { if (!c) throw new Error('assert: ' + msg); };
 
 async function startGame(page, opts = {}) {
-  await page.goto(base);
+  await page.goto(base + (opts.query || ''));
   await page.waitForSelector('#btnStart');
   if (opts.menuShot) await shot(page, opts.menuShot);
   if (opts.diff) await page.click(`[data-diff="${opts.diff}"]`);
@@ -104,8 +104,9 @@ const faceThing = (page, kind, idx = 0) => page.evaluate(([kind, idx]) => {
   else if (kind === 'fusebox') { const p = g.world.fusebox.userData.sockets[0].getWorldPosition(new (P.pos.constructor)()); tx = p.x; ty = p.y; tz = p.z; }
   else if (kind === 'locker') { const l = lv.lockers[idx]; tx = l.x + Math.sin(l.rot) * 0.3; ty = 1.2; tz = l.z + Math.cos(l.rot) * 0.3; }
   else if (kind === 'door') { const d = lv.doors[idx]; tx = d.cx; ty = 1.2; tz = d.cz; }
+  else if (kind === 'stairs') { const s = lv.stairs[idx]; tx = s.x; ty = 0.7; tz = s.z; }
   // 找一個站得到的位置（鐵櫃就站在櫃門正前方）
-  let best = kind === 'locker' ? { x: lv.lockers[idx].exitX, z: lv.lockers[idx].exitZ } : null;
+  let best = kind === 'locker' ? { x: lv.lockers[idx].exitX, z: lv.lockers[idx].exitZ } : kind === 'stairs' ? { x: lv.stairs[idx].use.x, z: lv.stairs[idx].use.z } : null;
   for (let r = 0.7; r <= 1.5 && !best; r += 0.1) {
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
       const x = tx + Math.cos(a) * r, z = tz + Math.sin(a) * r;
@@ -445,6 +446,78 @@ await run('theme', { viewport: { width: 960, height: 540 } }, { quality: 'low' }
   await page.waitForFunction(() => window.__SW.state === 'playing' && window.__SW.game && !window.__SW.game.over, null, { timeout: 180000 });
   const after = await page.evaluate(() => ({ ascii: window.__SW.game.lv.ascii(), theme: window.__SW.game.theme }));
   assert(after.theme === 'psych' && after.ascii === before, 'retry regenerates the same floor');
+});
+
+// 多層樓（單人用 ?floors=3 測試）：走樓梯到每一層、在別層撿保險絲、她跟著換樓層
+await run('floors', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'ward' }, async (page) => {
+  await startGame(page, { query: '&floors=3' });
+  const info = await page.evaluate(() => {
+    const g = window.__SW.game;
+    return { n: g.floors.length, cur: g.floorIdx, vis: g.floors.map((F) => F.world.root.visible), titles: g.floors.map((F) => F.title), gen: g.genFloor.index,
+      fuses: g.floors.map((F) => F.lv.items.filter((i) => i.kind === 'fuse').length), stairs: g.floors.map((F) => F.lv.stairs.map((s) => s.dir + s.to)), tag: document.getElementById('floorTag').textContent };
+  });
+  log('floors', JSON.stringify(info));
+  assert(info.n === 3 && info.cur === 0 && info.vis.join() === 'true,false,false', 'three floors, ground floor visible');
+  assert(info.fuses.reduce((a, b) => a + b, 0) === 3 && info.fuses.every((n) => n >= 1), 'fuses spread over floors');
+  const r0 = await render(page);
+  log('render floor 0', JSON.stringify(r0));
+  // 走過每一層：每次挑通往還沒去過的樓層的樓梯
+  const seen = new Set([0]);
+  for (let hop = 0; hop < 4 && seen.size < 3; hop++) {
+    const idx = await page.evaluate((seen) => { const g = window.__SW.game; const i = g.lv.stairs.findIndex((s) => !seen.includes(s.to)); return i >= 0 ? i : 0; }, [...seen]);
+    const t = await faceThing(page, 'stairs', idx);
+    log('stairs target', t);
+    assert(t && t.startsWith('stairs'), 'should target stairs, got ' + t);
+    await render(page);
+    await shot(page, `f${hop}-stairs`);
+    const to = await page.evaluate((i) => window.__SW.game.lv.stairs[i].to, idx);
+    await sim(page, 0.05, { actions: ['interact'] });
+    await sim(page, 1);
+    const st = await page.evaluate(() => { const g = window.__SW.game; return { cur: g.floorIdx, vis: g.floors.map((F) => F.world.root.visible), locked: g.player.locked, stair: !!g.stairT, pf: g.player.floor, tag: document.getElementById('floorTag').textContent, inside: g.lv.cellAt(Math.floor(g.player.pos.x / 3), Math.floor(g.player.pos.z / 3)) >= 0 }; });
+    log('arrived', JSON.stringify(st));
+    assert(st.cur === to && st.pf === to && st.vis.filter(Boolean).length === 1 && st.vis[to] && !st.locked && !st.stair && st.inside, 'switched to floor ' + to);
+    seen.add(to);
+    const w0 = await sim(page, 0.05);
+    const w1 = await sim(page, 1.5, { my: 1 });
+    assert(Math.hypot(w1.x - w0.x, w1.z - w0.z) > 1, 'can walk on the new floor');
+    const r = await render(page);
+    log(`render floor ${to}`, JSON.stringify(r));
+    await shot(page, `f${hop}-floor${to}`);
+  }
+  assert(seen.size === 3, 'visited all floors');
+  // 在不是大門那一層撿保險絲
+  const cur = await page.evaluate(() => window.__SW.game.floorIdx);
+  assert(cur !== 0, 'on an upper floor');
+  const ft = await faceThing(page, 'fuse');
+  log('fuse target', ft);
+  assert(ft && ft.startsWith('item'), 'fuse target on floor ' + cur);
+  await sim(page, 0.05, { actions: ['interact'] });
+  assert(await page.evaluate(() => window.__SW.game.player.fuses === 1), 'picked a fuse on another floor');
+  // 地圖畫得出來（樓梯、樓層列表）
+  await page.evaluate(() => { const g = window.__SW.game; g.mapOpen = true; g.ui.toggleMap(true); });
+  await shot(page, 'f-map');
+  await page.evaluate(() => { const g = window.__SW.game; g.mapOpen = false; g.ui.toggleMap(false); });
+  // 她在別層追你：會走到樓梯換到你這一層
+  const gf = await page.evaluate(() => {
+    const g = window.__SW.game, gh = g.ghost, P = g.player;
+    P.lives = 99;
+    const other = g.F.lv.stairs[0].to;
+    const L = g.floors[other].lv;
+    gh.spawnAt(L.spawn.x, L.spawn.z, 'chase', other);
+    gh.lastKnown = { x: L.spawn.x, z: L.spawn.z };
+    gh.dormantUntil = 0;
+    return { ghost: gh.floor, player: g.floorIdx, visible: gh.model.root.visible };
+  });
+  log('ghost start', JSON.stringify(gf));
+  assert(gf.ghost !== gf.player && !gf.visible, 'ghost on another floor is hidden');
+  let moved = false;
+  for (let k = 0; k < 30 && !moved; k++) {
+    await sim(page, 2);
+    moved = await page.evaluate(() => { const g = window.__SW.game; return g.ghost.floor === g.floorIdx || g.over || !!g.dying; });
+  }
+  const ge = await page.evaluate(() => { const g = window.__SW.game; return { ghost: g.ghost.floor, player: g.floorIdx, state: g.ghost.state, visible: g.ghost.model.root.visible }; });
+  log('ghost after', JSON.stringify(ge));
+  assert(ge.ghost === ge.player, 'ghost followed the player to their floor');
 });
 
 await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low' }, async (page) => {

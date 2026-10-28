@@ -62,13 +62,17 @@ function applyLevelAO(mat, tex, sizeX, sizeZ, strength) {
   mat.customProgramCacheKey = () => 'levelAO' + strength;
 }
 
+// 多層樓：每一層各自一個 World（全部的網格與燈都掛在 root 底下），
+// 只有玩家所在的那一層 root.visible = true；看不見的群組裡的燈 three.js 會直接略過。
+// opts：floorIndex（貼圖快取用的鍵）、boardNote（大廳平面圖下方的附註）
 export class World {
-  constructor(renderer, scene, lv, tf, quality) {
+  constructor(renderer, scene, lv, tf, quality, opts = {}) {
     this.renderer = renderer;
     this.scene = scene;
     this.lv = lv;
     this.tf = tf;
     this.q = quality;
+    this.opts = opts;
     this.root = new THREE.Group();
     scene.add(this.root);
     this.static = new Map(); // materialKey -> Map(chunkKey -> geos)
@@ -91,14 +95,20 @@ export class World {
     this.buildFurniture();
     this.buildFixtures();
     this.buildDecals();
-    this.buildGate();
+    if (this.lv.gate) this.buildGate();
+    else {
+      // 沒有大門的樓層放一盞不亮的點光源：每一層的燈數量一樣，換樓層時材質不必重新編譯
+      this.streetLight = new THREE.PointLight(0xffa860, 0, 18, 1.6);
+      this.streetLight.position.set(0, -20, 0);
+      this.root.add(this.streetLight);
+    }
     this.buildLobbyExtras();
     this.flushStatic();
     this.buildItems();
     this.buildDust();
     // 微弱環境光：完全不開燈時也不是純黑（但非常暗）
     this.hemi = new THREE.HemisphereLight(this.theme.look.hemiSky, this.theme.look.hemiGround, 0.04);
-    this.scene.add(this.hemi);
+    this.root.add(this.hemi);
   }
 
   // ---------------------------------------------------------------------
@@ -271,17 +281,36 @@ export class World {
       if (!floorB.has(k)) floorB.set(k, { b: new GeoBuilder(false), mat, x: cx, z: cz });
       return floorB.get(k).b;
     };
+    // 樓梯口：地板（下樓）或天花板（上樓）挖掉一塊長方形
+    const cut = (rects, holes) => {
+      for (const h of holes) {
+        const out = [];
+        for (const r of rects) {
+          if (h.minX >= r[2] || h.maxX <= r[0] || h.minZ >= r[3] || h.maxZ <= r[1]) { out.push(r); continue; }
+          const hx0 = Math.max(r[0], h.minX), hx1 = Math.min(r[2], h.maxX), hz0 = Math.max(r[1], h.minZ), hz1 = Math.min(r[3], h.maxZ);
+          for (const q of [[r[0], r[1], r[2], hz0], [r[0], hz1, r[2], r[3]], [r[0], hz0, hx0, hz1], [hx1, hz0, r[2], hz1]]) if (q[2] - q[0] > 1e-4 && q[3] - q[1] > 1e-4) out.push(q);
+        }
+        rects = out;
+      }
+      return rects;
+    };
+    const floorHoles = lv.floorHoles || [], ceilHoles = lv.ceilHoles || [];
     for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) {
       const id = lv.cellAt(x, y);
       if (id === VOID) continue;
       const room = lv.rooms[id];
       const fl = look.floor;
-      const mat = M.floors[id === 0 ? fl.corridor : (fl[room.type] || fl.default)];
-      const x0 = x * CELL, x1 = x0 + CELL, z0 = y * CELL, z1 = z0 + CELL;
-      const cx = x0 + CELL / 2, cz = z0 + CELL / 2;
+      const mat = M.floors[id === 0 ? fl.corridor : (fl[room.type === 'landing' ? 'lobby' : room.type] || fl.default)];
+      const X0 = x * CELL, Z0 = y * CELL;
+      const cx = X0 + CELL / 2, cz = Z0 + CELL / 2;
       const U = (v) => v / CELL;
-      fb(mat, cx, cz).quad([x0, 0, z1], [x1, 0, z1], [x1, 0, z0], [x0, 0, z0], [0, 1, 0], [[U(x0), -U(z1)], [U(x1), -U(z1)], [U(x1), -U(z0)], [U(x0), -U(z0)]]);
-      fb(M.ceiling, cx, cz).quad([x0, WALL_H, z0], [x1, WALL_H, z0], [x1, WALL_H, z1], [x0, WALL_H, z1], [0, -1, 0], [[U(x0), U(z0)], [U(x1), U(z0)], [U(x1), U(z1)], [U(x0), U(z1)]]);
+      const cell = [[X0, Z0, X0 + CELL, Z0 + CELL]];
+      for (const [x0, z0, x1, z1] of floorHoles.length ? cut(cell, floorHoles) : cell) {
+        fb(mat, cx, cz).quad([x0, 0, z1], [x1, 0, z1], [x1, 0, z0], [x0, 0, z0], [0, 1, 0], [[U(x0), -U(z1)], [U(x1), -U(z1)], [U(x1), -U(z0)], [U(x0), -U(z0)]]);
+      }
+      for (const [x0, z0, x1, z1] of ceilHoles.length ? cut(cell, ceilHoles) : cell) {
+        fb(M.ceiling, cx, cz).quad([x0, WALL_H, z0], [x1, WALL_H, z0], [x1, WALL_H, z1], [x0, WALL_H, z1], [0, -1, 0], [[U(x0), U(z0)], [U(x1), U(z0)], [U(x1), U(z1)], [U(x0), U(z1)]]);
+      }
     }
     for (const { b, mat, x, z } of floorB.values()) this.addStatic(b.build(), mat, x, z, { noCast: true });
   }
@@ -516,6 +545,7 @@ export class World {
         case 'ectchair': g = P.ectchair(); break;
         case 'ectmachine': g = P.ectmachine(); break;
         case 'table': g = P.table(); break;
+        case 'stairs': this.buildStairs(f); continue;
         default: continue;
       }
       g.position.set(f.x, 0, f.z);
@@ -574,6 +604,71 @@ export class World {
       this.bakeGroup(g);
     }
   }
+  // 樓梯（局部座標：正面 +z 是樓梯口，寬 w、長 d）。上樓：一階一階往天花板的洞爬上去；
+  // 下樓：地板上的洞，三面圍著欄杆，階梯往下沒入黑暗。另外放一個看不見的方塊當互動目標
+  buildStairs(f) {
+    const M = this.M, P = this.props, s = f.stair;
+    const w = f.w, d = f.d, N = 12, rise = WALL_H / N, run = d / N;
+    const g = new THREE.Group();
+    g.position.set(f.x, 0, f.z);
+    g.rotation.y = f.rot;
+    const sw = w - 0.12;
+    if (f.dir === 'up') {
+      for (let k = 0; k < N; k++) {
+        const top = (k + 1) * rise, z1 = d / 2 - k * run, z0 = z1 - run;
+        P.box(g, M.paintWhite, sw, top, run, 0, top / 2, (z0 + z1) / 2);
+        P.box(g, M.rubber, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03); // 防滑條
+      }
+      // 兩側的斜扶手與立柱
+      for (const sx of [-1, 1]) {
+        const x = sx * (w / 2 - 0.03);
+        P.tube(g, M.steel, 0.022, [x, 0.95, d / 2 - 0.05], [x, WALL_H + 0.6, -d / 2 + 0.25], 8);
+        P.tube(g, M.steel, 0.02, [x, 0, d / 2 - 0.05], [x, 0.95, d / 2 - 0.05], 6);
+        P.box(g, M.paint, 0.05, 0.3, d, x, 0.15, 0); // 側板
+      }
+      // 天花板上的洞：往上是暗暗的樓梯井
+      const sh = new THREE.Group();
+      const hz0 = -d / 2, hz1 = -d / 2 + 1.35, hh = 2.2;
+      P.box(sh, M.dark, w + 0.1, hh, 0.06, 0, WALL_H + hh / 2, hz1 + 0.03);
+      P.box(sh, M.dark, 0.06, hh, hz1 - hz0, -w / 2 - 0.02, WALL_H + hh / 2, (hz0 + hz1) / 2);
+      P.box(sh, M.dark, 0.06, hh, hz1 - hz0, w / 2 + 0.02, WALL_H + hh / 2, (hz0 + hz1) / 2);
+      P.box(sh, M.dark, w + 0.1, 0.06, hz1 - hz0, 0, WALL_H + hh, (hz0 + hz1) / 2);
+      g.add(sh);
+    } else {
+      const deep = WALL_H + 0.3;
+      for (let k = 0; k < N; k++) {
+        const top = -(k + 1) * rise, z1 = d / 2 - k * run, z0 = z1 - run;
+        P.box(g, M.paintWhite, sw, deep + top, run, 0, (top - deep) / 2, (z0 + z1) / 2);
+        P.box(g, M.rubber, sw, 0.012, 0.05, 0, top + 0.006, z1 - 0.03);
+      }
+      // 洞的三面牆（往下延伸）與底
+      P.box(g, M.dark, 0.06, deep, d, -w / 2 + 0.03, -deep / 2, 0);
+      P.box(g, M.dark, 0.06, deep, d, w / 2 - 0.03, -deep / 2, 0);
+      P.box(g, M.dark, w, deep, 0.06, 0, -deep / 2, -d / 2 + 0.03);
+      // 洞口邊緣的黃黑警示條
+      P.box(g, M.hazard, w, 0.012, 0.1, 0, 0.006, d / 2 + 0.05);
+      // 欄杆：左右與後面，正面是樓梯口
+      for (const sx of [-1, 1]) {
+        const x = sx * (w / 2 - 0.02);
+        for (const z of [d / 2 - 0.03, 0, -d / 2 + 0.03]) P.tube(g, M.steel, 0.02, [x, 0, z], [x, 1.0, z], 6);
+        P.tube(g, M.steel, 0.024, [x, 1.0, d / 2 - 0.03], [x, 1.0, -d / 2 + 0.03], 8);
+        P.tube(g, M.steel, 0.016, [x, 0.5, d / 2 - 0.03], [x, 0.5, -d / 2 + 0.03], 6);
+      }
+      P.tube(g, M.steel, 0.024, [-w / 2 + 0.02, 1.0, -d / 2 + 0.03], [w / 2 - 0.02, 1.0, -d / 2 + 0.03], 8);
+      P.tube(g, M.steel, 0.016, [-w / 2 + 0.02, 0.5, -d / 2 + 0.03], [w / 2 - 0.02, 0.5, -d / 2 + 0.03], 6);
+    }
+    this.bakeGroup(g);
+    // 互動用的隱形方塊（射線打得到、畫面上看不到）
+    if (!this.hitMat) this.hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    const hit = new THREE.Mesh(new THREE.BoxGeometry(w, 1.7, d), this.hitMat);
+    hit.position.set(f.x, 0.85, f.z);
+    hit.rotation.y = f.rot;
+    hit.userData.kind = 'stairs';
+    hit.userData.stair = s;
+    this.root.add(hit);
+    this.interactables.push(hit);
+  }
+
   updateLockerMatrices(force = false) {
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     let changed = false;
@@ -649,8 +744,8 @@ export class World {
       const L = new THREE.SpotLight(this.theme.lights.color, 0, 7.5, 0.95, 0.65, 2);
       L.castShadow = false;
       L.target.position.set(0, -10, 0);
-      this.scene.add(L);
-      this.scene.add(L.target);
+      this.root.add(L);
+      this.root.add(L.target);
       this.pool.push({ light: L, src: null });
     }
     this.poolTimer = 0;
@@ -778,7 +873,7 @@ export class World {
     M.writing = new THREE.MeshStandardMaterial({ map: this.tf.cache.get('writing').map, roughness: 0.4, metalness: 0, ...M.decalBase });
     // 門牌
     const labels = [...new Set(lv.signs.filter((s) => s.kind === 'roomSign').map((s) => s.text))];
-    const atlas = this.tf.signAtlas(labels.length ? labels : ['—']);
+    const atlas = this.tf.signAtlas(labels.length ? labels : ['—'], 'signs' + (this.opts.floorIndex || ''));
     M.sign = new THREE.MeshStandardMaterial({ map: atlas.map, roughness: 0.55, metalness: 0 });
     for (const s of lv.signs) {
       if (s.kind !== 'roomSign') continue;
@@ -932,7 +1027,7 @@ export class World {
     this.root.add(this.streetLamp);
     this.streetLight = new THREE.PointLight(0xffa860, 0, 18, 1.6);
     this.streetLight.position.set(gx + 2.45, 4.3, gz + 8.5);
-    this.scene.add(this.streetLight);
+    this.root.add(this.streetLight);
     // 雨絲
     const n = 700, pos = new Float32Array(n * 6), off = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) {
@@ -955,7 +1050,8 @@ export class World {
     this.root.add(this.rain);
   }
   openGate() {
-    if (this.streetLight) {
+    if (!this.lv.gate) return;
+    if (this.streetLamp) {
       this.streetLight.intensity = 30;
       this.streetLamp.material.color.setRGB(3, 1.9, 1.0);
       this.rainUniforms.uLit.value = 0.35;
@@ -971,62 +1067,71 @@ export class World {
   buildLobbyExtras() {
     const lv = this.lv, M = this.M, P = this.props;
     const lobby = lv.lobby;
-    // 疏散平面圖（大廳北牆）
-    const mapCanvas = document.createElement('canvas');
-    mapCanvas.width = 1024; mapCanvas.height = 768;
-    const g = mapCanvas.getContext('2d');
-    g.fillStyle = '#d9d4c3'; g.fillRect(0, 0, 1024, 768);
-    g.fillStyle = '#7d1c14'; g.fillRect(0, 0, 1024, 86);
-    g.fillStyle = '#f2ece0'; g.font = '700 54px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(`聖羅莎紀念醫院　${this.theme.board} 疏散平面圖`, 512, 45);
-    const scale = Math.min(940 / (lv.W * CELL), 640 / (lv.H * CELL));
-    const ox = 512 - lv.W * CELL * scale / 2, oy = 100;
-    drawFloorPlan(g, lv, {
-      x0: ox, y0: oy, scale, wallColor: '#2a2620', lineWidth: 3, doorColor: '#c0b8a0',
-      roomColor: (room) => (room.type === 'lobby' ? '#e9d79a' : room.id === 0 ? '#cfc8b2' : room.type === 'generator' ? '#d7b0a0' : '#e4dfcf'),
-      labels: (room) => (room.type === 'generator' ? '發電機房' : room.type === 'lobby' ? room.label : null),
-      labelColor: '#3a2a20', labelFont: '700 22px sans-serif',
-    });
-    // 你在這裡
-    g.fillStyle = '#c3261b';
-    const sx = ox + lv.spawn.x * scale, sy = oy + lv.spawn.z * scale;
-    g.beginPath(); g.arc(sx, sy, 11, 0, 6.29); g.fill();
-    g.font = '700 22px sans-serif'; g.fillText('你在這裡', sx, sy - 24);
-    // 污漬
-    for (let k = 0; k < 30; k++) {
-      const x = Math.random() * 1024, y = Math.random() * 768;
-      const gr = g.createRadialGradient(x, y, 1, x, y, 20 + Math.random() * 80);
-      gr.addColorStop(0, 'rgba(70,50,25,0.3)'); gr.addColorStop(1, 'rgba(70,50,25,0)');
-      g.fillStyle = gr; g.fillRect(0, 0, 1024, 768);
+    // 大廳才有平面圖與電視（樓梯間沒有）
+    if (lobby.type === 'lobby') {
+      // 疏散平面圖（大廳北牆）
+      const mapCanvas = document.createElement('canvas');
+      mapCanvas.width = 1024; mapCanvas.height = 768;
+      const g = mapCanvas.getContext('2d');
+      g.fillStyle = '#d9d4c3'; g.fillRect(0, 0, 1024, 768);
+      g.fillStyle = '#7d1c14'; g.fillRect(0, 0, 1024, 86);
+      g.fillStyle = '#f2ece0'; g.font = '700 54px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(`聖羅莎紀念醫院　${this.theme.board} 疏散平面圖`, 512, 45);
+      const scale = Math.min(940 / (lv.W * CELL), (this.opts.boardNote ? 590 : 640) / (lv.H * CELL));
+      const ox = 512 - lv.W * CELL * scale / 2, oy = 100;
+      drawFloorPlan(g, lv, {
+        x0: ox, y0: oy, scale, wallColor: '#2a2620', lineWidth: 3, doorColor: '#c0b8a0',
+        roomColor: (room) => (room.type === 'lobby' ? '#e9d79a' : room.id === 0 ? '#cfc8b2' : room.type === 'generator' ? '#d7b0a0' : '#e4dfcf'),
+        labels: (room) => (room.type === 'generator' ? '發電機房' : room.type === 'lobby' ? room.label : room.type === 'stairs' ? '樓梯' : null),
+        labelColor: '#3a2a20', labelFont: '700 22px sans-serif',
+      });
+      // 多層樓：發電機房在哪一層
+      if (this.opts.boardNote) {
+        g.fillStyle = '#7d1c14';
+        g.font = '700 30px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+        g.fillText(this.opts.boardNote, 512, 728);
+      }
+      // 你在這裡
+      g.fillStyle = '#c3261b';
+      const sx = ox + lv.spawn.x * scale, sy = oy + lv.spawn.z * scale;
+      g.beginPath(); g.arc(sx, sy, 11, 0, 6.29); g.fill();
+      g.font = '700 22px sans-serif'; g.fillText('你在這裡', sx, sy - 24);
+      // 污漬
+      for (let k = 0; k < 30; k++) {
+        const x = Math.random() * 1024, y = Math.random() * 768;
+        const gr = g.createRadialGradient(x, y, 1, x, y, 20 + Math.random() * 80);
+        gr.addColorStop(0, 'rgba(70,50,25,0.3)'); gr.addColorStop(1, 'rgba(70,50,25,0)');
+        g.fillStyle = gr; g.fillRect(0, 0, 1024, 768);
+      }
+      const tex = new THREE.CanvasTexture(mapCanvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      const boardMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, metalness: 0 });
+      // 掛在大廳北牆（開口旁邊那一格）
+      const bx = (lv.lobbyX - 1 + 0.5) * CELL, bz = lv.lobbyTop * CELL + HT + 0.015;
+      const board = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.05), boardMat);
+      board.position.set(bx, 1.55, bz + 0.03);
+      board.receiveShadow = true;
+      this.root.add(board);
+      const fr = new THREE.Group();
+      P.box(fr, M.wood, 1.5, 1.15, 0.04, bx, 1.55, bz + 0.008);
+      this.bakeGroup(fr);
+      // 電視（雜訊畫面）
+      const tvCanvas = document.createElement('canvas');
+      tvCanvas.width = 80; tvCanvas.height = 60;
+      this.tvCtx = tvCanvas.getContext('2d');
+      this.tvTex = new THREE.CanvasTexture(tvCanvas);
+      this.tvTex.colorSpace = THREE.SRGBColorSpace;
+      M.tvScreen.map = this.tvTex;
+      M.tvScreen.color.setRGB(1.2, 1.2, 1.2);
+      const tvx = (lv.lobbyX + 1 + 0.5) * CELL, tvz = lv.lobbyTop * CELL + HT + 0.33;
+      const tv = mergeLocal(P.tv(), mergeGeometries);
+      tv.position.set(tvx, 2.3, tvz);
+      tv.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      this.root.add(tv);
+      this.tv = tv;
     }
-    const tex = new THREE.CanvasTexture(mapCanvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
-    const boardMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, metalness: 0 });
-    // 掛在大廳北牆（開口旁邊那一格）
-    const bx = (lv.lobbyX - 1 + 0.5) * CELL, bz = lv.lobbyTop * CELL + HT + 0.015;
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.05), boardMat);
-    board.position.set(bx, 1.55, bz + 0.03);
-    board.receiveShadow = true;
-    this.root.add(board);
-    const fr = new THREE.Group();
-    P.box(fr, M.wood, 1.5, 1.15, 0.04, bx, 1.55, bz + 0.008);
-    this.bakeGroup(fr);
-    // 電視（雜訊畫面）
-    const tvCanvas = document.createElement('canvas');
-    tvCanvas.width = 80; tvCanvas.height = 60;
-    this.tvCtx = tvCanvas.getContext('2d');
-    this.tvTex = new THREE.CanvasTexture(tvCanvas);
-    this.tvTex.colorSpace = THREE.SRGBColorSpace;
-    M.tvScreen.map = this.tvTex;
-    M.tvScreen.color.setRGB(1.2, 1.2, 1.2);
-    const tvx = (lv.lobbyX + 1 + 0.5) * CELL, tvz = lv.lobbyTop * CELL + HT + 0.33;
-    const tv = mergeLocal(P.tv(), mergeGeometries);
-    tv.position.set(tvx, 2.3, tvz);
-    tv.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-    this.root.add(tv);
-    this.tv = tv;
     // 電話
     if (lv.phone) {
       const ph = mergeLocal(P.phone(), mergeGeometries);
@@ -1038,7 +1143,6 @@ export class World {
       ph.userData.kind = 'phone';
       this.interactables.push(ph);
     }
-    void lobby;
   }
 
   // ---------------------------------------------------------------------
@@ -1138,10 +1242,10 @@ export class World {
     this.lightningStrength = strength;
   }
 
-  update(dt, camera, flashOn) {
-    const t = (this.time += dt);
+  // 門、鐵櫃、大門的動畫：每一層每格都要跑（她在別層開的門也要真的打開）
+  updateMechanics(dt) {
+    this.time += dt;
     const lv = this.lv;
-    // 門
     for (const d of lv.doors) {
       if (Math.abs(d.angle - d.target) > 1e-3) {
         const sp = d.speed || 2.6;
@@ -1158,10 +1262,17 @@ export class World {
     }
     this.updateLockerMatrices();
     // 大門
-    if (lv.gate.open && lv.gate.angle < lv.gate.target) {
+    if (lv.gate && lv.gate.open && lv.gate.angle < lv.gate.target) {
       lv.gate.angle = Math.min(lv.gate.target, lv.gate.angle + dt * 0.9);
       for (const L of this.gateLeaves) L.pivot.rotation.y = L.base + (L.side < 0 ? -lv.gate.angle : lv.gate.angle);
     }
+  }
+
+  // 玩家所在樓層的完整更新（燈光池、燈管、雨、灰塵……）
+  update(dt, camera, flashOn) {
+    this.updateMechanics(dt);
+    const t = this.time;
+    const lv = this.lv;
     // 燈具
     let colorDirty = false;
     const col = new THREE.Color();

@@ -247,11 +247,71 @@ export class Ghost {
     this.knowsLocker = null;
     this.emitter = null;
     this.humming = false;
+    // 多層樓：她在哪一層（用那一層的地圖、尋路與門）；目標在別層太久就走樓梯過去
+    this.floor = 0;
+    this.awayT = 0;
+    this.travelLink = null;
     model.root.visible = false;
     game.scene.add(model.root);
   }
 
   get diff() { return this.game.diff; }
+  get F() { return this.game.floors[this.floor]; }
+  get lv() { return this.F.lv; }
+  get nav() { return this.F.ghostNav; }
+  get world() { return this.F.world; }
+  // 跟看畫面的人在同一層才看得到、聽得到她
+  get near() { return this.floor === this.game.floorIdx; }
+  // 某個玩家（自己或其他人）在哪一層
+  static floorOf(P) { return P && Number.isInteger(P.floor) ? P.floor : 0; }
+  sfx(name, opts) { if (this.near) this.game.audio.play(name, opts); }
+
+  setFloor(i) {
+    if (!Number.isInteger(i) || i < 0 || i >= this.game.floors.length || i === this.floor) return;
+    this.floor = i;
+    this.path = null;
+    this.knowsLocker = null;
+    this.hearT = 0;
+    this.travelLink = null;
+    this.investigateTarget = null;
+    if (!this.near) { this.stopHum(); this.model.root.visible = false; }
+  }
+
+  // 往目標樓層的下一段樓梯（樓層照上下順序排，一次走一段）
+  stairToward(to) {
+    const fl = this.game.floors, here = fl[this.floor].ord, there = fl[to].ord;
+    const step = there > here ? 1 : -1;
+    return this.lv.stairs.find((s) => fl[s.to].ord === here + step) || null;
+  }
+  // 走到樓梯口 → 換到另一層，從那一層對應的樓梯走出來
+  takeStairs(link) {
+    const g = this.game, from = this.floor;
+    this.sfx('ghostStep', { pos: { x: link.x, y: 0.1, z: link.z }, fast: this.state === 'chase' });
+    const dest = g.floors[link.to];
+    const back = dest.lv.stairs.find((s) => s.to === from) || dest.lv.stairs[0];
+    this.setFloor(link.to);
+    const k = this.nav.nearestFree(back.arrive.x, back.arrive.z);
+    const c = k >= 0 ? this.nav.center(k) : back.arrive;
+    this.pos.set(c.x, 0, c.z);
+    this.yaw = back.arrive.yaw + Math.PI;
+    this.lastKnown = { x: c.x, z: c.z };
+    this.stuckT = 0;
+    this.sfx('ghostStep', { pos: { x: c.x, y: 0.1, z: c.z }, fast: this.state === 'chase' });
+    if (this.near && this.state !== 'dormant') this.sfx('doorCreak', { pos: { x: back.x, y: 1.2, z: back.z }, short: true });
+  }
+  travel(dt, speed, to) {
+    const link = this.stairToward(to);
+    if (!link) return;
+    if (this.travelLink !== link || !this.path) {
+      this.travelLink = link;
+      if (!this.goTo(link.use.x, link.use.z)) { this.travelLink = null; this.takeStairs(link); return; }
+    }
+    const done = this.moveAlong(dt, speed);
+    if (done || Math.hypot(link.use.x - this.pos.x, link.use.z - this.pos.z) < 0.6) {
+      this.travelLink = null;
+      this.takeStairs(link);
+    }
+  }
 
   setState(s) {
     if (this.state === s) return;
@@ -264,7 +324,7 @@ export class Ghost {
       this.stopHum();
       this.lostT = 0;
       this.replanT = 0;
-      if (prev !== 'chase') {
+      if (prev !== 'chase' && this.near) {
         a.play('shriek', { pos: this.pos });
         this.game.onChaseStart();
       }
@@ -276,7 +336,7 @@ export class Ghost {
   }
 
   startHum() {
-    if (this.humming || this.state === 'dormant') return;
+    if (this.humming || this.state === 'dormant' || !this.near) return;
     if (!this.emitter) this.emitter = this.game.audio.createEmitter();
     this.game.audio.startHum(this.emitter);
     this.humming = true;
@@ -287,18 +347,19 @@ export class Ghost {
     this.humming = false;
   }
 
-  spawnAt(x, z, state = 'wander') {
-    const k = this.game.ghostNav.nearestFree(x, z);
-    const c = k >= 0 ? this.game.ghostNav.center(k) : { x, z };
+  spawnAt(x, z, state = 'wander', floor = this.floor) {
+    this.setFloor(floor);
+    const k = this.nav.nearestFree(x, z);
+    const c = k >= 0 ? this.nav.center(k) : { x, z };
     this.pos.set(c.x, 0, c.z);
-    this.model.root.visible = true;
+    this.model.root.visible = this.near;
     this.state = 'none';
     this.setState(state);
   }
 
   // 找一個離玩家指定距離、看不到玩家的位置
   findSpot(minD, maxD, needHidden = true) {
-    const g = this.game, lv = g.lv, nav = g.ghostNav, pp = (this.target || g.player).pos;
+    const g = this.game, lv = this.lv, nav = this.nav, pp = (this.target || g.player).pos;
     for (let t = 0; t < 80; t++) {
       const x = Math.random() * lv.W * CELL, z = Math.random() * lv.H * CELL;
       if (!nav.isFree(x, z)) continue;
@@ -317,8 +378,8 @@ export class Ghost {
     return false;
   }
 
-  hearNoise(x, z, radius, kind = '') {
-    if (this.state === 'dormant' || this.state === 'stunned' || this.state === 'kill') return;
+  hearNoise(x, z, radius, kind = '', floor = this.floor) {
+    if (this.state === 'dormant' || this.state === 'stunned' || this.state === 'kill' || floor !== this.floor) return;
     // 追逐中只有在看不到玩家時，才會被摔破的瓶子之類的大聲響引開（玩家自己的腳步聲不算）
     if (this.state === 'chase' && (kind !== 'bottle' || this.seesPlayer || this.lostT < 0.3 || this.enraged || this.knowsLocker)) return;
     const d = Math.hypot(x - this.pos.x, z - this.pos.z);
@@ -341,7 +402,7 @@ export class Ghost {
   stun() {
     if (this.state === 'dormant' || this.state === 'kill') return false;
     this.setState('stunned');
-    this.game.audio.play('ghostScream', { pos: this.pos });
+    this.sfx('ghostScream', { pos: this.pos });
     return true;
   }
 
@@ -357,47 +418,51 @@ export class Ghost {
     this.pos.z += (dz / d) * step;
     const targetYaw = Math.atan2(dx, dz);
     this.yaw += angDiff(targetYaw, this.yaw) * Math.min(1, dt * 6);
-    // 開門
-    for (const door of g.lv.doors) {
+    // 開門（她所在的那一層）
+    for (const door of this.lv.doors) {
       if (door.angle > 0.9) continue;
       if (Math.abs(door.cx - this.pos.x) < 1.3 && Math.abs(door.cz - this.pos.z) < 1.3) {
         const fast = this.state === 'chase';
         // 已經在開了：只在追逐時把速度加快，不要每格都重播開門聲
-        if (door.target >= 1.4) { if (fast && door.speed < 7) g.world.setDoor(door, door.target, 7); continue; }
-        g.world.setDoor(door, 1.45, fast ? 7 : 1.4);
-        g.audio.play(fast ? 'doorBang' : 'doorCreak', { pos: { x: door.cx, y: 1.2, z: door.cz } });
+        if (door.target >= 1.4) { if (fast && door.speed < 7) this.world.setDoor(door, door.target, 7); continue; }
+        this.world.setDoor(door, 1.45, fast ? 7 : 1.4);
+        this.sfx(fast ? 'doorBang' : 'doorCreak', { pos: { x: door.cx, y: 1.2, z: door.cz } });
       }
     }
+    void g;
     return false;
   }
 
   goTo(x, z) {
-    const p = this.game.ghostNav.findPath(this.pos.x, this.pos.z, x, z);
+    const p = this.nav.findPath(this.pos.x, this.pos.z, x, z);
     this.path = p;
     this.pathI = 0;
     return !!p;
   }
 
   update(dt) {
-    const g = this.game, lv = g.lv;
+    const g = this.game, lv = this.lv;
     // 多人連線：只有房主跑 AI，其他人照房主送來的狀態播放
     if (g.mp && !g.mp.isHost) { this.netUpdate(dt); return; }
     const P = g.mp ? g.mpGhostTarget(this) : g.player;
     this.target = P;
     this.stateT += dt;
     const m = this.model;
-    if (this.state === 'dormant') { m.root.visible = false; return; }
-    m.root.visible = true;
+    if (this.state === 'dormant') { m.root.visible = false; this.awayT = 0; return; }
+    m.root.visible = this.near;
+    // 目標在別層：看不到、聽不到、抓不到，距離當作很遠
+    const pf = Ghost.floorOf(P), same = pf === this.floor;
+    this.awayT = same ? 0 : this.awayT + dt;
     const eye = P.pos;
     const dx = eye.x - this.pos.x, dz = eye.z - this.pos.z;
-    const dist = Math.hypot(dx, dz);
+    const dist = same ? Math.hypot(dx, dz) : 99;
     // --- 感知
     let sees = false;
-    if (!P.hiding && this.state !== 'stunned' && this.state !== 'kill') {
+    if (same && !P.hiding && this.state !== 'stunned' && this.state !== 'kill') {
       let range = 12 * this.diff.sight * this.aggression;
       if (P.flashOn) range *= 1.45;
       if (P.crouching) range *= 0.62;
-      if (g.world.lightAt(eye.x, eye.z) > 0.4) range *= 1.2;
+      if (this.world.lightAt(eye.x, eye.z) > 0.4) range *= 1.2;
       if (this.state === 'chase') range *= 1.5;
       if (dist < range) {
         const toP = Math.atan2(dx, dz);
@@ -406,7 +471,7 @@ export class Ghost {
       }
     }
     // 理智歸零時她知道你在哪
-    if (P.sanity <= 0.01 && this.state !== 'stunned' && !P.hiding) sees = sees || dist < 25;
+    if (same && P.sanity <= 0.01 && this.state !== 'stunned' && !P.hiding) sees = sees || dist < 25;
     this.seesPlayer = sees;
     if (sees) {
       this.lastKnown = { x: eye.x, z: eye.z };
@@ -418,7 +483,7 @@ export class Ghost {
     }
     // 玩家躲在櫃子裡：她在附近停下腳步時會側耳傾聽
     this.listening = false;
-    if (P.hiding && !this.knowsLocker && (this.state === 'search' || this.state === 'investigate' || this.state === 'wander') && dist < 3.4 && this.speed < 0.35) {
+    if (same && P.hiding && !this.knowsLocker && (this.state === 'search' || this.state === 'investigate' || this.state === 'wander') && dist < 3.4 && this.speed < 0.35) {
       this.listening = true;
       if (!P.holdingBreath) {
         this.hearT = (this.hearT || 0) + dt * (1.15 - dist / 3.4) * 0.9 * this.diff.hearing;
@@ -426,21 +491,27 @@ export class Ghost {
       } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.5);
     } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.3);
     if (sees && this.suspicion >= 1 && this.state !== 'chase' && this.state !== 'stunned' && this.state !== 'kill') this.setState('chase');
-    if (this.enraged && this.state !== 'stunned' && this.state !== 'kill' && this.state !== 'chase' && !P.hiding) {
+    if (same && this.enraged && this.state !== 'stunned' && this.state !== 'kill' && this.state !== 'chase' && !P.hiding) {
       this.lastKnown = { x: eye.x, z: eye.z };
       this.setState('chase');
     }
 
     const base = this.diff.ghostSpeed * (0.85 + 0.15 * this.aggression);
     let speed = 0;
-    switch (this.state) {
+    // 目標在別層：追逐中（或發狂時）馬上跟著走樓梯；閒晃 / 搜索一陣子之後也會換到那一層
+    const busy = this.state === 'stunned' || this.state === 'kill';
+    const goFloor = !same && !busy && (this.state === 'chase' || this.enraged || this.awayT > (this.state === 'wander' ? 28 : 12) / this.aggression);
+    if (goFloor) {
+      speed = (this.state === 'chase' || this.enraged ? (this.enraged ? 4.15 : 3.45) : this.state === 'wander' ? 1.15 : 2.0) * base;
+      this.travel(dt, speed, pf);
+    } else switch (this.state) {
       case 'wander': {
         speed = 1.15 * base;
         if (!this.path) {
           if (this.idleT > 0) { this.idleT -= dt; speed = 0; break; }
           let target = null;
           if (Math.random() < 0.55 + 0.1 * this.aggression) target = this.findSpot(6, 20, false);
-          if (!target) {
+          if (!target || !same) {
             const room = lv.rooms[1 + Math.floor(Math.random() * (lv.rooms.length - 1))];
             target = { x: room.cx, z: room.cz };
           }
@@ -503,7 +574,7 @@ export class Ghost {
           let ok = false;
           for (let t = 0; t < 10 && !ok; t++) {
             const x = c.x + (Math.random() - 0.5) * 10, z = c.z + (Math.random() - 0.5) * 10;
-            if (g.ghostNav.isFree(x, z)) ok = this.goTo(x, z);
+            if (this.nav.isFree(x, z)) ok = this.goTo(x, z);
           }
           this.searchN = (this.searchN || 0) + 1;
           if (!ok) this.idleT = 1;
@@ -544,12 +615,12 @@ export class Ghost {
       if (this.stuckT > 2.5) {
         this.stuckT = 0;
         this.path = null;
-        const k = g.ghostNav.nearestFree(this.pos.x, this.pos.z);
-        if (k >= 0) { const c = g.ghostNav.center(k); this.pos.x = c.x; this.pos.z = c.z; }
+        const k = this.nav.nearestFree(this.pos.x, this.pos.z);
+        if (k >= 0) { const c = this.nav.center(k); this.pos.x = c.x; this.pos.z = c.z; }
       }
     }
     // 離玩家太遠太久 → 瞬移到附近（維持壓迫感）
-    if (this.state === 'wander' && dist > 28) {
+    if (this.state === 'wander' && same && dist > 28) {
       this.farT += dt;
       if (this.farT > 22) { this.farT = 0; this.teleportNear(14, 24); }
     } else this.farT = 0;
@@ -587,26 +658,33 @@ export class Ghost {
     m.pose(this.state, t, this.phase, this.speed);
     m.setEyes(this.state === 'chase' ? 1.4 : this.state === 'stunned' ? 0.2 : 0.55);
     if (this.emitter) this.emitter.setPosition(this.pos.x, 1.6, this.pos.z);
+    // 哼歌只在同一層聽得到（換樓層時停掉、回到同一層再接上）
+    if (!this.near && this.humming) this.stopHum();
+    else if (this.near && !this.humming && (this.state === 'wander' || this.state === 'search')) this.startHum();
     if (this.speed > 0.3) {
       this.stepT -= dt * this.speed;
       if (this.stepT <= 0) {
         this.stepT = 0.62;
-        g.audio.play('ghostStep', { pos: { x: this.pos.x, y: 0.1, z: this.pos.z }, fast: this.state === 'chase' });
+        this.sfx('ghostStep', { pos: { x: this.pos.x, y: 0.1, z: this.pos.z }, fast: this.state === 'chase' });
       }
     }
+    void g;
   }
 
   // ---- 多人連線：房主送來的女鬼狀態
   netState() {
     return {
-      t: 'gh', x: +this.pos.x.toFixed(2), z: +this.pos.z.toFixed(2), y: +this.yaw.toFixed(2), s: this.state,
+      t: 'gh', fl: this.floor, x: +this.pos.x.toFixed(2), z: +this.pos.z.toFixed(2), y: +this.yaw.toFixed(2), s: this.state,
       v: +this.speed.toFixed(2), sp: this.seesPlayer ? 1 : 0, tg: this.targetSlot ?? -1, l: this.listening ? 1 : 0,
     };
   }
   applyNet(m) {
     if (![m.x, m.z, m.y].every(Number.isFinite) || !NET_STATES.has(m.s)) return;
+    if (!Number.isInteger(m.fl) || m.fl < 0 || m.fl >= this.game.floors.length) return;
     const first = !this.net;
     this.net = m;
+    // 換樓層：直接跳到新位置
+    if (m.fl !== this.floor) { this.setFloor(m.fl); this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
     // 房主那邊瞬間移動（防卡住的傳送）：直接跳過去，不要滑過牆
     const far = Math.hypot(m.x - this.pos.x, m.z - this.pos.z) > 3;
     if (far) { this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
@@ -614,7 +692,7 @@ export class Ghost {
       const prev = this.state;
       // 從消失的狀態現身：直接出現在新位置
       if (prev === 'dormant' || first) { this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
-      if (m.s === 'stunned') this.game.audio.play('ghostScream', { pos: this.pos });
+      if (m.s === 'stunned') this.sfx('ghostScream', { pos: this.pos });
       this.setState(m.s);
     }
   }
@@ -622,7 +700,7 @@ export class Ghost {
     const g = this.game, m = this.model, n = this.net;
     this.stateT += dt;
     if (!n || this.state === 'dormant') { m.root.visible = false; return; }
-    m.root.visible = true;
+    m.root.visible = this.near;
     const k = 1 - Math.exp(-dt * 12);
     this.pos.x += (n.x - this.pos.x) * k;
     this.pos.z += (n.z - this.pos.z) * k;
@@ -632,7 +710,7 @@ export class Ghost {
     this.listening = !!n.l;
     // 她在看誰：自己就看鏡頭，其他人就看那個人的頭
     const P = n.tg === g.mp.mySlot ? g.player : g.remotes.get(n.tg) || null;
-    this.dist = P ? Math.hypot(P.pos.x - this.pos.x, P.pos.z - this.pos.z) : 99;
+    this.dist = P && Ghost.floorOf(P) === this.floor ? Math.hypot(P.pos.x - this.pos.x, P.pos.z - this.pos.z) : 99;
     this.animate(dt, P);
   }
 }

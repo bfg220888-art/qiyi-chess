@@ -1,6 +1,7 @@
 // 多人連線（最多 4 人）：房主是權威端，負責女鬼 AI、導演的實體事件、道具與保險絲的歸屬；
 // 每個人在自己的電腦上移動自己的角色，每秒 15 次把位置傳給房主，房主再轉給其他人。
 // 大家用同一組種子、難度、地圖產生一模一樣的醫院，所以門、道具、鐵櫃都用索引對應。
+// 多層樓（普通 2 層、惡夢 3 層）：門、道具、事件、音效的訊息另外帶樓層索引 f，玩家與女鬼的狀態帶 fl。
 import * as THREE from 'three';
 import { Net, normalizeCode, netErrorText } from './net.js';
 import { SLOT_COLORS } from './player-model.js';
@@ -20,6 +21,7 @@ function cleanState(m) {
     f: m.f ? 1 : 0, h: Number.isInteger(m.h) && m.h >= 0 && m.h < 1000 ? m.h : -1,
     c: m.c ? 1 : 0, v: num(m.v, 0, 12), a: m.a === 1 || m.a === 2 ? m.a : 0,
     b: m.b ? 1 : 0, sa: num(m.sa, 0, 1, 1), hb: m.hb ? 1 : 0,
+    fl: Number.isInteger(m.fl) && m.fl >= 0 && m.fl < 8 ? m.fl : 0, // 樓層（遊戲裡再對照實際層數）
   };
 }
 const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx']);
@@ -252,10 +254,10 @@ export class MP {
     for (const slot of [...game.remotes.keys()]) if (!this.players.some((p) => p.slot === slot)) game.mpRemoveRemote(slot);
   }
 
-  // 房主：誰身上帶著哪些保險絲（被抓走、離開時要放回原處）
-  carry(slot, i) {
+  // 房主：誰身上帶著哪些保險絲（{ f: 樓層, i: 道具索引 }；被抓走、離開時要放回原處）
+  carry(slot, e) {
     const list = this.carried.get(slot) || [];
-    list.push(i);
+    list.push(e);
     this.carried.set(slot, list);
   }
   useCarried(slot) {
@@ -268,9 +270,9 @@ export class MP {
     const list = this.carried.get(slot);
     if (!this.isHost || !list || !list.length || !this.game) return;
     this.carried.delete(slot);
-    for (const i of list) {
-      this.bcast({ t: 'respawn', i });
-      this.game.mpRespawnItem(i);
+    for (const e of list) {
+      this.bcast({ t: 'respawn', f: e.f, i: e.i });
+      this.game.mpRespawnItem(e.f, e.i);
     }
     this.game.ui.hint('掉落的保險絲回到原本的地方了。', 3);
   }
@@ -364,13 +366,13 @@ export class MP {
       }
       // 撿東西：玩家請求 → 房主決定給誰
       case 'pick':
-        if (this.isHost) g.mpHostPick(m.i, slot);
+        if (this.isHost) g.mpHostPick(m.f, m.i, slot);
         break;
       case 'took':
-        g.mpTook(m.i, m.by);
+        g.mpTook(m.f, m.i, m.by);
         break;
       case 'respawn':
-        g.mpRespawnItem(m.i);
+        g.mpRespawnItem(m.f, m.i);
         break;
       // 保險絲
       case 'fuse':
@@ -381,13 +383,13 @@ export class MP {
         break;
       // 聲音吸引她、閃光定住她
       case 'noise':
-        if (this.isHost && [m.x, m.z, m.r].every(Number.isFinite)) g.makeNoise(m.x, m.z, Math.min(30, m.r), String(m.k || ''));
+        if (this.isHost && [m.x, m.z, m.r].every(Number.isFinite) && g.mpFloor(m.f)) g.makeNoise(m.x, m.z, Math.min(30, m.r), String(m.k || ''), m.f);
         break;
       case 'stun':
         if (this.isHost) {
           const r = g.remotes.get(slot), gh = g.ghost;
           // 簡單檢查：閃光的人要在她附近
-          if (r && r.a === 0 && Math.hypot(r.pos.x - gh.pos.x, r.pos.z - gh.pos.z) < 13 && gh.stun()) this.net.send(from, { t: 'stunned' });
+          if (r && r.a === 0 && r.floor === gh.floor && Math.hypot(r.pos.x - gh.pos.x, r.pos.z - gh.pos.z) < 13 && gh.stun()) this.net.send(from, { t: 'stunned' });
         }
         break;
       case 'stunned':
@@ -400,9 +402,9 @@ export class MP {
         break;
       // 音效、世界事件
       case 'sfx':
-        if (!NET_SFX.has(m.n) || ![m.x, m.z].every(Number.isFinite)) return;
-        const sfx = { t: 'sfx', n: m.n, x: num(m.x, -500, 500), y: num(m.y, -5, 10, 1), z: num(m.z, -500, 500) };
-        g.audio.play(sfx.n, { pos: { x: sfx.x, y: sfx.y, z: sfx.z } });
+        if (!NET_SFX.has(m.n) || ![m.x, m.z].every(Number.isFinite) || !g.mpFloor(m.f)) return;
+        const sfx = { t: 'sfx', f: m.f, n: m.n, x: num(m.x, -500, 500), y: num(m.y, -5, 10, 1), z: num(m.z, -500, 500) };
+        if (sfx.f === g.floorIdx) g.audio.play(sfx.n, { pos: { x: sfx.x, y: sfx.y, z: sfx.z } });
         if (this.isHost) this.bcast(sfx, from);
         break;
       case 'ev':

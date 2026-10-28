@@ -1475,8 +1475,9 @@ export class TextureFactory {
     });
   }
 
-  signAtlas(labels) {
-    return this.get('signs', () => {
+  // key：每一層樓的門牌不一樣，各自一張圖集
+  signAtlas(labels, key = 'signs') {
+    return this.get(key, () => {
       const cols = 2, rowsN = Math.ceil(labels.length / cols);
       const CW = 512, CH = 112;
       const c = mk(CW * cols, CH * Math.max(1, rowsN));
@@ -1498,7 +1499,7 @@ export class TextureFactory {
           g.fillStyle = gr; g.fillRect(x, y, CW, CH);
         }
       });
-      this.cache.set('signs', { map: this.tex(c, { srgb: true, repeat: false }), cols, rows: Math.max(1, rowsN) });
+      this.cache.set(key, { map: this.tex(c, { srgb: true, repeat: false }), cols, rows: Math.max(1, rowsN) });
     });
   }
 

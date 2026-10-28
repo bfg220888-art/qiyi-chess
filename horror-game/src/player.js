@@ -21,6 +21,7 @@ export class Player {
     this.game = game;
     const lv = game.lv;
     this.pos = new THREE.Vector3(lv.spawn.x, EYE_H, lv.spawn.z);
+    this.floor = game.floorIdx || 0; // 多層樓：目前在第幾層（樓層陣列的索引）
     this.yaw = lv.spawn.yaw;
     this.pitch = 0;
     this.vel = new THREE.Vector2();
@@ -103,7 +104,7 @@ export class Player {
         this.gaspCooldown = 2.5;
         g.audio.play('gasp');
         g.makeNoise(this.pos.x, this.pos.z, 9);
-        if (g.ghost.state !== 'dormant' && Math.hypot(g.ghost.pos.x - this.pos.x, g.ghost.pos.z - this.pos.z) < 8 && this.hiding) g.ghost.heardHiding(this.hiding);
+        if (g.ghost.state !== 'dormant' && g.ghost.floor === this.floor && Math.hypot(g.ghost.pos.x - this.pos.x, g.ghost.pos.z - this.pos.z) < 8 && this.hiding) g.ghost.heardHiding(this.hiding);
       }
     } else this.breath = Math.min(1, this.breath + dt / (this.hiding ? 3.5 : 2));
 
@@ -170,7 +171,7 @@ export class Player {
     if (dark) ds -= 0.011;
     if (lit > 0.4) ds += 0.018;
     if (g.ghostOnScreen) ds -= 0.045;
-    if (g.ghost.state === 'chase') ds -= 0.015;
+    if (g.ghost.state === 'chase' && g.ghost.floor === this.floor) ds -= 0.015;
     if (this.hiding) ds -= 0.003;
     this.sanity = clamp(this.sanity + ds * dt * (g.diff.label === '惡夢' ? 1.25 : 1), 0, 1);
 
@@ -313,7 +314,7 @@ export class Player {
       if (to.dot(fwd) < Math.cos(0.6)) return false;
       return sightClear(g.lv, this.pos.x, this.pos.z, x, z);
     };
-    if (gh.state !== 'dormant' && tryStun(gh.pos.x, gh.pos.z)) {
+    if (gh.state !== 'dormant' && gh.floor === this.floor && tryStun(gh.pos.x, gh.pos.z)) {
       // 多人時女鬼在房主那邊：請房主定住她
       if (g.mp && !g.mp.isHost) g.mp.send({ t: 'stun' });
       else if (gh.stun()) {
@@ -340,7 +341,7 @@ export class Player {
       to: { x: l.x + Math.sin(l.rot) * 0.08, z: l.z + Math.cos(l.rot) * 0.08, eye: 1.55, yaw, pitch: 0 },
     };
     // 如果這一刻她正看著你 → 她知道你躲在哪
-    if (g.ghost.state === 'chase' && g.ghost.seesPlayer) g.ghost.knowsLocker = l;
+    if (g.ghost.state === 'chase' && g.ghost.seesPlayer && g.ghost.floor === this.floor) g.ghost.knowsLocker = l;
     this.vel.set(0, 0);
     this.prevFlash = this.flashOn;
   }

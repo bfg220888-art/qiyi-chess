@@ -153,7 +153,7 @@ function edgeOpen(lv, o, x, y, along) {
     return along > (CELL - DOOR_W) / 2 && along < (CELL + DOOR_W) / 2;
   }
   if (t === E.GATE) {
-    if (!lv.gate.open) return false;
+    if (!lv.gate || !lv.gate.open) return false;
     return along > (CELL - GATE_W) / 2 && along < (CELL + GATE_W) / 2;
   }
   return false;
@@ -410,7 +410,7 @@ export class NavGrid {
 }
 
 // ---------------------------------------------------------------------------
-// 關卡驗證：所有道具、置物櫃、配電箱都必須走得到
+// 關卡驗證：所有道具、置物櫃、配電箱、大門、樓梯都必須走得到（她也要走得到樓梯）
 export function validateLevel(lv, playerRadius = 0.3) {
   const nav = new NavGrid(lv, playerRadius);
   const seen = nav.reachable(lv.spawn.x, lv.spawn.z);
@@ -431,10 +431,18 @@ export function validateLevel(lv, playerRadius = 0.3) {
   for (const it of lv.items) if (!near(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2)) return `item ${it.kind} unreachable`;
   for (const l of lv.lockers) if (!near(l.exitX, l.exitZ, 0.5)) return `locker ${l.id} blocked`;
   const fb = lv.fusebox;
-  if (!fb) return 'no fusebox';
-  const fx = fb.x + Math.sin(fb.rot) * 0.8, fz = fb.z + Math.cos(fb.rot) * 0.8;
-  if (!near(fx, fz, 0.6)) return 'fusebox unreachable';
-  if (!near(lv.gate.x, lv.gate.z - 0.8, 0.6)) return 'gate unreachable';
+  if (lv.generatorRoom) {
+    if (!fb) return 'no fusebox';
+    const fx = fb.x + Math.sin(fb.rot) * 0.8, fz = fb.z + Math.cos(fb.rot) * 0.8;
+    if (!near(fx, fz, 0.6)) return 'fusebox unreachable';
+  }
+  if (lv.gate && !near(lv.gate.x, lv.gate.z - 0.8, 0.6)) return 'gate unreachable';
+  const stairs = lv.stairs || [];
+  if (stairs.length !== (lv.stairPlan || []).length) return 'stairs missing';
+  for (const s of stairs) {
+    if (!near(s.use.x, s.use.z, 0.6)) return `stairs ${s.id} unreachable`;
+    if (!near(s.arrive.x, s.arrive.z, 0.35)) return `stairs ${s.id} arrival blocked`;
+  }
   for (const d of lv.doors) {
     const along = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2;
     const plane = (d.o === 'h' ? d.y : d.x) * CELL;
@@ -453,6 +461,10 @@ export function validateLevel(lv, playerRadius = 0.3) {
     if (room.id === 0) continue;
     const k = gnav.nearestFree(room.cx, room.cz);
     if (k < 0 || !gseen[k]) return `room ${room.id} unreachable for ghost`;
+  }
+  for (const s of stairs) {
+    const k = gnav.nearestFree(s.use.x, s.use.z, 2);
+    if (k < 0 || !gseen[k]) return `stairs ${s.id} unreachable for ghost`;
   }
   return null;
 }
