@@ -325,6 +325,9 @@ class App {
     code.addEventListener('input', (e) => { if (!e.isComposing) tidy(); });
     code.addEventListener('compositionend', tidy);
     code.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.stopPropagation(); tidy(); join(); } });
+    // 觀戰列的左右箭頭（手機、或沒有鎖定滑鼠時）
+    $('specPrev').addEventListener('click', () => this.input.push('specPrev'));
+    $('specNext').addEventListener('click', () => this.input.push('specNext'));
     $('btnMpLeave').addEventListener('click', () => { mp.leave(); this.renderLobby(); });
     // 等待其他玩家時可以放棄、離開房間
     $('loadCancel').addEventListener('click', () => { mp.leave(); this.busy = false; this.state = 'menu'; this.toMenu(); this.renderLobby(); });

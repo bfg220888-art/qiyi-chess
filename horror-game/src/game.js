@@ -12,7 +12,7 @@ import { RealGhostModel } from './ghost-real.js';
 import { Director } from './events.js';
 import { Post } from './post.js';
 import { fmtTime } from './ui.js';
-import { makeFallbackAvatar } from './mp.js';
+import { makeFallbackAvatar, SLOT_CSS } from './mp.js';
 import { loadPlayerAssets, makePlayerModel } from './player-model.js';
 import { THEMES, resolveTheme, themeTitle } from './themes.js';
 
@@ -1031,6 +1031,11 @@ export class Game {
   // 要傳給別人的自己的狀態
   mpLocalState() {
     const P = this.player;
+    // 觀戰中：只送自己倒下（或逃出）時的位置，不跟著被觀戰的人，也不帶任何動作
+    if (this.mpStatus !== 0 && this.specHome) {
+      const H = this.specHome;
+      return { x: H.x, z: H.z, y: H.y, p: 0, fl: H.fl, f: 0, h: -1, c: 0, v: 0, a: this.mpStatus, hb: 0, sa: 1, b: 0 };
+    }
     const h = P.hiding || (P.hideAnim && P.hideAnim.entering ? P.hideAnim.locker : null);
     return {
       x: +P.pos.x.toFixed(2), z: +P.pos.z.toFixed(2), y: +P.yaw.toFixed(2), p: +P.pitch.toFixed(2),
@@ -1289,32 +1294,74 @@ export class Game {
     P.flash.intensity = 0;
     P.flashOn = false;
     if (P.hiding) { P.hiding.hideDoor = false; P.hiding.dirty = true; P.hiding = null; this.ui.setHiding(false); }
+    // 記下自己最後的位置：觀戰時送給別人的一直是這個，不會出現在被觀戰者身上
+    this.specHome = { x: +P.pos.x.toFixed(2), z: +P.pos.z.toFixed(2), y: +P.yaw.toFixed(2), fl: this.floorIdx };
     this.ui.prompt('');
     this.ui.subtitle(text, 4);
+    this.ui.setHiding(false);
+    document.getElementById('crosshair').hidden = true;
+    document.getElementById('touch').hidden = true;
     this.spectate = -1;
-    this.mpNextSpectate();
+    this.mpCycleSpectate(1);
   }
-  mpNextSpectate() {
-    const alive = [...this.remotes.values()].filter((r) => r.a === 0).map((r) => r.slot).sort();
-    if (!alive.length) { this.spectate = -1; return; }
-    const i = alive.indexOf(this.spectate);
-    this.spectate = alive[(i + 1) % alive.length];
-    this.ui.hint(`正在看 ${this.mp.slotName(this.spectate)}（按互動鍵換人）`, 3);
+  // 換觀戰對象：dir = 1 下一位、-1 上一位（只在還在裡面的人之間輪流）
+  mpCycleSpectate(dir) {
+    const alive = [...this.remotes.values()].filter((r) => r.a === 0).map((r) => r.slot).sort((a, b) => a - b);
+    const prev = this.spectate;
+    if (!alive.length) this.spectate = -1;
+    else {
+      const i = alive.indexOf(this.spectate);
+      this.spectate = i < 0 ? alive[dir > 0 ? 0 : alive.length - 1] : alive[(i + dir + alive.length) % alive.length];
+    }
+    if (this.spectate !== prev) this.specLast = null;
+    this.mpUpdateSpecBar(true);
+  }
+  // 觀戰列：正在看誰、在哪一層、在做什麼
+  mpUpdateSpecBar(force) {
+    const bar = document.getElementById('specBar');
+    if (this.mpStatus === 0 || this.over) { bar.hidden = true; return; }
+    const r = this.remotes.get(this.spectate);
+    const n = [...this.remotes.values()].filter((q) => q.a === 0).length;
+    let key;
+    if (!r) key = 'none';
+    else {
+      const F = this.floors && this.floors.length > 1 ? this.floors[r.floor] : null;
+      const doing = r.dying ? '被她抓住了！' : r.hiding ? '躲在鐵櫃裡' : r.speed > 4 ? '正在奔跑' : '';
+      key = [r.slot, F ? F.title : '', doing, n].join('|');
+    }
+    if (!force && key === this.specLast) return;
+    this.specLast = key;
+    bar.hidden = false;
+    const name = document.getElementById('specName'), info = document.getElementById('specInfo'), dot = document.getElementById('specDot');
+    const [, floor, doing] = key.split('|');
+    if (!r) {
+      name.textContent = '沒有人可以觀戰了';
+      info.textContent = '等待結算……';
+      dot.style.background = 'transparent';
+    } else {
+      name.textContent = this.mp.slotName(r.slot);
+      info.textContent = [floor, doing].filter(Boolean).join('・');
+      dot.style.background = SLOT_CSS[r.slot] || '#888';
+    }
+    document.getElementById('specPrev').disabled = n < 2;
+    document.getElementById('specNext').disabled = n < 2;
+    document.getElementById('specKeys').textContent = n < 2 ? '' : this.input.touchMode ? '點左右箭頭換人' : 'E / 左鍵：下一位　Q / 右鍵：上一位';
   }
 
   updateSpectator(dt, inp) {
     const P = this.player;
+    // 觀戰的人只能換人看、暫停，其他按鍵一律不處理（不會影響任何人的遊戲）
     for (const a of inp.actions) {
-      if (a === 'interact' || a === 'tap') this.mpNextSpectate();
+      if (a === 'interact' || a === 'tap' || a === 'specNext') this.mpCycleSpectate(1);
+      else if (a === 'camera' || a === 'specPrev') this.mpCycleSpectate(-1);
       else if (a === 'pause') { this.app.pause(); return; }
     }
     let r = this.remotes.get(this.spectate);
-    if (!r || r.a !== 0) { this.mpNextSpectate(); r = this.remotes.get(this.spectate); }
+    if (!r || r.a !== 0) { this.mpCycleSpectate(1); r = this.remotes.get(this.spectate); }
+    this.mpUpdateSpecBar(false);
     if (r) {
-      // 從他的眼睛看出去（他在哪一層就看哪一層）
+      // 從他的眼睛看出去（他在哪一層就看哪一層）；只動自己的鏡頭，自己的角色留在原地
       if (r.floor !== this.floorIdx) { this.setFloor(r.floor); this.markExplored(true); }
-      P.pos.x = r.pos.x; P.pos.z = r.pos.z;
-      P.yaw = r.yaw; P.pitch = r.pitch;
       P.sanity = r.sanity;
       const c = P.camera;
       c.position.copy(r.camera.position);
@@ -1340,6 +1387,7 @@ export class Game {
     this.audio.setMusic(anyOut ? 'win' : 'lose');
     this.input.exitLock();
     this.ui.prompt('');
+    document.getElementById('specBar').hidden = true;
     const rows = res.map((p) => [(p.n || this.mp.slotName(p.s)) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
     rows.push(...this.statRows());
     const text = anyOut
@@ -1351,6 +1399,7 @@ export class Game {
 
   mpHostLost() {
     if (this.over) return;
+    document.getElementById('specBar').hidden = true;
     this.over = true;
     this.audio.stopAll();
     this.input.exitLock();
@@ -1364,6 +1413,7 @@ export class Game {
 
   dispose() {
     this.over = true;
+    document.getElementById('specBar').hidden = true;
     this.disposed = true;
     for (const id of this.timers) clearTimeout(id);
     this.timers.clear();

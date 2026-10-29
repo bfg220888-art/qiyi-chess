@@ -136,6 +136,18 @@
 <div id="fade"></div>
 
 <!-- 觸控控制 -->
+<!-- 觀戰列（多人：被抓走或逃出去之後） -->
+<div id="specBar" hidden>
+  <button id="specPrev" class="spec-btn" type="button" aria-label="上一位">◀</button>
+  <div class="spec-mid">
+    <p class="spec-label">觀戰中</p>
+    <p class="spec-name"><span id="specDot" class="spec-dot"></span><span id="specName"></span></p>
+    <p id="specInfo" class="spec-info"></p>
+  </div>
+  <button id="specNext" class="spec-btn" type="button" aria-label="下一位">▶</button>
+  <p id="specKeys" class="spec-keys"></p>
+</div>
+
 <div id="touch" hidden>
   <div id="joyHome"><span>移動</span></div>
   <div id="joy"><div id="joyKnob"></div></div>

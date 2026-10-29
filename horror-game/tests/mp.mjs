@@ -173,6 +173,32 @@ try {
   check(true, 'dropped fuse respawned for everyone');
   const spec = await clients[0].evaluate(() => window.__SW.game.spectate);
   check(spec >= 0 || N === 2, `spectating slot ${spec}`);
+  // 觀戰列：顯示正在看誰
+  await until(clients[0], () => !document.getElementById('specBar').hidden && document.getElementById('specName').textContent.length > 0);
+  const specName = await clients[0].evaluate(() => document.getElementById('specName').textContent);
+  const expectName = await clients[0].evaluate(() => window.__SW.mp.slotName(window.__SW.game.spectate));
+  check(specName === expectName, `spectator bar shows "${specName}"`);
+  // 換人：下一位、上一位（還在裡面的人有兩個以上才有得換）
+  const alive = await clients[0].evaluate(() => [...window.__SW.game.remotes.values()].filter((r) => r.a === 0).length);
+  if (alive >= 2) {
+    const s0 = await clients[0].evaluate(() => window.__SW.game.spectate);
+    await clients[0].evaluate(() => { const A = window.__SW; A.input.push('specNext'); A.game.update(0.016, { ...A.emptyInput(), actions: A.input.poll().actions }); });
+    const s1 = await clients[0].evaluate(() => window.__SW.game.spectate);
+    await clients[0].evaluate(() => { const A = window.__SW; A.input.push('camera'); A.game.update(0.016, { ...A.emptyInput(), actions: A.input.poll().actions }); });
+    const s2 = await clients[0].evaluate(() => window.__SW.game.spectate);
+    check(s1 !== s0 && s2 === s0, `switch spectate target ${s0}→${s1}→${s2}`);
+  }
+  // 觀戰的人不會干擾別人：別人收到的位置停在他倒下的地方，看不到他的人、手電筒
+  const home = await clients[0].evaluate(() => window.__SW.game.specHome);
+  await host.waitForTimeout(800);
+  const seen = await host.evaluate((s) => { const r = window.__SW.game.remotes.get(s); return { x: r.tx, z: r.tz, light: r.light.intensity, body: r.bodyShown }; }, slots[1]);
+  check(Math.abs(seen.x - home.x) < 0.05 && Math.abs(seen.z - home.z) < 0.05 && seen.light === 0 && !seen.body, `spectator stays put and hidden for others ${JSON.stringify(seen)}`);
+  // 觀戰的人按互動、拍照、丟瓶子都不會影響遊戲
+  const before = await host.evaluate(() => { const g = window.__SW.game; return [g.ghost.state, g.fusesInserted, g.lv.doors.map((d) => d.target).join()]; });
+  await clients[0].evaluate(() => { const A = window.__SW; for (const a of ['throw', 'flashlight', 'crouch']) A.input.push(a); A.game.update(0.016, { ...A.emptyInput(), actions: A.input.poll().actions }); });
+  await host.waitForTimeout(600);
+  const after = await host.evaluate(() => { const g = window.__SW.game; return [g.ghost.state, g.fusesInserted, g.lv.doors.map((d) => d.target).join()]; });
+  check(before[1] === after[1] && before[2] === after[2], 'spectator actions do not change the game');
 
   // 其他人逃出 → 結算
   for (const p of [host, ...clients.slice(1)]) await p.evaluate(() => window.__SW.game.mpEscaped());
