@@ -226,6 +226,8 @@ class App {
     $('btnHelpBack').addEventListener('click', () => this.closePanel('help'));
     $('btnSettingsBack').addEventListener('click', () => this.closePanel('settings'));
     $('btnResume').addEventListener('click', () => this.resume());
+    // 電腦版：不用 Esc（Esc 會讓瀏覽器離開全螢幕），點畫面右上角的暫停鈕或按 P
+    $('btnHudPause').addEventListener('click', (e) => { e.stopPropagation(); this.pause(); });
     $('btnPauseSettings').addEventListener('click', () => this.openPanel('settings', 'pause'));
     $('btnPauseHelp').addEventListener('click', () => this.openPanel('help', 'pause'));
     $('btnQuit').addEventListener('click', () => this.toMenu());
@@ -288,7 +290,7 @@ class App {
     // 鍵盤操作選單
     addEventListener('keydown', (e) => {
       if (this.state === 'menu' && !$('menu').hidden && (e.code === 'Enter') && $('help').hidden && $('settings').hidden && $('mpPanel').hidden) this.startGame();
-      if (this.paused && e.code === 'Escape' && $('settings').hidden && $('help').hidden) this.resume();
+      if (this.paused && (e.code === 'Escape' || e.code === 'KeyP') && !e.repeat && $('settings').hidden && $('help').hidden) this.resume();
     });
   }
 
@@ -469,6 +471,7 @@ class App {
       $('hud').hidden = false;
       $('touch').hidden = !touch;
       $('crosshair').hidden = touch;
+      $('btnHudPause').hidden = touch;
       this.ui.setFps(this.settings.showFps);
       this.input.enabled = true;
       this.input.clear();

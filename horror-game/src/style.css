@@ -278,3 +278,9 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 .spec-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
 .spec-info { font-size: 12px; color: var(--dim); min-height: 1.2em; }
 .spec-keys { grid-column: 1 / -1; margin: 0; font-size: 11px; color: var(--dim); }
+
+/* 電腦版畫面上的暫停鈕（滑鼠沒被鎖定時可以直接點；鎖定時按 P） */
+.hud-pause { pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; font: 700 13px var(--mono); color: var(--ink); background: rgba(0, 0, 0, 0.35); border: 1px solid var(--faint); border-radius: 2px; padding: 5px 9px; cursor: pointer; text-shadow: none; order: 99; }
+.hud-pause span { font-size: 11px; color: var(--dim); border: 1px solid var(--faint); padding: 0 4px; border-radius: 2px; }
+.hud-pause:hover, .hud-pause:focus-visible { border-color: var(--ink); outline: none; }
+.hud-pause[hidden] { display: none; }
