@@ -9,6 +9,7 @@ import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
 import { loadCorpses, prefetchCorpses } from './corpses.js';
 import { MP, SLOT_CSS, MAX_PLAYERS } from './mp.js';
+import { normalizeCode } from './net.js';
 import { THEMES, RANDOM_THEME, resolveTheme, themeTitle } from './themes.js';
 
 const $ = (id) => document.getElementById(id);
@@ -318,7 +319,12 @@ class App {
       this.renderLobby();
     };
     $('btnMpJoin').addEventListener('click', join);
-    $('mpCode').addEventListener('keydown', (e) => { if (e.code === 'Enter') { e.stopPropagation(); join(); } });
+    // 房間代碼：打字時就轉成大寫、全形轉半形、去掉空白與符號，最多 5 碼（中文輸入法組字時先不動）
+    const code = $('mpCode');
+    const tidy = () => { const v = normalizeCode(code.value); if (v !== code.value) code.value = v; };
+    code.addEventListener('input', (e) => { if (!e.isComposing) tidy(); });
+    code.addEventListener('compositionend', tidy);
+    code.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.stopPropagation(); tidy(); join(); } });
     $('btnMpLeave').addEventListener('click', () => { mp.leave(); this.renderLobby(); });
     // 等待其他玩家時可以放棄、離開房間
     $('loadCancel').addEventListener('click', () => { mp.leave(); this.busy = false; this.state = 'menu'; this.toMenu(); this.renderLobby(); });

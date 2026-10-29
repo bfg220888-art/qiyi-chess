@@ -12,7 +12,8 @@ export function makeRoomCode() {
   return s;
 }
 export function normalizeCode(s) {
-  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
+  // NFKC：全形字母與數字（ＡＢ１２）轉成半形
+  return String(s || '').normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 }
 
 function peerOptions() {
