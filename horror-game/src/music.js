@@ -1,23 +1,61 @@
 // 配樂：用真實樂器錄音（VSCO 2 社群版，CC0，見 CREDITS.md）即時編排、隨情境變化。
-// 選單是一個發條快轉完、越走越慢的音樂盒；醫院裡是稀疏的鋼琴與低音弦樂，一段一段出現、中間留白；
+// 主題是布拉姆斯〈搖籃曲〉：選單是音樂盒（鐘琴）配輕輕的鋼琴分解和弦，發條快轉完時越走越慢、
+// 偶爾走音或少一個齒；醫院裡只有很遠的地方偶爾傳來一兩小節，中間是稀疏的鋼琴與低音弦樂；
 // 她靠近時大提琴與小提琴的顫弓慢慢浮上來，被追時加上低音鋼琴重擊；躲在櫃子裡時音樂幾乎消失；
-// 逃出去時是鋼琴版的搖籃曲。只排程取樣播放，不做即時合成，CPU 負擔很小。
+// 逃出去時是鋼琴版的搖籃曲，被抓到時音樂盒停在半句。只排程取樣播放，CPU 負擔很小。
 import { assetBuffer } from './assets.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-// 原創搖籃曲旋律（MIDI 音高，-1 = 休止）：女鬼哼的、音樂盒放的都是這首
-export const LULLABY = [
-  [57, 0.7], [60, 0.7], [59, 0.7], [57, 1.1], [52, 1.2], [-1, 0.6],
-  [57, 0.6], [59, 0.6], [60, 0.7], [62, 0.7], [60, 1.0], [59, 1.2], [-1, 0.7],
-  [55, 0.6], [57, 0.6], [59, 0.7], [60, 0.8], [59, 0.6], [57, 0.6], [56, 1.0], [57, 1.8], [-1, 2.2],
+// 搖籃曲：布拉姆斯〈搖籃曲〉（Wiegenlied, Op. 49 No. 4，1868 年，公有領域）。3/4 拍，降 E 大調（原調）。
+// 音符是照原曲旋律自己寫進來的（MIDI 音高、拍數），女鬼哼的、音樂盒放的、結局的鋼琴都是這一首。
+const KEY = 3; // 以 C 大調寫，整首往上移到降 E
+const C4 = 60, D4 = 62, E4 = 64, F4 = 65, G4 = 67, A4 = 69, B4 = 71, C5 = 72;
+// 每小節：[旋律 [音高, 拍數]…], 和弦。最後一小節結尾的兩個八分音符是回到第一小節的弱起拍
+const BARS = [
+  [[[G4, 2], [E4, 0.5], [E4, 0.5]], 'I'],
+  [[[G4, 2], [E4, 0.5], [G4, 0.5]], 'I'],
+  [[[C5, 1], [B4, 1.5], [A4, 0.5]], 'V'],
+  [[[A4, 1], [G4, 1], [D4, 0.5], [E4, 0.5]], 'V'],
+  [[[F4, 1], [D4, 1], [D4, 0.5], [E4, 0.5]], 'V'],
+  [[[F4, 2], [D4, 0.5], [F4, 0.5]], 'V'],
+  [[[B4, 0.5], [A4, 0.5], [G4, 1], [B4, 1]], 'V'],
+  [[[C5, 2], [C4, 0.5], [C4, 0.5]], 'I'],
+  [[[C5, 2], [A4, 0.5], [F4, 0.5]], 'IV'],
+  [[[G4, 2], [E4, 0.5], [C4, 0.5]], 'I'],
+  [[[F4, 1], [G4, 1], [A4, 1]], 'IV'],
+  [[[G4, 2], [C4, 0.5], [C4, 0.5]], 'I'],
+  [[[C5, 2], [A4, 0.5], [F4, 0.5]], 'IV'],
+  [[[G4, 2], [E4, 0.5], [C4, 0.5]], 'I'],
+  [[[F4, 0.5], [E4, 0.5], [D4, 1], [G4, 1]], 'V'],
+  [[[C4, 2], [E4, 0.5], [E4, 0.5]], 'I'],
 ];
-// 搖籃曲的伴奏（旋律第幾個音 → 低音）
-const LULLABY_BASS = {
-  0: [45, 52], 3: [41, 48], 4: [40, 47], 6: [38, 45], 10: [45, 52], 11: [40, 47],
-  13: [36, 43], 16: [41, 48], 19: [40, 47], 20: [33, 45],
+// 伴奏（C 大調寫法，播放時加 KEY）：低音＋中音區的和弦音
+const CHORDS = {
+  I: { bass: 36, mid: [55, 60, 64] },
+  V: { bass: 31, mid: [53, 59, 62] },
+  IV: { bass: 29, mid: [57, 60, 65] },
 };
+// 攤平成音符表：m 音高（已移調）、d 拍數、bar 第幾小節、at 小節內第幾拍
+export const LULLABY = [];
+BARS.forEach(([notes, ch], bar) => {
+  let at = 0;
+  for (const [m, d] of notes) { LULLABY.push({ m: m + KEY, d, bar, at, ch }); at += d; }
+});
+// 從弱起拍開始（最後一小節的兩個八分音符）
+export const LULLABY_START = LULLABY.length - 2;
+export const LULLABY_BEAT = 60 / 66; // 每拍秒數（約 66 bpm）
+export const lullabyChord = (ch) => ({ bass: CHORDS[ch].bass + KEY, mid: CHORDS[ch].mid.map((m) => m + KEY) });
+// 某一小節開頭的音符索引（含前一小節的弱起拍）
+export function phraseStart(bar) {
+  let i = LULLABY.findIndex((n) => n.bar === bar && n.at === 0);
+  const prev = (i - 1 + LULLABY.length) % LULLABY.length;
+  if (LULLABY[prev].at >= 2) i = prev;
+  const prev2 = (i - 1 + LULLABY.length) % LULLABY.length;
+  if (LULLABY[prev2].at >= 2 && LULLABY[prev2].bar === LULLABY[i].bar) i = prev2;
+  return i;
+}
 
 // 樂器取樣：檔名前綴 → 每個檔的音高（MIDI）。鐘琴的錄音本身偏高一點點
 const BANK = {
@@ -30,12 +68,12 @@ const BANK = {
   glk: [79.08, 84.12, 91.12, 96.15, 103.16, 108.24], // 鐘琴（當音樂盒）
 };
 
-// 探索時的和聲進行（A 小調：Am – F – Dm – E）：大提琴兩個音＋低音提琴根音，鋼琴琶音用的和弦音
+// 探索時的和聲進行（C 小調，降 E 大調的關係小調：Cm – A♭ – Fm – G）：大提琴兩個音＋低音提琴根音，鋼琴琶音用的和弦音
 const PROG = [
-  { pad: [45, 52], root: 33, arp: [57, 64, 69, 72] },
-  { pad: [41, 48], root: 29, arp: [53, 60, 64, 69] },
-  { pad: [38, 45], root: 26, arp: [50, 57, 62, 65] },
-  { pad: [40, 47], root: 28, arp: [52, 59, 64, 68] },
+  { pad: [48, 55], root: 36, arp: [60, 67, 72, 75] },
+  { pad: [44, 51], root: 32, arp: [56, 63, 67, 72] },
+  { pad: [41, 48], root: 29, arp: [53, 60, 65, 68] },
+  { pad: [43, 50], root: 31, arp: [55, 62, 67, 71] },
 ];
 
 export class Score {
@@ -72,6 +110,11 @@ export class Score {
     this.keys = layer(this.soft, 1, 3600); // 悶悶的，像隔著牆從別的房間傳來
     this.pad = layer(this.soft, 1, 2200);
     this.box = layer(this.soft, 1, 5000);
+    this.far = layer(this.soft, 0.8, 1500); // 很遠的音樂盒：只剩低頻、殘響多
+    this.farSend = c.createGain();
+    this.farSend.gain.value = 1.4;
+    this.far.connect(this.farSend).connect(engine.revSend);
+    this.herNear = 0;
     this.trem = layer(this.bus, 0, 6000);
     this.hits = layer(this.bus, 1, 4000);
   }
@@ -207,7 +250,7 @@ export class Score {
     if (prev !== 'off') this.stop(prev === 'menu' ? 2.5 : 1.2);
     this.mode = mode;
     const now = this.ctx.currentTime;
-    if (mode === 'menu') this.menu = { i: 0, next: now + 0.6, slow: 1, pitch: 0, loop: 0 };
+    if (mode === 'menu') this.menu = { i: LULLABY_START, next: now + 0.6, slow: 1, pitch: 0, loop: 0, wob: 0 };
     else if (mode === 'explore') this.ex = { on: false, until: now + rnd(8, 14), padNext: 0, phraseNext: 0, ci: 0, chord: PROG[0] };
     else if (mode === 'win') this.playWin(now + 1.2);
     else if (mode === 'lose') this.playLose(now + 0.4);
@@ -222,7 +265,12 @@ export class Score {
       this.soft.gain.setTargetAtTime(hiding ? 0.22 : 1, this.ctx.currentTime, hiding ? 0.6 : 2);
     }
   }
-  setVolume(v) { this.send.gain.setTargetAtTime(0.6 * v, this.ctx.currentTime, 0.05); }
+  setVolume(v) {
+    this.send.gain.setTargetAtTime(0.6 * v, this.ctx.currentTime, 0.05);
+    this.farSend.gain.setTargetAtTime(1.4 * v, this.ctx.currentTime, 0.05);
+  }
+  // 她在附近、聽得到她的聲音時（0~1）：不放搖籃曲片段，免得跟她的哼歌混在一起
+  setHerNear(v) { this.herNear = v; }
 
   // 由音效引擎的排程器呼叫（約每 50 毫秒）
   tick(now) {
@@ -232,30 +280,59 @@ export class Score {
   }
 
   // ---- 選單：發條音樂盒
+  // 鐘琴放旋律（高兩個八度），鋼琴很輕的低音＋兩下和弦音，大提琴偶爾墊一個長音。
+  // 發條：速度會微微晃動，第二遍越走越慢、整體音高往下沉，最後停住、上發條的喀喀聲，再重來
   menuTick(now, ahead) {
     const M = this.menu;
     if (!this.has('glk')) return;
     if (M.next < now) M.next = now + 0.05;
     while (M.next < ahead) {
-      const t = M.next;
-      const [m, d] = LULLABY[M.i];
-      if (m > 0) {
-        // 齒片有點走音，整體音高跟著發條鬆掉慢慢往下沉
-        this.play('glk', m + 24 + M.pitch + rnd(-0.05, 0.05), t, { vel: rnd(0.5, 0.65), dest: this.box, rel: 0.6, pan: rnd(-0.15, 0.15) });
-        if (Math.random() < 0.05) this.play('glk', m + 25 + M.pitch, t + 0.03, { vel: 0.18, dest: this.box, rel: 0.4 });
+      const t = M.next, n = LULLABY[M.i];
+      M.wob += 0.9;
+      const beat = LULLABY_BEAT * M.slow * (1 + 0.035 * Math.sin(M.wob) + rnd(-0.015, 0.015));
+      if (Math.random() > 0.015) { // 偶爾少一個齒
+        let m = n.m + 24 + M.pitch + rnd(-0.06, 0.06);
+        const r = Math.random();
+        if (r < 0.05) m += pick([-0.35, 0.4]); // 齒片彎了：走音
+        else if (r < 0.07 && M.loop > 0) m += pick([-1, 1]); // 錯一個音
+        this.play('glk', m, t, { vel: rnd(0.5, 0.62) * (n.at === 0 ? 1 : 0.85), dest: this.box, rel: 0.7, pan: rnd(-0.1, 0.1) });
       }
-      const bass = LULLABY_BASS[M.i];
-      if (bass && M.loop % 3 !== 2) for (const n of bass) this.play('pno', n, t, { vel: 0.17, rel: 2, dur: 4 });
-      M.i++;
-      M.next += d * 0.8 * M.slow;
-      M.slow *= 1.009;
-      M.pitch -= 0.01;
-      if (M.i >= LULLABY.length) {
-        M.i = 0;
+      if (n.at === 0) {
+        const ch = lullabyChord(n.ch);
+        const b3 = 3 * beat;
+        this.play('pno', ch.bass + 12 + M.pitch, t, { vel: 0.2, rel: 1.5, dur: b3 + 0.5 });
+        for (const k of [1, 2]) for (const m of ch.mid.slice(1)) this.play('pno', m + M.pitch, t + k * beat, { vel: 0.1, rel: 0.6, dur: beat * 0.95 });
+        if (n.bar % 4 === 0 && this.has('vc')) this.hold('vc', ch.bass + 12, t, b3 * 2, { vel: 0.08, att: 1.2, rel: 2 });
+      }
+      M.i = (M.i + 1) % LULLABY.length;
+      M.next += n.d * beat;
+      if (M.loop % 2 === 1) {
+        // 第二遍：發條快轉完了
+        M.slow *= 1 + 0.004 + (n.bar >= 12 ? 0.02 : 0);
+        M.pitch -= n.bar >= 12 ? 0.012 : 0.003;
+      }
+      if (M.i === LULLABY_START) {
         M.loop++;
-        if (M.loop % 2 === 0) { M.next += rnd(5, 9); M.slow = 1; M.pitch = 0; } // 發條重新上緊
+        if (M.loop % 2 === 0) {
+          // 停住、上發條、重來
+          const w = M.next + 1.5;
+          for (let k = 0; k < 9; k++) this.wind(w + k * 0.16 + rnd(0, 0.03));
+          M.next = w + 9 * 0.16 + rnd(1.5, 3);
+          M.slow = 1;
+          M.pitch = 0;
+        }
       }
     }
+  }
+  // 上發條的一聲喀
+  wind(t) {
+    const A = this.A, c = this.ctx;
+    const g = c.createGain();
+    g.gain.value = 0.5;
+    g.connect(this.box);
+    A.burst(g, t, { f: rnd(2600, 3200), q: 5, a: 0.0005, d: 0.018, peak: 0.25 });
+    A.burst(g, t + 0.004, { f: rnd(900, 1100), q: 3, a: 0.0005, d: 0.03, peak: 0.12 });
+    setTimeout(() => { try { g.disconnect(); } catch (e) { /* 已斷開 */ } }, (t - c.currentTime + 1) * 1000);
   }
 
   // ---- 探索：一段一段的音樂，中間留白
@@ -292,18 +369,23 @@ export class Score {
   phrase(t) {
     const T = this.tension, r = Math.random();
     const pan = rnd(-0.35, 0.35);
-    if (r < 0.4 - T * 0.3) {
-      // 搖籃曲的片段，偶爾彈錯一個音
-      const L = LULLABY.length, i0 = pick([0, 6, 13, 16]), n = 3 + Math.floor(rnd(0, 3)), tr = pick([12, 12, 0, 24]);
-      let tt = t;
-      for (let k = 0; k < n; k++) {
-        let [m, d] = LULLABY[(i0 + k) % L];
-        if (m < 0) break;
-        if (Math.random() < 0.1 + T * 0.3) m += pick([-1, 1]);
-        this.play('pno', m + tr, tt, { vel: rnd(0.32, 0.42) * (1 - k * 0.08), rel: 1.2, pan });
-        tt += d * rnd(1.3, 1.8);
+    if (r < 0.45 - T * 0.3 && this.herNear < 0.05) {
+      // 很遠的地方，音樂盒放了一兩小節搖籃曲（她在附近時不放，免得聽不出哪個才是她）
+      const bar = pick([0, 0, 4, 8, 12]), bars = Math.random() < 0.6 ? 2 : 4;
+      const box = this.has('glk') && Math.random() < 0.7;
+      const L = LULLABY.length;
+      let i = phraseStart(bar), tt = t, beat = LULLABY_BEAT * rnd(1.15, 1.35);
+      for (let k = 0; k < 24; k++) {
+        const n = LULLABY[i % L];
+        if (k > 0 && n.at === 0 && (n.bar - bar + 16) % 16 >= bars) break;
+        let m = n.m + (box ? 24 : 12);
+        if (Math.random() < 0.06 + T * 0.2) m += pick([-1, 1, -0.4]);
+        this.play(box ? 'glk' : 'pno', m, tt, { vel: (box ? 0.42 : 0.34) * (1 - k * 0.02), dest: this.far, rel: 1, pan });
+        tt += n.d * beat;
+        beat *= 1.01; // 發條鬆了
+        i++;
       }
-      return tt - t + 1.5;
+      return tt - t + 2;
     }
     if (r < 0.65) {
       // 高音的一滴，有時候旁邊再滴一個半音
@@ -333,18 +415,18 @@ export class Score {
     if (this.tremLv < 0.02 || this.tremNext >= ahead) return;
     const t = Math.max(this.tremNext, now + 0.05), L = this.tremLv;
     const o = { dest: this.trem, dur: 5.5, att: 1.2, rel: 1.4 };
-    // 大提琴：A 與降 B 磨在一起
-    let len = this.play('vct', 45, t, { ...o, vel: 0.3, offset: rnd(0.3, 1), pan: -0.3 });
-    this.play('vct', 46, t + 0.2, { ...o, vel: 0.24, offset: rnd(0.3, 1), pan: 0.3 });
+    // 大提琴：C 與降 D 磨在一起
+    let len = this.play('vct', 48, t, { ...o, vel: 0.3, offset: rnd(0.3, 1), pan: -0.3 });
+    this.play('vct', 49, t + 0.2, { ...o, vel: 0.24, offset: rnd(0.3, 1), pan: 0.3 });
     if (L > 0.45) {
       // 很高的小提琴
-      this.play('vnt', 76, t, { ...o, vel: 0.15 * L, offset: rnd(0.3, 1), pan: 0.4 });
-      this.play('vnt', 77, t + 0.3, { ...o, vel: 0.12 * L, offset: rnd(0.3, 1), pan: -0.4 });
+      this.play('vnt', 79, t, { ...o, vel: 0.15 * L, offset: rnd(0.3, 1), pan: 0.4 });
+      this.play('vnt', 80, t + 0.3, { ...o, vel: 0.12 * L, offset: rnd(0.3, 1), pan: -0.4 });
     }
     if (this.chase > 0.5) {
       // 被追：再加低音的三全音
-      this.play('vct', 40, t, { ...o, vel: 0.3, offset: rnd(0.3, 1) });
-      this.play('vct', 51, t, { ...o, vel: 0.22, offset: rnd(0.3, 1) });
+      this.play('vct', 43, t, { ...o, vel: 0.3, offset: rnd(0.3, 1) });
+      this.play('vct', 54, t, { ...o, vel: 0.22, offset: rnd(0.3, 1) });
     }
     if (!len) len = 5;
     this.tremNext = t + len - 1.4;
@@ -363,26 +445,43 @@ export class Score {
 
   // ---- 結局
   playWin(t0) {
-    // 鋼琴版的搖籃曲，最後停在 A 大調（終於安息）
-    let t = t0;
-    this.hold('vc', 45, t0, 14, { vel: 0.12, att: 4, rel: 5 });
-    LULLABY.forEach(([m, d], i) => {
-      if (m > 0 && i < LULLABY.length - 2) this.play('pno', m + 12, t, { vel: 0.5, rel: 1.5, dur: 3 });
-      const bass = LULLABY_BASS[i];
-      if (bass && i < LULLABY.length - 2) for (const n of bass) this.play('pno', n, t, { vel: 0.24, rel: 2, dur: 4 });
-      t += d * 1.15;
-    });
-    t -= LULLABY[LULLABY.length - 1][1] * 1.15 + LULLABY[LULLABY.length - 2][1] * 1.15;
-    for (const [k, n] of [33, 45, 52, 57, 61, 64, 69].entries()) this.play('pno', n, t + k * 0.09, { vel: 0.36, rel: 3, dur: 5 });
-    this.hold('vc', 45, t, 8, { vel: 0.14, att: 1, rel: 5 });
-    this.hold('vc', 52, t, 8, { vel: 0.1, att: 1, rel: 5 });
+    // 鋼琴版的搖籃曲後半段（「Morgen früh…」），音樂盒在高八度輕輕跟著，最後停在降 E 大調（終於安息）
+    const beat = LULLABY_BEAT * 1.1;
+    let i = phraseStart(8), t = t0;
+    this.hold('vc', 39, t0, 26, { vel: 0.1, att: 4, rel: 6 });
+    for (let k = 0; k < 40; k++) {
+      const n = LULLABY[i % LULLABY.length];
+      if (k > 0 && n.bar === 15 && n.at >= 2) break; // 不唱回頭的弱起拍
+      const last = n.bar === 15 && n.at === 0;
+      const dur = last ? 6 : n.d * beat + 0.4;
+      this.play('pno', n.m + 12, t, { vel: 0.46, rel: 1.5, dur });
+      if (this.has('glk') && n.at === 0) this.play('glk', n.m + 24, t, { vel: 0.18, dest: this.box, rel: 1 });
+      if (n.at === 0) {
+        const ch = lullabyChord(n.ch);
+        this.play('pno', ch.bass, t, { vel: 0.22, rel: 2, dur: last ? 6 : 3 * beat + 0.5 });
+        if (!last) for (const kk of [1, 2]) for (const m of ch.mid) this.play('pno', m, t + kk * beat, { vel: 0.09, rel: 0.7, dur: beat });
+        else for (const [kk, m] of [51, 58, 63, 67, 70].entries()) this.play('pno', m, t + kk * 0.12, { vel: 0.22, rel: 3, dur: 6 });
+      }
+      if (last) { this.hold('vc', 51, t, 8, { vel: 0.1, att: 1, rel: 5 }); break; }
+      t += n.d * beat * (n.bar >= 14 ? 1.15 : 1); // 最後兩小節放慢
+      i++;
+    }
   }
   playLose(t0) {
-    // 低音一團重擊，然後一個一個往下掉的音
+    // 低音一團重擊；接著音樂盒從頭放搖籃曲，越走越慢、越來越走音，停在半句沒唱完
     for (const n of [25, 29, 30]) this.play('pnof', n, t0, { vel: 0.45, dest: this.hits, rel: 2.5, dur: 4 });
-    this.hold('cb', 33, t0 + 1, 13, { vel: 0.26, att: 3, rel: 5 });
-    this.hold('vc', 46, t0 + 2, 11, { vel: 0.1, att: 4, rel: 5 });
-    [76, 75, 71, 69, 68].forEach((m, k) => this.play('pno', m, t0 + 2.5 + k * 2.3, { vel: 0.26 - k * 0.025, rel: 1.6 }));
+    this.hold('cb', 34, t0 + 1, 14, { vel: 0.24, att: 3, rel: 5 });
+    this.hold('vc', 46, t0 + 2, 12, { vel: 0.08, att: 4, rel: 5 });
+    if (!this.has('glk')) return;
+    let i = LULLABY_START, t = t0 + 2.2, beat = LULLABY_BEAT * 0.95, pitch = 0;
+    for (let k = 0; k < 10; k++) {
+      const n = LULLABY[i % LULLABY.length];
+      this.play('glk', n.m + 24 + pitch + rnd(-0.08, 0.08), t, { vel: 0.5 - k * 0.025, dest: this.box, rel: 0.8 });
+      t += n.d * beat;
+      beat *= 1.13;
+      pitch -= 0.07;
+      i++;
+    }
   }
 
   changed(key, v, eps = 0.01) {

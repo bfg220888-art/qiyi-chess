@@ -42,11 +42,11 @@
 | `buzz` | 日光燈嗡嗡聲 — [Freesound #777053](https://freesound.org/s/777053/)，經由 yerdaulet-damir/liminal | CC0 |
 | `breath` | 呼吸聲 — [Freesound #574208](https://freesound.org/s/574208/)，經由 yerdaulet-damir/liminal | CC0 |
 
-哼歌、低語、呼吸、追逐鼓點、雨中的風聲、收音機雜訊等其餘聲音都是即時合成的；任何音檔載入失敗時也會自動改用合成版本。
+哼歌（照〈搖籃曲〉旋律即時合成的女聲哼唱）、低語、呼吸、追逐鼓點、雨中的風聲、收音機雜訊等其餘聲音都是即時合成的；任何音檔載入失敗時也會自動改用合成版本。
 
 ## 配樂（`assets/music/`）
 
-配樂是遊戲裡即時編排的（`src/music.js`），用的是真實樂器的單音錄音，經裁切、響度對齊與轉成單聲道 MP3（`tools/music/prepare.py`）。搖籃曲旋律是原創的。
+配樂是遊戲裡即時編排的（`src/music.js`），用的是真實樂器的單音錄音，經裁切、響度對齊與轉成單聲道 MP3（`tools/music/prepare.py`）。搖籃曲旋律是布拉姆斯〈搖籃曲〉（Johannes Brahms, Wiegenlied, Op. 49 No. 4，1868 年）——作品已屬公有領域；音符是照原曲旋律自行寫入程式的（沒有使用任何現代編曲或錄音），伴奏和聲、音樂盒與哼唱的處理都是遊戲自己的。
 
 | 檔案 | 原始錄音 | 授權 |
 |---|---|---|

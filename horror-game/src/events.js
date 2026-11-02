@@ -73,6 +73,8 @@ export class Director {
       ['phone', g.lv.phone && !this.used.has('phone') && g.time > 60 ? 2.5 : 0],
       ['corpse', g.world.corpseMeshes && g.world.corpseMeshes.length && (this.corpseMoves || 0) < 2 && g.time > 75 ? 2 : 0],
     ];
+    // 她在 20 公尺內：不放假的腳步、耳語、呼吸、音樂盒，免得跟她真正的位置搞混
+    if (g.ghostDist < 20) for (const o of opts) if (['steps', 'whisper', 'breath', 'musicBox'].includes(o[0])) o[1] = 0;
     if (g.mp) {
       // 多人：輪椅、電話不同步；會改變世界的事件只由房主觸發再廣播
       const worldEv = ['writing', 'lightsOut', 'corpse'];

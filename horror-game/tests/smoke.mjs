@@ -365,6 +365,94 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low', 
   assert(a1 > 1, 'door opened');
 });
 
+// 她的聲音：哼歌的發聲點跟著她走、隔牆變小變悶、設定「她的聲音提示」會改變音量與距離
+await run('audio', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'ward' }, async (page) => {
+  await startGame(page);
+  await page.evaluate(async () => { const A = window.__SW.game.audio; await A.resume(); if (A.samplesLoading) await A.samplesLoading; });
+  assert(await page.evaluate(() => window.__SW.game.audio.ready), 'audio context running');
+  // 讓她在玩家旁邊遊蕩、哼歌
+  const h = await page.evaluate(() => {
+    const g = window.__SW.game, P = g.player, gh = g.ghost;
+    const s = gh.findSpot(8, 16, true) || gh.findSpot(6, 30, false);
+    gh.spawnAt(s.x, s.z, 'wander');
+    gh.aggression = 0.01;
+    return { humming: gh.humming };
+  });
+  assert(h.humming, 'ghost hums while wandering');
+  const follow = [];
+  for (let k = 0; k < 3; k++) {
+    await page.evaluate(() => { const gh = window.__SW.game.ghost; gh.suspicion = 0; if (gh.state !== 'wander') gh.setState('wander'); });
+    await sim(page, 1.5);
+    await page.waitForTimeout(250);
+    follow.push(await page.evaluate(() => {
+      const g = window.__SW.game, gh = g.ghost, em = gh.emitter, A = g.audio;
+      return {
+        state: gh.state, gx: gh.pos.x, gz: gh.pos.z, ex: em.pos.x, ez: em.pos.z, px: em.panner.positionX.value, pz: em.panner.positionZ.value,
+        hum: A.hums.has(em), her: em.her, hrtf: em.panner.panningModel, emitters: A.emitters.size,
+      };
+    }));
+  }
+  log('hum follow', JSON.stringify(follow.map((f) => [f.state, f.gx.toFixed(2), f.ex.toFixed(2), f.px.toFixed(2), f.gz.toFixed(2), f.ez.toFixed(2), f.pz.toFixed(2)])));
+  for (const f of follow) {
+    assert(Math.hypot(f.gx - f.ex, f.gz - f.ez) < 0.01, 'hum emitter is at the ghost position');
+    assert(Math.hypot(f.gx - f.px, f.gz - f.pz) < 0.5, 'hum panner follows the ghost');
+    assert(f.her && f.hrtf === 'HRTF', 'her emitter uses HRTF on her bus');
+  }
+  assert(follow.some((f) => f.hum), 'hum voice active');
+  assert(Math.hypot(follow[0].gx - follow[2].gx, follow[0].gz - follow[2].gz) > 0.5, 'ghost moved while humming');
+  // 隔牆：同樣距離，隔一道牆比較小聲、比較悶
+  const occ = await page.evaluate(async () => {
+    const g = window.__SW.game, P = g.player, gh = g.ghost, A = g.audio, em = gh.emitter;
+    gh.setState('dormant');
+    let clear = null, wall = null;
+    for (let t = 0; t < 6000 && !(clear && wall); t++) {
+      const a = Math.random() * Math.PI * 2, r = 4 + Math.random() * 6;
+      const x = P.pos.x + Math.cos(a) * r, z = P.pos.z + Math.sin(a) * r;
+      if (g.collision.overlapsAny(x, z, 0.3) || !g.lv.roomAtWorld(x, z) && !g.ghostNav.isFree(x, z)) continue;
+      const w = A.occlusionFn(P.pos.x, P.pos.z, x, z);
+      if (w === 0 && !clear) clear = { x, z };
+      if (w >= 1 && !wall) wall = { x, z, w };
+    }
+    const measure = async (p) => {
+      em.setPosition(p.x, 1.6, p.z);
+      A.occlT = -1;
+      A.setListener(P.camera);
+      await new Promise((r) => setTimeout(r, 500));
+      return { target: em.lastG, gain: em.occl.gain.value, cut: em.filter.frequency.value, walls: em.walls };
+    };
+    return { clear: clear && await measure(clear), wall: wall && await measure(wall) };
+  });
+  log('occlusion', JSON.stringify(occ));
+  assert(occ.clear && occ.wall, 'found clear and walled positions');
+  assert(occ.wall.target < occ.clear.target * 0.7 && occ.wall.gain < occ.clear.gain * 0.75, 'behind a wall she is quieter');
+  assert(occ.wall.cut < 2000 && occ.clear.cut > 10000, 'behind a wall she is muffled');
+  // 設定：她的聲音提示
+  const cue = await page.evaluate(async () => {
+    const app = window.__SW, A = app.game.audio, em = app.game.ghost.emitter;
+    const read = async (k) => {
+      document.querySelector(`#herCueSeg [data-her="${k}"]`).click();
+      await new Promise((r) => setTimeout(r, 400));
+      return { bus: A.herBus.gain.value, rolloff: em.panner.rolloffFactor, range: em.range, saved: JSON.parse(localStorage.getItem('silentward.settings')).herCue };
+    };
+    return { boost: await read('boost'), off: await read('off'), std: await read('std') };
+  });
+  log('her cue', JSON.stringify(cue));
+  assert(cue.boost.bus > cue.std.bus * 1.5 && cue.boost.range > cue.std.range && cue.boost.rolloff < cue.std.rolloff, 'boost makes her louder and audible farther');
+  assert(cue.off.range < cue.std.range && cue.off.rolloff > cue.std.rolloff, 'off makes her fall off faster');
+  assert(cue.boost.saved === 'boost' && cue.std.saved === 'std', 'setting saved');
+  // 她在附近時音樂讓開
+  const duck = await page.evaluate(async () => {
+    const A = window.__SW.game.audio;
+    A.setHerFocus(1);
+    await new Promise((r) => setTimeout(r, 1200));
+    const d = A.musicDuck.gain.value;
+    A.setHerFocus(0);
+    return d;
+  });
+  log('music duck', duck.toFixed(2));
+  assert(duck < 0.75, 'music ducks when she is near');
+});
+
 await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low', theme: 'morgue' }, async (page) => {
   await startGame(page, { touch: true, menuShot: 'menu-mobile' });
   assert(await page.evaluate(() => window.__SW.input.touchMode && !document.getElementById('touch').hidden), 'touch controls visible');

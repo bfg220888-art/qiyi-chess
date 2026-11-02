@@ -264,7 +264,8 @@ export class Ghost {
   get near() { return this.floor === this.game.floorIdx; }
   // 某個玩家（自己或其他人）在哪一層
   static floorOf(P) { return P && Number.isInteger(P.floor) ? P.floor : 0; }
-  sfx(name, opts) { if (this.near) this.game.audio.play(name, opts); }
+  // 她發出的聲音：走「她的聲音」匯流排（HRTF 定位、距離、隔牆、設定裡的提示強度）
+  sfx(name, opts) { if (this.near) this.game.audio.play(name, { ...opts, her: true }); }
 
   setFloor(i) {
     if (!Number.isInteger(i) || i < 0 || i >= this.game.floors.length || i === this.floor) return;
@@ -331,13 +332,12 @@ export class Ghost {
     this.state = s;
     this.stateT = 0;
     this.path = null;
-    const a = this.game.audio;
     if (s === 'chase') {
       this.stopHum();
       this.lostT = 0;
       this.replanT = 0;
       if (prev !== 'chase' && this.near) {
-        a.play('shriek', { pos: this.pos });
+        this.sfx('shriek', { pos: { x: this.pos.x, y: 1.6, z: this.pos.z } });
         this.game.onChaseStart();
       }
     } else if (prev === 'chase') {
@@ -349,7 +349,8 @@ export class Ghost {
 
   startHum() {
     if (this.humming || this.state === 'dormant' || !this.near) return;
-    if (!this.emitter) this.emitter = this.game.audio.createEmitter();
+    if (!this.emitter || this.emitter.disposed) this.emitter = this.game.audio.createEmitter({ her: true, reverb: 0.3, pos: { x: this.pos.x, y: 1.6, z: this.pos.z } });
+    else this.emitter.setPosition(this.pos.x, 1.6, this.pos.z);
     this.game.audio.startHum(this.emitter);
     this.humming = true;
   }
@@ -674,14 +675,27 @@ export class Ghost {
     m.pose(this.state, t, this.phase, this.speed);
     m.setEyes(this.state === 'chase' ? 1.4 : this.state === 'stunned' ? 0.2 : 0.55);
     if (this.emitter) this.emitter.setPosition(this.pos.x, 1.6, this.pos.z);
-    // 哼歌只在同一層聽得到（換樓層時停掉、回到同一層再接上）
+    // 哼歌只在同一層聽得到（換樓層時停掉、回到同一層再接上）；音效引擎整個停掉過的話也要重新接上
+    if (this.humming && !this.game.audio.hums.has(this.emitter)) this.humming = false;
     if (!this.near && this.humming) this.stopHum();
     else if (this.near && !this.humming && (this.state === 'wander' || this.state === 'search')) this.startHum();
-    if (this.speed > 0.3) {
+    // 腳步跟著她實際走的距離：走路一步約 0.75 公尺、跑起來步伐變大；一腳重一腳輕，節奏不太規則
+    // （多人時其他人也是用房主同步來的位置與速度在這裡播）
+    if (this.speed > 0.3 && this.state !== 'dormant') {
       this.stepT -= dt * this.speed;
       if (this.stepT <= 0) {
-        this.stepT = 0.62;
-        this.sfx('ghostStep', { pos: { x: this.pos.x, y: 0.1, z: this.pos.z }, fast: this.state === 'chase' });
+        this.stepN = (this.stepN || 0) + 1;
+        const light = this.stepN % 2 === 0;
+        this.stepT = (0.5 + 0.18 * this.speed) * (light ? 0.88 : 1.12) * (0.94 + Math.random() * 0.12);
+        this.sfx('ghostStep', { pos: { x: this.pos.x, y: 0.1, z: this.pos.z }, speed: this.speed, light, fast: this.speed > 2.4 });
+      }
+      this.idleSnd = 1.5 + Math.random() * 2;
+    } else if (this.near && (this.state === 'wander' || this.state === 'search' || this.state === 'investigate')) {
+      // 站著不動（在聽）：從她的位置傳來很輕的呼吸，偶爾地板吱一聲
+      this.idleSnd = (this.idleSnd ?? 2) - dt;
+      if (this.idleSnd <= 0) {
+        this.idleSnd = 2.6 + Math.random() * 2.4;
+        this.sfx('ghostBreath', { pos: { x: this.pos.x, y: 1.55, z: this.pos.z }, creak: Math.random() < 0.25 });
       }
     }
     void g;

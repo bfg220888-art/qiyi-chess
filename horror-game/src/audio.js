@@ -1,12 +1,21 @@
 // 音效引擎（Web Audio）：實錄音效（CC0 / CC BY，見 CREDITS.md）＋即時合成。
 // 音檔載入失敗或還沒載完時，每個聲音都會退回合成版本。
 // 含 HRTF 3D 定位、牆壁遮蔽（悶音）、卷積殘響。
+// 她（女鬼）的聲音走自己的匯流排：HRTF 定位、距離衰減到大約 30 公尺、隔牆變悶變小，
+// 設定裡的「她的聲音提示」可以加強；她在附近時音樂與環境音會稍微讓開。
 import { assetBuffer } from './assets.js';
-import { Score, LULLABY } from './music.js';
+import { Score, LULLABY, LULLABY_START, LULLABY_BEAT } from './music.js';
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+// 「她的聲音提示」：gain 音量倍率、rolloff 距離衰減、range 聽得到的最遠距離（公尺）、duck 她在附近時音樂讓開多少
+export const HER_CUE = {
+  off: { gain: 1, ref: 1.6, rolloff: 1.4, range: 22, duck: 0 },
+  std: { gain: 1, ref: 2, rolloff: 1, range: 30, duck: 0.4 },
+  boost: { gain: 1.8, ref: 2.4, rolloff: 0.7, range: 40, duck: 0.55 }, // +5 dB
+};
 
 // assets/sfx/ 裡的檔案；結尾是數字的會分成一組，播放時隨機挑一個
 const SFX_FILES = [
@@ -22,6 +31,9 @@ export class AudioEngine {
     this.ctx = null;
     this.volume = 0.85;
     this.musicVolume = 0.8;
+    this.sfxVolume = 1;
+    this.herCue = 'std';
+    this.herFocus = 0;
     this.emitters = new Set();
     this.occlusionFn = null;
     this.listener = { x: 0, y: 0, z: 0 };
@@ -55,14 +67,27 @@ export class AudioEngine {
     this.reverb.connect(this.revOut).connect(this.master);
     this.revSend = c.createGain();
     this.revSend.connect(this.reverb);
+    // 音效音量（含環境音）
+    this.sfxVol = c.createGain();
+    this.sfxVol.gain.value = this.sfxVolume;
+    this.sfxVol.connect(this.master);
     this.sfx = c.createGain();
-    this.sfx.connect(this.master);
+    this.sfx.connect(this.sfxVol);
+    // 她的聲音（腳步、哼歌、呼吸、開門、尖叫）
+    this.herBus = c.createGain();
+    this.herBus.gain.value = HER_CUE[this.herCue].gain;
+    this.herBus.connect(this.sfx);
+    // 她在附近時讓音樂與環境音退一點
+    this.musicDuck = c.createGain();
+    this.musicDuck.connect(this.master);
+    this.ambDuck = c.createGain();
+    this.ambDuck.connect(this.sfxVol);
     this.music = c.createGain();
     this.music.gain.value = this.musicVolume;
-    this.music.connect(this.master);
+    this.music.connect(this.musicDuck);
     this.amb = c.createGain();
     this.amb.gain.value = 0;
-    this.amb.connect(this.master);
+    this.amb.connect(this.ambDuck);
     // 雜訊緩衝
     const len = c.sampleRate * 3;
     this.white = c.createBuffer(1, len, c.sampleRate);
@@ -204,6 +229,40 @@ export class AudioEngine {
     if (this.music) this.music.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
     if (this.score) this.score.setVolume(v);
   }
+  setSfxVolume(v) {
+    this.sfxVolume = v;
+    if (this.sfxVol) this.sfxVol.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+  // 她的聲音提示：off / std / boost
+  setHerCue(mode) {
+    if (!HER_CUE[mode]) mode = 'std';
+    this.herCue = mode;
+    if (!this.ctx) return;
+    const C = HER_CUE[mode], t = this.ctx.currentTime;
+    this.herBus.gain.setTargetAtTime(C.gain, t, 0.05);
+    for (const em of this.emitters) {
+      if (!em.her) continue;
+      em.panner.refDistance = Math.max(em.refAsked, C.ref);
+      em.panner.rolloffFactor = C.rolloff;
+      em.range = C.range;
+      em.lastG = -1;
+    }
+    this.occlT = -1;
+    this.setHerFocus(this.herFocus);
+  }
+  // 她在附近而且在出聲（0~1）：音樂與環境音讓開一點，配樂也不放搖籃曲片段
+  setHerFocus(level) {
+    this.herFocus = level;
+    if (!this.ctx || !this.musicDuck) return;
+    const d = HER_CUE[this.herCue].duck * level;
+    if (this.changed('duck', d, 0.01)) {
+      const t = this.ctx.currentTime;
+      this.musicDuck.gain.setTargetAtTime(1 - d, t, d > (this.duckPrev || 0) ? 0.25 : 1.2);
+      this.ambDuck.gain.setTargetAtTime(1 - d * 0.7, t, 0.5);
+      this.duckPrev = d;
+    }
+    if (this.score) this.score.setHerNear(level);
+  }
   // 配樂模式：menu / explore / win / lose / off
   setMusic(mode) { if (this.score) this.score.setMode(mode); }
   setMusicState(tension, chase, hiding) { if (this.score) this.score.setState(tension, chase, hiding); }
@@ -255,18 +314,28 @@ export class AudioEngine {
       L.setOrientation(f.x, f.y, f.z, u.x, u.y, u.z);
     }
     // 牆壁遮蔽（每秒約 12 次就夠了，不用每格算）
-    if (this.occlusionFn && !(t - this.occlT < 0.08)) {
+    if (!(t - this.occlT < 0.08)) {
       this.occlT = t;
-      for (const em of this.emitters) {
-        const walls = this.occlusionFn(p.x, p.z, em.pos.x, em.pos.z);
-        if (walls !== em.walls) {
-          em.walls = walls;
-          const cut = walls === 0 ? 18000 : walls === 1 ? 1100 : 450;
-          const g = walls === 0 ? 1 : walls === 1 ? 0.6 : 0.32;
-          em.filter.frequency.setTargetAtTime(cut, t, 0.08);
-          em.occl.gain.setTargetAtTime(g, t, 0.08);
-        }
-      }
+      for (const em of this.emitters) this.occlude(em, false);
+    }
+  }
+  // 隔幾道牆（悶音＋變小）與超出聽得到的距離（淡掉）；結果記在 em.walls / em.lastG
+  occlude(em, now) {
+    const L = this.listener, t = this.ctx.currentTime;
+    const walls = this.occlusionFn ? this.occlusionFn(L.x, L.z, em.pos.x, em.pos.z) : 0;
+    if (walls !== em.walls) {
+      em.walls = walls;
+      const cut = walls === 0 ? 18000 : walls === 1 ? 1100 : 450;
+      if (now) em.filter.frequency.value = cut; else em.filter.frequency.setTargetAtTime(cut, t, 0.08);
+    }
+    let g = walls === 0 ? 1 : walls === 1 ? 0.6 : 0.32;
+    if (em.range) {
+      const d = Math.hypot(em.pos.x - L.x, em.pos.z - L.z);
+      g *= Math.min(1, Math.max(0, (em.range - d) / 6));
+    }
+    if (Math.abs(g - em.lastG) > 0.005) {
+      em.lastG = g;
+      if (now) em.occl.gain.value = g; else em.occl.gain.setTargetAtTime(g, t, 0.08);
     }
   }
 
@@ -281,16 +350,18 @@ export class AudioEngine {
     const panner = c.createPanner();
     panner.panningModel = opts.hrtf === false ? 'equalpower' : 'HRTF';
     panner.distanceModel = 'inverse';
-    panner.refDistance = opts.ref || 1.3;
+    const her = opts.her ? HER_CUE[this.herCue] : null;
+    panner.refDistance = Math.max(opts.ref || 1.3, her ? her.ref : 0);
     panner.maxDistance = 80;
-    panner.rolloffFactor = opts.rolloff || 1.25;
+    panner.rolloffFactor = her ? her.rolloff : opts.rolloff || 1.25;
     const send = c.createGain();
     send.gain.value = opts.reverb ?? 0.35;
     input.connect(filter).connect(occl).connect(panner);
-    panner.connect(this.sfx);
+    panner.connect(her ? this.herBus : this.sfx);
     panner.connect(send).connect(this.revSend);
     const em = {
-      input, filter, occl, panner, pos: { x: 0, y: 0, z: 0 }, walls: -1,
+      input, filter, occl, panner, pos: { x: 0, y: 0, z: 0 }, walls: -1, lastG: -1,
+      her: !!her, range: her ? her.range : 0, refAsked: opts.ref || 1.3,
       setPosition: (x, y, z) => {
         em.pos.x = x; em.pos.y = y; em.pos.z = z;
         const t = c.currentTime;
@@ -299,6 +370,7 @@ export class AudioEngine {
         } else panner.setPosition(x, y, z);
       },
       dispose: () => {
+        em.disposed = true;
         this.emitters.delete(em);
         try { input.disconnect(); panner.disconnect(); send.disconnect(); } catch (e) { /* 已斷開 */ }
       },
@@ -307,12 +379,7 @@ export class AudioEngine {
       em.pos = { ...opts.pos };
       if (panner.positionX) { panner.positionX.value = opts.pos.x; panner.positionY.value = opts.pos.y ?? 1; panner.positionZ.value = opts.pos.z; }
       else panner.setPosition(opts.pos.x, opts.pos.y ?? 1, opts.pos.z);
-      if (this.occlusionFn) {
-        const walls = this.occlusionFn(this.listener.x, this.listener.z, opts.pos.x, opts.pos.z);
-        em.walls = walls;
-        filter.frequency.value = walls === 0 ? 18000 : walls === 1 ? 1100 : 450;
-        occl.gain.value = walls === 0 ? 1 : walls === 1 ? 0.6 : 0.32;
-      }
+      this.occlude(em, true);
     }
     this.emitters.add(em);
     return em;
@@ -322,7 +389,7 @@ export class AudioEngine {
   out(opts, dur, reverb = 0.3) {
     const c = this.ctx;
     if (opts && opts.pos) {
-      const em = this.createEmitter({ pos: { x: opts.pos.x, y: opts.pos.y ?? 1.2, z: opts.pos.z }, hrtf: !!opts.hrtf, reverb: opts.reverb ?? reverb + 0.15, ref: opts.ref });
+      const em = this.createEmitter({ pos: { x: opts.pos.x, y: opts.pos.y ?? 1.2, z: opts.pos.z }, hrtf: !!opts.hrtf || !!opts.her, her: !!opts.her, reverb: opts.reverb ?? reverb + 0.15, ref: opts.ref });
       setTimeout(() => em.dispose(), (dur + 1.5) * 1000);
       return em.input;
     }
@@ -429,20 +496,35 @@ export class AudioEngine {
     this.burst(out, t + rnd(0.05, 0.08), { f: rnd(600, 900), q: 1.2, d: 0.04, peak: base * 0.35 });
     if (Math.random() < 0.18) this.burst(out, t + 0.02, { ftype: 'highpass', f: 5000, d: 0.06, peak: base * 0.15 }); // 踩到碎玻璃 / 紙
   }
+  // 她的腳步：比玩家重、比較悶，一腳重一腳輕（拖著腳）；跑起來又重又急。speed 是她實際的移動速度
   s_ghostStep(o, t) {
-    const out = this.out(o, 0.8, 0.4);
-    const pk = o.fast ? 0.75 : 0.45;
+    const out = this.out(o, 0.9, 0.4);
+    const sp = o.speed ?? (o.fast ? 3.4 : 1.1);
+    const run = sp > 2.4;
+    const pk = (run ? 0.8 : 0.42 + Math.min(0.15, sp * 0.08)) * (o.light ? 0.6 : 1);
+    this.thump(out, t, run ? 80 : 68, 38, run ? 0.1 : 0.13, pk * 0.55); // 身體的重量
     if (this.has('step')) {
-      // 她的腳步：比較重、比較悶，偶爾拖著腳
-      const lp = this.filt('lowpass', o.fast ? 2600 : 1500, 0.7);
+      const lp = this.filt('lowpass', run ? 2600 : o.light ? 1200 : 1600, 0.7);
       lp.connect(out);
-      this.sample(lp, 'step', t, { rate: rnd(0.78, 0.86), gain: pk * 1.7 });
-      if (!o.fast && Math.random() < 0.5) this.burst(out, t + 0.05, { f: 1600, q: 0.7, a: 0.08, d: 0.3, peak: 0.06 });
+      this.sample(lp, 'step', t, { rate: rnd(0.76, 0.86), gain: pk * 1.7 });
+    } else {
+      this.burst(out, t, { ftype: 'lowpass', f: 900, q: 0.8, a: 0.001, d: 0.06, peak: pk });
+    }
+    // 拖著的那隻腳：鞋底擦過地板
+    if (!run && o.light && Math.random() < 0.7) this.burst(out, t + 0.04, { f: rnd(1300, 1800), q: 0.7, a: 0.1, d: rnd(0.25, 0.4), peak: 0.07 });
+  }
+  // 她停下來聽的時候：很輕、很慢的呼吸，偶爾地板吱一聲
+  s_ghostBreath(o, t) {
+    const out = this.out(o, 3.5, 0.3);
+    if (o.creak) { this.creak(out, t, rnd(0.4, 0.7), 0.12); return; }
+    if (this.buf.breath) {
+      const lp = this.filt('lowpass', 2400, 0.6);
+      lp.connect(out);
+      this.sample(lp, this.buf.breath, t, { rate: rnd(0.74, 0.82), gain: 0.32 });
       return;
     }
-    this.burst(out, t, { ftype: 'lowpass', f: 900, q: 0.8, a: 0.001, d: 0.06, peak: pk });
-    this.thump(out, t, 70, 40, 0.09, pk * 0.8);
-    if (!o.fast) this.burst(out, t + 0.04, { f: 1800, q: 0.7, a: 0.08, d: 0.3, peak: 0.08 });
+    this.burst(out, t, { type: 'pink', f: 1100, q: 0.8, a: 0.7, d: 0.3, peak: 0.08 });
+    this.burst(out, t + 1.1, { type: 'pink', f: 620, q: 0.9, a: 0.1, d: 0.9, peak: 0.1 });
   }
   s_doorCreak(o, t) {
     const dur = o.short ? 0.6 : rnd(1.1, 1.7);
@@ -931,21 +1013,23 @@ export class AudioEngine {
       s.connect(this.env(tt, 0.02, 0.1, 0.05)).connect(out);
     }
   }
+  // 房間裡某處的音樂盒：布拉姆斯〈搖籃曲〉，越走越慢，像發條快轉完
   s_musicBox(o, t) {
-    const out = this.out({ ...o, hrtf: true }, 12, 0.5);
-    let tt = t;
+    const dur = o.dur || 10;
+    const out = this.out({ ...o, hrtf: true }, dur + 3, 0.5);
     const real = this.score && this.score.has('glk');
-    for (const [m, d] of LULLABY) {
-      if (tt > t + (o.dur || 10)) break;
-      if (m > 0 && real) {
-        // 真的鐘琴錄音，放在房間裡的某個位置
-        this.score.play('glk', m + 24 + rnd(-0.06, 0.06) - (tt - t) * 0.02, tt, { vel: 0.45, dest: out, rel: 0.5 });
-      } else if (m > 0) {
-        const f = mtof(m + 24) * (1 + rnd(-0.006, 0.006));
+    let tt = t, i = o.from ?? LULLABY_START, beat = LULLABY_BEAT * 0.85;
+    while (tt < t + dur) {
+      const n = LULLABY[i++ % LULLABY.length];
+      const m = n.m + 24 - (tt - t) * 0.02;
+      if (real) this.score.play('glk', m + rnd(-0.06, 0.06), tt, { vel: 0.45, dest: out, rel: 0.5 });
+      else {
+        const f = mtof(m) * (1 + rnd(-0.004, 0.004));
         this.osc('sine', f, tt, 1.2).connect(this.env(tt, 0.002, 1.1, 0.12)).connect(out);
         this.osc('sine', f * 3.01, tt, 0.4).connect(this.env(tt, 0.002, 0.35, 0.03)).connect(out);
       }
-      tt += d * 0.75 * (1 + (tt - t) * 0.03); // 越來越慢，像發條快轉完
+      tt += n.d * beat;
+      beat *= 1.015;
     }
   }
   s_breathBehind(o, t) {
@@ -1088,47 +1172,91 @@ export class AudioEngine {
   }
   setAlarm(on) { this.alarmOn = on; }
 
+  // ---- 她哼的搖籃曲：一個持續的人聲（閉嘴哼「嗯——」），音高照〈搖籃曲〉的旋律滑過去。
+  // 鋸齒＋三角波 → 鼻腔哼聲的共振峰 → 加一點氣音；每個音只排頻率與音量的自動化，不另外建節點
   startHum(em) {
     if (!this.ctx || !em || !em.input) return;
     if (this.hums.has(em)) return;
-    this.hums.set(em, { i: Math.floor(Math.random() * LULLABY.length), next: this.ctx.currentTime + 0.3, drift: 0 });
-  }
-  stopHum(em) { this.hums.delete(em); }
-
-  humNote(em, m, t, d, drift) {
-    const c = this.ctx;
-    const f = mtof(m) * Math.pow(2, drift / 1200);
-    const vib = c.createOscillator();
-    vib.frequency.value = rnd(4.5, 5.8);
-    const vg = c.createGain();
-    vg.gain.value = f * 0.012;
-    vib.connect(vg);
-    vib.start(t);
-    vib.stop(t + d + 0.4);
-    const mix = c.createGain();
-    mix.gain.value = 0.5;
-    for (const [type, det, g] of [['triangle', 0, 0.8], ['sawtooth', -9, 0.18]]) {
-      const o = this.osc(type, f, t, d + 0.35);
-      o.detune.value = det;
-      vg.connect(o.frequency);
-      if (Math.random() < 0.25) o.frequency.linearRampToValueAtTime(f * 0.94, t + d + 0.3); // 尾音往下滑
-      const og = c.createGain();
-      og.gain.value = g;
-      o.connect(og).connect(mix);
-    }
-    const env = c.createGain();
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.linearRampToValueAtTime(0.5, t + 0.16);
-    env.gain.setValueAtTime(0.45, t + d);
-    env.gain.linearRampToValueAtTime(0.0001, t + d + 0.3);
-    const sum = c.createGain();
-    for (const [ff, q, g] of [[380, 5, 1.0], [880, 7, 0.55], [2600, 9, 0.2]]) {
-      const b = this.filt('bandpass', ff, q);
+    const c = this.ctx, t = c.currentTime;
+    const v = { i: LULLABY_START, next: t + rnd(0.4, 1.2), beat: LULLABY_BEAT * rnd(1.05, 1.2), drift: rnd(-15, 5), silent: true, prev: 0 };
+    const f0 = mtof(LULLABY[v.i].m);
+    const o1 = c.createOscillator(), o2 = c.createOscillator(), lfo = c.createOscillator();
+    o1.type = 'sawtooth'; o2.type = 'triangle';
+    o1.frequency.value = f0; o2.frequency.value = f0; o2.detune.value = 7;
+    lfo.frequency.value = rnd(4.6, 5.4);
+    const lg = c.createGain();
+    lg.gain.value = 16; // 顫音（音分）
+    lfo.connect(lg); lg.connect(o1.detune); lg.connect(o2.detune);
+    const src = c.createGain();
+    const g1 = c.createGain(), g2 = c.createGain();
+    g1.gain.value = 0.35; g2.gain.value = 0.8;
+    o1.connect(g1).connect(src); o2.connect(g2).connect(src);
+    const amp = c.createGain();
+    amp.gain.value = 0;
+    for (const [f, q, g] of [[290, 3, 1.0], [1050, 6, 0.22], [2700, 8, 0.08]]) {
       const bg = c.createGain();
-      bg.gain.value = g * 2.2;
-      mix.connect(b).connect(bg).connect(sum);
+      bg.gain.value = g * 2.4;
+      src.connect(this.filt('bandpass', f, q)).connect(bg).connect(amp);
     }
-    sum.connect(env).connect(em.input);
+    const bodyG = c.createGain();
+    bodyG.gain.value = 0.5;
+    src.connect(this.filt('lowpass', 700, 0.7)).connect(bodyG).connect(amp);
+    const n = this.noise('pink');
+    const ng = c.createGain();
+    ng.gain.value = 0.35; // 氣音
+    n.connect(this.filt('bandpass', 1800, 0.8)).connect(ng).connect(amp);
+    const breath = c.createGain(); // 換氣
+    breath.gain.value = 0;
+    n.connect(this.filt('bandpass', 1300, 0.9)).connect(breath);
+    const out = c.createGain();
+    out.gain.value = 0.55;
+    amp.connect(out); breath.connect(out); out.connect(em.input);
+    o1.start(t); o2.start(t); lfo.start(t); n.start(t, rnd(0, 2));
+    Object.assign(v, { o1, o2, amp, breath, out, srcs: [o1, o2, lfo, n] });
+    this.hums.set(em, v);
+  }
+  stopHum(em) {
+    const v = this.hums.get(em);
+    if (!v) return;
+    this.hums.delete(em);
+    const t = this.ctx.currentTime;
+    v.out.gain.cancelScheduledValues(t);
+    v.out.gain.setTargetAtTime(0, t, 0.1);
+    for (const s of v.srcs) { try { s.stop(t + 0.8); } catch (e) { /* 已停止 */ } }
+    v.srcs[0].onended = () => { try { v.out.disconnect(); } catch (e) { /* 已斷開 */ } };
+  }
+  // 排一個哼的音
+  humNote(v) {
+    const L = LULLABY.length, n = LULLABY[v.i], t = v.next;
+    const end = n.d >= 2 && (n.bar === 7 || n.bar === 11 || n.bar === 15); // 句尾的長音
+    const beat = v.beat * rnd(0.95, 1.06);
+    const d = n.d * beat * (end ? 1.3 : 1);
+    let cents = v.drift + rnd(-8, 8);
+    if (Math.random() < 0.05) cents += pick([-45, 40]); // 偶爾走音
+    const f = mtof(n.m) * Math.pow(2, cents / 1200);
+    const glide = v.silent ? 0.005 : 0.035;
+    v.o1.frequency.setTargetAtTime(f, t - 0.02, glide);
+    v.o2.frequency.setTargetAtTime(f, t - 0.02, glide);
+    const A = v.amp.gain, peak = rnd(0.42, 0.52) * (n.at === 0 ? 1 : 0.85);
+    if (v.silent) A.setTargetAtTime(peak, t, 0.09);
+    else {
+      if (n.m === v.prev) A.setTargetAtTime(peak * 0.5, t - 0.06, 0.015); // 同一個音：中間斷一下
+      A.setTargetAtTime(peak, t, 0.04);
+    }
+    v.prev = n.m;
+    v.silent = false;
+    v.next = t + d;
+    v.i = (v.i + 1) % L;
+    if (end || Math.random() < 0.025) {
+      // 句尾（或哼到一半）停下來換氣，有時停很久
+      const e = t + d - 0.1;
+      A.setTargetAtTime(0, e, 0.13);
+      v.breath.gain.setTargetAtTime(0.22, e + 0.35, 0.08);
+      v.breath.gain.setTargetAtTime(0, e + 0.75, 0.1);
+      v.next += rnd(0.9, 1.8) + (Math.random() < 0.25 ? rnd(2, 5) : 0);
+      v.silent = true;
+      if (n.bar === 15) { v.drift = rnd(-30, 8); v.beat = LULLABY_BEAT * rnd(1.05, 1.25); }
+    }
   }
 
   // 排程器：心跳、呼吸、哼歌、追逐鼓點、滴水
@@ -1169,14 +1297,9 @@ export class AudioEngine {
       }
     }
     // 哼歌
-    for (const [em, st] of this.hums) {
-      while (st.next < ahead) {
-        const [m, d] = LULLABY[st.i % LULLABY.length];
-        if (m > 0) this.humNote(em, m, st.next, d * 0.95, st.drift + rnd(-12, 12));
-        st.next += d;
-        st.i++;
-        if (st.i % LULLABY.length === 0) st.drift = rnd(-40, 10);
-      }
+    for (const v of this.hums.values()) {
+      if (v.next < now) { v.next = now + 0.05; v.silent = true; v.amp.gain.setTargetAtTime(0, now, 0.05); }
+      while (v.next < ahead) this.humNote(v);
     }
     // 追逐鼓點
     if (this.chase.level > 0.05 && this.chaseGain) {
@@ -1298,7 +1421,8 @@ export class AudioEngine {
   }
 
   stopAll() {
-    this.hums.clear();
+    for (const em of [...this.hums.keys()]) this.stopHum(em);
+    this.setHerFocus(0);
     if (this.buzz) { try { this.buzz.s.stop(); } catch (e) { /* 已停止 */ } this.buzz = null; }
     this.setHeartbeat(0, 0);
     this.setBreathing(0);

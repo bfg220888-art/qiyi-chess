@@ -437,6 +437,9 @@ export class Game {
     this.fear = (this.fear || 0) + (fear - (this.fear || 0)) * Math.min(1, dt * 2);
     A.setHeartbeat(62 + this.fear * 85, Math.max(0, this.fear - 0.2) * 0.7);
     A.setChase(chase);
+    // 她在 15 公尺內而且在哼歌或走動：音樂與環境音讓開一點，好聽出她在哪
+    const herLoud = gh.state !== 'dormant' && gh.floor === this.floorIdx && (gh.humming || gh.speed > 0.3);
+    A.setHerFocus(herLoud ? Math.min(1, Math.max(0, (15 - this.ghostDist) / 6)) : 0);
     A.setMusicState(Math.max(this.fear, this.phase === 'escape' ? 0.5 : 0), chase, !!P.hiding);
     const st = gh.state === 'dormant' ? 0 : Math.max(0, 1 - this.ghostDist / 10);
     this.staticBoost = Math.max(0, this.staticBoost - dt * 1.5);

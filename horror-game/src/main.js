@@ -43,12 +43,13 @@ class App {
   constructor() {
     this.canvas = $('game');
     const defaults = {
-      volume: 0.85, music: 0.8, brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
+      volume: 0.85, music: 0.8, sfx: 1, herCue: 'std', brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
       quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
-    clampNum('volume', 0, 1); clampNum('music', 0, 1); clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
+    clampNum('volume', 0, 1); clampNum('music', 0, 1); clampNum('sfx', 0, 1);
+    if (!['off', 'std', 'boost'].includes(this.settings.herCue)) this.settings.herCue = 'std'; clampNum('brightness', 0.6, 2); clampNum('mouseSens', 0.2, 3); clampNum('touchSens', 0.2, 3);
     this.settings.invertY = this.settings.invertY === true;
     this.settings.showFps = this.settings.showFps === true;
     this.settings.aa = this.settings.aa !== false;
@@ -69,6 +70,8 @@ class App {
     this.audio = new AudioEngine();
     this.audio.volume = this.settings.volume;
     this.audio.musicVolume = this.settings.music;
+    this.audio.sfxVolume = this.settings.sfx;
+    this.audio.herCue = this.settings.herCue;
     try {
       this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
     } catch (e) {
@@ -273,6 +276,17 @@ class App {
     bindRange('sBright', 'brightness', () => { this.renderer.toneMappingExposure = this.settings.brightness; });
     bindRange('sVolume', 'volume', () => this.audio.setVolume(this.settings.volume));
     bindRange('sMusic', 'music', () => this.audio.setMusicVolume(this.settings.music));
+    bindRange('sSfx', 'sfx', () => this.audio.setSfxVolume(this.settings.sfx));
+    // 她的聲音提示：關 / 標準 / 加強
+    const hs = $('herCueSeg');
+    const setHer = (k) => {
+      this.settings.herCue = k;
+      for (const b of hs.querySelectorAll('button')) b.classList.toggle('on', b.dataset.her === k);
+      this.audio.setHerCue(k);
+      this.saveSettings();
+    };
+    for (const b of hs.querySelectorAll('button')) b.addEventListener('click', () => setHer(b.dataset.her));
+    setHer(this.settings.herCue);
     // 瀏覽器要等玩家第一次點擊或按鍵才能出聲：一碰到選單就開始放音樂盒
     const wake = () => {
       if (this.state !== 'menu') return;

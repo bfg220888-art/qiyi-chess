@@ -9,7 +9,7 @@ import { serveDir } from './serve.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const N = Number(process.argv[2]) || 3;
-const PORT = 9123;
+const PORT = Number(process.env.PEER_PORT) || 9123; // 同一台機器同時跑兩份測試時可以換埠
 const peerServer = PeerServer({ port: PORT, path: '/', host: '127.0.0.1' });
 const server = await serveDir(path.join(root, 'dist'));
 const base = `http://127.0.0.1:${server.address().port}/index.html?debug&peer=127.0.0.1:${PORT}`;
