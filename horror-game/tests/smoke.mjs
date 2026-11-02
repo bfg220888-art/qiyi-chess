@@ -600,6 +600,78 @@ await run('mobile', { viewport: { width: 844, height: 390 }, isMobile: true, has
   });
   log('look dx', look.toFixed(3));
   assert(look > 0.1, 'touch look');
+  // 情境按鈕：沒有目標時收起來，看著樓梯時出現「上樓」；按住時 interactHold
+  const ctxb = await page.evaluate(() => {
+    const A = window.__SW, g = A.game, btn = document.getElementById('tInteract');
+    g.target = null; A.input.syncTouch(g);
+    const off = btn.classList.contains('ctx-off') && getComputedStyle(btn).pointerEvents === 'none';
+    g.target = { kind: 'stairs', stair: { dir: 'up' }, label: '上樓：二樓' }; A.input.syncTouch(g);
+    const on = !btn.classList.contains('ctx-off') && btn.querySelector('b').textContent === '上樓' && btn.querySelector('small').textContent === '二樓';
+    g.target = { kind: 'crank', label: '按住轉動把手' }; A.input.syncTouch(g);
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', pointerId: 11 }));
+    const held = A.input.poll().interactHold;
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', pointerId: 11 }));
+    const released = !A.input.poll().interactHold;
+    const hold = btn.classList.contains('hold');
+    g.target = null; A.input.syncTouch(g);
+    return { off, on, held, released, hold };
+  });
+  log('context button', JSON.stringify(ctxb));
+  assert(ctxb.off && ctxb.on && ctxb.held && ctxb.released && ctxb.hold, 'context button');
+  // 按鍵配置：左手（搖桿換到右半邊）、大按鈕；版面不重疊、按鈕至少 48px、都在畫面內
+  const layout = await page.evaluate(() => {
+    const A = window.__SW, I = A.input, res = {};
+    const geo = () => {
+      const g = A.game;
+      g.target = { kind: 'locker', label: '躲進鐵櫃' }; I.syncTouch(g);
+      document.getElementById('tThrow').hidden = false;
+      const bs = [...document.querySelectorAll('#touch .tb')].filter((el) => getComputedStyle(el).display !== 'none' && !el.hidden).map((el) => el.getBoundingClientRect());
+      let bad = 0;
+      for (const r of bs) if (r.width < 48 || r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) bad++;
+      for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+        const a = bs[i], b = bs[j];
+        if (Math.hypot(a.x + a.width / 2 - b.x - b.width / 2, a.y + a.height / 2 - b.y - b.height / 2) < (a.width + b.width) / 2) bad++;
+      }
+      document.getElementById('tThrow').hidden = true;
+      g.target = null; I.syncTouch(g);
+      return { bad, big: Math.round(document.getElementById('tInteract').getBoundingClientRect().width), left: Math.round(document.getElementById('tInteract').getBoundingClientRect().left) };
+    };
+    res.normal = geo();
+    A.settings.touchLayout = 'left'; A.settings.touchSize = 'l'; I.applyTouchLayout();
+    res.mirror = geo();
+    // 左手：右半邊放下手指 = 搖桿
+    const L = document.getElementById('touch');
+    const ev = (type, x, y) => L.dispatchEvent(new PointerEvent(type, { pointerId: 12, clientX: x, clientY: y, pointerType: 'touch', bubbles: true, cancelable: true }));
+    ev('pointerdown', 700, 280); ev('pointermove', 700, 200);
+    res.joyRight = I.poll().my > 0.9 && document.getElementById('joy').classList.contains('run');
+    ev('pointerup', 700, 200);
+    A.settings.touchLayout = 'right'; A.settings.touchSize = 'm'; I.applyTouchLayout();
+    return res;
+  });
+  log('layout', JSON.stringify(layout));
+  assert(layout.normal.bad === 0 && layout.mirror.bad === 0, 'touch buttons do not overlap');
+  assert(layout.mirror.big > layout.normal.big && layout.mirror.left < 200 && layout.normal.left > 600, 'left-handed + large layout');
+  assert(layout.joyRight, 'left-handed joystick on the right');
+  // 視角加速：快速甩動比慢慢拖轉得多
+  const curve = await page.evaluate(() => {
+    const I = window.__SW.input, L = document.getElementById('touch');
+    const swipe = (accel) => {
+      I.settings.touchAccel = accel;
+      L.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 13, clientX: 600, clientY: 200, pointerType: 'touch', bubbles: true }));
+      I.poll();
+      // timeStamp 由瀏覽器決定，連續兩次 move 間隔很短 = 快速甩動
+      L.dispatchEvent(new PointerEvent('pointermove', { pointerId: 13, clientX: 700, clientY: 200, pointerType: 'touch', bubbles: true }));
+      L.dispatchEvent(new PointerEvent('pointermove', { pointerId: 13, clientX: 800, clientY: 200, pointerType: 'touch', bubbles: true }));
+      const x = I.poll().look.x;
+      L.dispatchEvent(new PointerEvent('pointerup', { pointerId: 13, clientX: 800, clientY: 200, pointerType: 'touch', bubbles: true }));
+      return x;
+    };
+    const a = swipe(false), b = swipe(true);
+    I.settings.touchAccel = false;
+    return { a, b };
+  });
+  log('look accel', curve.a.toFixed(3), curve.b.toFixed(3));
+  assert(curve.b > curve.a * 1.3, 'look acceleration');
   // 按鈕
   await page.evaluate(() => document.querySelector('[data-action="flashlight"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' })));
   const acts = await page.evaluate(() => window.__SW.input.poll().actions);
@@ -871,6 +943,21 @@ await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, h
   await shot(page, 'p1-menu');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   assert(!overflow, 'no horizontal overflow');
+  // 設定裡的「按鍵配置」：觸控裝置才出現，左手／按鈕大小／視角加速會存起來並立刻套用
+  await page.tap('#btnSettings');
+  await page.waitForSelector('#touchSettings', { state: 'visible' });
+  await page.evaluate(() => document.getElementById('touchSettings').scrollIntoView());
+  await page.tap('[data-hand="left"]');
+  await page.tap('[data-size="l"]');
+  await page.tap('#sTouchAccel');
+  await shot(page, 'p2-touch-settings');
+  const ts = await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('silentward.settings'));
+    const c = document.documentElement.classList;
+    return { layout: s.touchLayout, size: s.touchSize, accel: s.touchAccel, cls: c.contains('th-left') && c.contains('th-l') && c.contains('touch-ui'), tu: getComputedStyle(document.documentElement).getPropertyValue('--tu').trim(), on: document.querySelector('[data-hand="left"]').classList.contains('on') };
+  });
+  log('touch settings', JSON.stringify(ts));
+  assert(ts.layout === 'left' && ts.size === 'l' && ts.accel === true && ts.cls && ts.tu === '68px' && ts.on, 'touch layout settings persisted and applied');
 });
 
 // 設定：畫面與舒適度（視野、頭部晃動、畫面亮度、字幕大小）會存起來，進遊戲後即時套用
