@@ -538,6 +538,27 @@ export class AudioEngine {
     }
     for (let k = 0; k < 3; k++) this.burst(out, t + k * 0.09, { f: 1500, q: 4, a: 0.002, d: 0.05, peak: 0.35 });
   }
+  // 上鎖的門：門把轉不動、門板在門框裡喀啦喀啦撞（全部即時合成）
+  s_doorRattle(o, t) {
+    const out = this.out(o, 1.5, 0.35);
+    for (let k = 0; k < 4; k++) {
+      const tt = t + k * rnd(0.075, 0.1);
+      this.burst(out, tt, { f: rnd(1300, 1900), q: 5, a: 0.001, d: 0.035, peak: 0.32 - k * 0.04 });
+      this.ring(out, tt, [[rnd(640, 720), 25, 0.5], [rnd(1500, 1700), 30, 0.3]], 0.25, 0.25);
+      this.thump(out, tt + 0.01, 120, 70, 0.07, 0.35);
+    }
+    // 門扇被拉了一下，撞到門擋
+    this.thump(out, t + 0.42, 90, 45, 0.18, 0.55);
+    this.burst(out, t + 0.42, { type: 'brown', ftype: 'lowpass', f: 700, a: 0.002, d: 0.12, peak: 0.4 });
+  }
+  // 讀卡機：嗶一聲轉綠、電子鎖「喀」地彈開
+  s_cardBeep(o, t) {
+    const out = this.out(o, 1.2, 0.2);
+    this.osc('square', 1760, t, 0.09).connect(this.filt('lowpass', 3000, 0.7)).connect(this.env(t, 0.003, 0.08, 0.07)).connect(out);
+    this.osc('square', 2350, t + 0.11, 0.12).connect(this.filt('lowpass', 3500, 0.7)).connect(this.env(t + 0.11, 0.003, 0.11, 0.07)).connect(out);
+    this.thump(out, t + 0.3, 160, 80, 0.06, 0.5);
+    this.ring(out, t + 0.3, [[980, 30, 0.4], [2400, 40, 0.25]], 0.4, 0.35);
+  }
   s_lockerOpen(o, t) {
     const out = this.out(o, 1.6, 0.35);
     if (this.buf.latch && this.buf.locker) {

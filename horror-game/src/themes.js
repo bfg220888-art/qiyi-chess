@@ -43,6 +43,8 @@ export const THEMES = {
       special: { types: ['ward'], label: '707 病房', tag: '707' },
       names: {},
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['藥局', 'storage'], ['院長室', 'office'], ['保全室', 'office'], ['器械庫', 'storage']],
     windows: 0.42, lobbyWindows: 0.5, corrWindows: 0.35,
     lights: { corrEvery: 2, broken: 0.46, flicker: 0.35, color: 0xdfe8ff, tube: [0.92, 0.97, 1], emergency: 0xff2a14, emergencyN: 5 },
     look: {
@@ -77,6 +79,8 @@ export const THEMES = {
       special: { types: ['morgue', 'coldstore'], label: '0713 冷藏室', tag: '0713' },
       names: { nurse: '管理室', office: '病理科辦公室', storage: '屍袋倉庫', utility: '鍋爐間', lobby: '卸貨區' },
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['證物室', 'storage'], ['病理標本室', 'storage'], ['保全室', 'office'], ['主任辦公室', 'office']],
     windows: 0, lobbyWindows: 0, corrWindows: 0,
     lights: { corrEvery: 3, broken: 0.55, flicker: 0.45, color: 0xb8f0e4, tube: [0.78, 1.0, 0.95], emergency: 0x22ff66, emergencyN: 6 },
     look: {
@@ -111,6 +115,8 @@ export const THEMES = {
       special: { types: ['nursery', 'kidward'], label: '嬰兒室', tag: '嬰兒室' },
       names: { office: '小兒科辦公室', lobby: '候診大廳' },
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['藥局', 'storage'], ['院長室', 'office'], ['疫苗冷藏室', 'storage'], ['保全室', 'office']],
     windows: 0.5, lobbyWindows: 0.6, corrWindows: 0.45,
     lights: { corrEvery: 2, broken: 0.5, flicker: 0.3, color: 0xffe2bc, tube: [1.0, 0.9, 0.76], emergency: 0xff2a14, emergencyN: 4 },
     look: {
@@ -145,6 +151,8 @@ export const THEMES = {
       special: { types: ['cell'], label: '0713 隔離室', tag: '0713' },
       names: { nurse: '護理站', office: '精神科醫師室' },
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['藥局', 'storage'], ['院長室', 'office'], ['病歷室', 'storage'], ['保全室', 'office']],
     windows: 0.3, lobbyWindows: 0.4, corrWindows: 0.5,
     lights: { corrEvery: 2, broken: 0.42, flicker: 0.4, color: 0xe8ffe0, tube: [0.9, 1.0, 0.86], emergency: 0xff2a14, emergencyN: 5 },
     look: {
@@ -180,6 +188,8 @@ export const THEMES = {
       special: { types: ['operating'], label: '第 7 手術室', tag: '7 號房' },
       names: { nurse: '恢復室護理站', office: '麻醉科辦公室', storage: '衛材庫房', utility: '污物處理室', lobby: '手術部等候區' },
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['器械庫', 'storage'], ['管制藥品室', 'storage'], ['主任辦公室', 'office'], ['保全室', 'office']],
     windows: 0.12, lobbyWindows: 0.4, corrWindows: 0.25,
     lights: { corrEvery: 2, broken: 0.4, flicker: 0.3, color: 0xe4f4ff, tube: [0.88, 0.98, 1.0], emergency: 0xff2a14, emergencyN: 5 },
     look: {
@@ -218,6 +228,8 @@ export const THEMES = {
       special: { types: ['ward', 'collapsed'], label: '313 病房', tag: '起火點' },
       names: { nurse: '燒毀的護理站', office: '值班室', storage: '被服室', utility: '配電間', lobby: '舊院區門廳' },
     },
+    // 上鎖的房間（門禁卡）：[門牌, 房型（決定家具）]
+    locked: [['藥局', 'storage'], ['院長室', 'office'], ['檔案室', 'storage'], ['保全室', 'office']],
     windows: 0.55, lobbyWindows: 0.6, corrWindows: 0.5,
     lights: { corrEvery: 2, broken: 0.6, flicker: 0.5, color: 0xffd6a8, tube: [1.0, 0.82, 0.62], emergency: 0xff6a12, emergencyN: 9 },
     look: {

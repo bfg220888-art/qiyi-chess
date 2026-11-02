@@ -7,6 +7,31 @@ import { DIFFICULTY, GHOST_R, CELL } from '../src/config.js';
 import { THEME_KEYS, THEMES, resolveTheme } from '../src/themes.js';
 
 const N = Number(process.argv[2] || 300);
+
+// 門禁卡與上鎖的房間（整棟醫院一起看）：
+// 每一扇上鎖的門剛好有一張同色的卡；卡不在任何上鎖的房間裡（=不用開任何鎖就拿得到，所以不可能有「鑰匙在自己的門後」或循環依賴）；
+// 上鎖的房間只有一扇門；每層最多一個保險絲鎖在裡面；鎖起來之後其他地方都還走得到（validateLevel 的嚴格模式另外檢查）
+function checkLocks(fl, assert) {
+  const doors = fl.flatMap((l) => l.doors.filter((d) => d.lock >= 0).map((d) => ({ l, d })));
+  const cards = fl.flatMap((l) => l.items.filter((i) => i.kind === 'keycard').map((it) => ({ l, it })));
+  assert(doors.length >= fl.length, `at least one locked door per floor (${doors.length})`);
+  assert(new Set(doors.map((x) => x.d.lock)).size === doors.length, 'lock colours unique');
+  for (const { l, d } of doors) {
+    const room = l.rooms.find((r) => r.locked === d.lock);
+    assert(room && room.doors.length === 1 && room.doors[0] === d.id, `locked room ${d.lock} has exactly its one door`);
+    assert(room && room.label && room !== l.room707 && room !== l.generatorRoom && room !== l.stairRoom, 'locked room is not a story / generator / stair room');
+    assert(cards.filter((c) => c.it.color === d.lock).length === 1, `one keycard for colour ${d.lock}`);
+  }
+  for (const { l, it } of cards) {
+    const rm = l.roomAtWorld(it.x, it.z);
+    assert(!rm || rm.locked === undefined, `keycard ${it.color} is behind a locked door`);
+    assert(doors.some((x) => x.d.lock === it.color), `keycard ${it.color} has a door`);
+  }
+  for (const l of fl) {
+    const lockedFuses = l.items.filter((i) => i.kind === 'fuse' && (l.roomAtWorld(i.x, i.z) || {}).locked !== undefined);
+    assert(lockedFuses.length <= 1, 'at most one fuse behind locks per floor');
+  }
+}
 const onlyTheme = process.argv[3];
 let fails = 0, retries = 0;
 const t0 = Date.now();
@@ -38,7 +63,8 @@ for (let s = 1; s <= N; s++) {
   const notes = lv.items.filter((i) => i.kind === 'note');
   assert(fuses.length === 3, 'fuse count');
   assert(notes.length === 7, 'note count');
-  assert(lv.items.filter((i) => i.kind === 'battery').length === diff.batteries, 'battery count');
+  assert(lv.items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'battery count');
+  checkLocks([lv], assert);
   assert(lv.fusebox, 'fusebox');
   assert(lv.generatorRoom && lv.generatorRoom.type === 'generator', 'generator room');
   assert(lv.lobby && lv.lobby.type === 'lobby', 'lobby');
@@ -107,7 +133,8 @@ for (let s = 1; s <= MF; s++) {
   if (count > 1) assert(fl.every((l) => l.items.some((i) => i.kind === 'fuse')), 'a fuse on every floor');
   const notes = items.filter((i) => i.kind === 'note').map((i) => i.note).sort();
   assert(notes.join() === '0,1,2,3,4,5,6', 'notes 0..6 once each, got ' + notes.join());
-  if (count === 1) assert(fl[0].items.filter((i) => i.kind === 'battery').length === diff.batteries, 'single floor batteries');
+  if (count === 1) assert(fl[0].items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'single floor batteries');
+  checkLocks(fl, assert);
   for (const [i, l] of fl.entries()) {
     assert(l.floorIndex === i, 'floor index');
     assert(!validateLevel(l), 'floor valid: ' + validateLevel(l));

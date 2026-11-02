@@ -421,6 +421,8 @@ export class Ghost {
     // 開門（她所在的那一層）
     for (const door of this.lv.doors) {
       if (door.angle > 0.9) continue;
+      // 上鎖的門她不開：直接穿過去（門對玩家來說還是鎖著的）
+      if (door.lock >= 0 && !door.unlocked) continue;
       if (Math.abs(door.cx - this.pos.x) < 1.3 && Math.abs(door.cz - this.pos.z) < 1.3) {
         const fast = this.state === 'chase';
         // 已經在開了：只在追逐時把速度加快，不要每格都重播開門聲

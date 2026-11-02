@@ -116,6 +116,9 @@ html, body {
 .stat { display: flex; align-items: center; gap: 6px; color: var(--ink); }
 .ico { height: 16px; width: auto; filter: drop-shadow(0 1px 1px #000); }
 .stat.low { color: var(--rec); animation: blink 0.8s steps(1) infinite; }
+/* 門禁卡：白色小卡片，上半部是顏色條 */
+.key-cards { display: flex; gap: 4px; }
+.key-card { display: inline-block; width: 15px; height: 10px; border-radius: 2px; background: linear-gradient(var(--kc) 0 42%, #e8e4da 42% 100%); box-shadow: 0 1px 2px #000; }
 #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: rgba(230, 224, 211, 0.55); transition: transform 0.15s, background 0.15s; }
 #crosshair.active { transform: scale(2.2); background: var(--ink); }
 #stamina { position: absolute; left: 50%; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 28px); width: 160px; margin-left: -80px; height: 3px; background: rgba(230, 224, 211, 0.15); opacity: 0; transition: opacity 0.4s; }

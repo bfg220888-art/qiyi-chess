@@ -1,6 +1,7 @@
 // DOM 介面：HUD、提示、筆記、地圖、結束畫面
 import { drawFloorPlan } from './materials.js';
 import { CELL } from './config.js';
+import { KEY_COLORS } from './level.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -96,6 +97,21 @@ export class UI {
     if (this.el.tThrow) this.el.tThrow.hidden = P.bottles <= 0 || !!P.hiding;
     if (this.el.tBreath) this.el.tBreath.hidden = !P.hiding;
     this.el.fuse.textContent = `${g.fusesInserted}/3${P.fuses ? ` +${P.fuses}` : ''}`;
+    // 門禁卡：每一張畫一個小卡片（顏色有變才重畫）
+    const keys = P.keys.join();
+    if (keys !== this.lastKeys) {
+      this.lastKeys = keys;
+      const box = $('keyCards');
+      box.textContent = '';
+      for (const c of P.keys) {
+        const k = document.createElement('i');
+        k.className = 'key-card';
+        k.style.setProperty('--kc', KEY_COLORS[c].css);
+        k.title = KEY_COLORS[c].name + '門禁卡';
+        box.append(k);
+      }
+      $('keyStat').hidden = !P.keys.length;
+    }
     let obj;
     if (g.phase === 'escape') obj = '大門開了。快逃！';
     else if (P.fuses > 0) obj = `把保險絲插回發電機房的配電箱（已插 ${g.fusesInserted}/3）`;
@@ -219,6 +235,22 @@ export class UI {
       labels: (room) => (room.type === 'generator' ? '發電機' : room.type === 'lobby' ? '大廳' : room.type === 'landing' || room.type === 'stairs' ? null : room.special ? (room.tag || '707') : null),
       labelColor: '#3a2416', labelFont: '700 18px "Noto Sans TC", sans-serif',
     });
+    // 上鎖的門：走過旁邊才畫，用門禁卡的顏色（開了之後變成空心）
+    for (const d of lv.doors) {
+      if (!(d.lock >= 0)) continue;
+      const [ax, ay] = d.o === 'h' ? [d.x, d.y - 1] : [d.x - 1, d.y];
+      if (!g.explored[d.y * lv.W + d.x] && !(lv.inBounds(ax, ay) && g.explored[ay * lv.W + ax])) continue;
+      const cx = ox + (d.cx ?? 0) * scale, cz = oy + (d.cz ?? 0) * scale;
+      ctx.save();
+      ctx.translate(cx, cz);
+      if (d.o === 'v') ctx.rotate(Math.PI / 2);
+      ctx.fillStyle = KEY_COLORS[d.lock].css;
+      ctx.strokeStyle = '#241d14';
+      ctx.lineWidth = 2;
+      if (d.unlocked) { ctx.strokeStyle = KEY_COLORS[d.lock].css; ctx.strokeRect(-9, -4, 18, 8); }
+      else { ctx.fillRect(-9, -4, 18, 8); ctx.strokeRect(-9, -4, 18, 8); }
+      ctx.restore();
+    }
     // 已經插上的保險絲 / 撿到的東西不顯示；只標示玩家
     const px = ox + g.player.pos.x * scale, pz = oy + g.player.pos.z * scale;
     ctx.save();

@@ -33,6 +33,8 @@ export class Player {
     this.flashOn = true;
     this.film = game.diff.startFilm;
     this.fuses = 0;
+    this.keys = [];   // 身上的門禁卡（顏色索引）
+    this.relics = []; // 身上的遺物（0 嬰兒鞋、1 出生手環、2 舊照片）
     this.bottles = 0;
     this.breath = 1;
     this.holdingBreath = false;

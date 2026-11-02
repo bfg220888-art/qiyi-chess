@@ -142,6 +142,38 @@ try {
   for (const p of pages) await until(p, () => window.__SW.game.fusesInserted === 1);
   check(true, 'fuse count sync');
 
+  // 門禁卡：沒帶卡的「刷卡」要被房主拒絕；撿了卡再刷，每個人的門都開了、卡用掉
+  const lk = await host.evaluate(() => {
+    const g = window.__SW.game, d = g.floors[0].lv.doors.find((x) => x.lock >= 0);
+    let card = null;
+    for (const F of g.floors) { const i = F.lv.items.findIndex((it) => it.kind === 'keycard' && it.color === d.lock); if (i >= 0) card = [F.index, i]; }
+    return { i: d.id, color: d.lock, x: d.cx, z: d.cz, card };
+  });
+  await clients[0].evaluate((d) => {
+    const g = window.__SW.game, P = g.player;
+    // 站到門外（讀卡機那一側）
+    for (const [ox, oz] of [[0.9, 0], [-0.9, 0], [0, 0.9], [0, -0.9]]) { const r = g.lv.roomAtWorld(d.x + ox, d.z + oz); if (r && r.locked === undefined && !g.collision.overlapsAny(d.x + ox, d.z + oz, 0.3)) { P.pos.x = d.x + ox; P.pos.z = d.z + oz; break; } }
+    P.keys = [d.color];
+    g.mp.sendT = 0;
+  }, lk);
+  await host.waitForTimeout(500);
+  await clients[0].evaluate((d) => window.__SW.game.mp.send({ t: 'unlock', f: 0, i: d.i }), lk);
+  // 亂來的索引也不能讓房主出錯
+  await clients[0].evaluate(() => { const n = window.__SW.mp.net; n.broadcast({ t: 'unlock', f: 0, i: 99999 }); n.broadcast({ t: 'unlock', f: 'a', i: -1 }); n.broadcast({ t: 'door', f: 0, i: 0, tg: 1.5, sp: 2 }); });
+  await host.waitForTimeout(800);
+  check(await host.evaluate((i) => !window.__SW.game.floors[0].lv.doors[i].unlocked, lk.i), 'fake keycard unlock refused');
+  // 鎖著的門不能被「開門」訊息打開
+  await clients[0].evaluate((d) => window.__SW.mp.net.broadcast({ t: 'door', f: 0, i: d.i, tg: 1.5, sp: 2 }), lk);
+  await host.waitForTimeout(500);
+  check(await host.evaluate((i) => window.__SW.game.floors[0].lv.doors[i].target < 0.3, lk.i), 'locked door ignores door-open messages');
+  await clients[0].evaluate(() => { window.__SW.game.player.keys = []; });
+  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, lk.card);
+  await until(clients[0], (c) => window.__SW.game.player.keys.includes(c), lk.color);
+  await until(clients[0], () => !document.getElementById('keyStat').hidden);
+  await clients[0].evaluate((d) => window.__SW.game.mp.send({ t: 'unlock', f: 0, i: d.i }), lk);
+  for (const p of pages) await until(p, (i) => window.__SW.game.floors[0].lv.doors[i].unlocked, lk.i);
+  check(await clients[0].evaluate((c) => !window.__SW.game.player.keys.includes(c), lk.color), 'keycard unlock syncs to everyone, card consumed');
+
   // 女鬼：房主讓她在玩家 2 附近出現並追逐
   const target = await clients[0].evaluate(() => { const P = window.__SW.game.player; return { x: P.pos.x, z: P.pos.z }; });
   await host.evaluate((t) => { const g = window.__SW.game, gh = g.ghost; const s = gh.findSpot(4, 12) || { x: t.x + 3, z: t.z }; gh.spawnAt(s.x, s.z, 'chase'); gh.dormantUntil = 0; }, target);

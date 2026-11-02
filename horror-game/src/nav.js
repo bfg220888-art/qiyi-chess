@@ -251,6 +251,15 @@ export class NavGrid {
         mark(f.box, radius);
       }
     }
+    // opts.closed：把上鎖的門與（關著的）鐵捲門當成牆，用來驗證「不開任何鎖也拿得到」的東西
+    if (opts.closed) {
+      for (const d of lv.doors) {
+        if (!(d.lock >= 0)) continue;
+        const m = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2, plane = (d.o === 'h' ? d.y : d.x) * CELL;
+        mark(d.o === 'h' ? { minX: m - CELL / 2, maxX: m + CELL / 2, minZ: plane - 0.1, maxZ: plane + 0.1 } : { minX: plane - 0.1, maxX: plane + 0.1, minZ: m - CELL / 2, maxZ: m + CELL / 2 }, radius);
+      }
+      for (const s of lv.shutters || []) mark(s.box, radius);
+    }
     // 大門外面不能走
     this.g = new Float32Array(n);
     this.f = new Float32Array(n);
@@ -453,6 +462,46 @@ export function validateLevel(lv, playerRadius = 0.3) {
   for (const room of lv.rooms) {
     if (room.id === 0) continue;
     if (!near(room.cx, room.cz, CELL * 0.75 * Math.max(room.w, room.h))) return `room ${room.id} unreachable`;
+  }
+  // 不開任何鎖、不拉起任何鐵捲門：除了上鎖房間裡面的東西，其他全部都要拿得到（門禁卡一定要）
+  const strict = new NavGrid(lv, playerRadius, { closed: true });
+  const sseen = strict.reachable(lv.spawn.x, lv.spawn.z);
+  const nearS = (x, z, r) => {
+    const i0 = Math.floor((x - r) / strict.res), i1 = Math.floor((x + r) / strict.res);
+    const j0 = Math.floor((z - r) / strict.res), j1 = Math.floor((z + r) / strict.res);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (i < 0 || j < 0 || i >= strict.nw || j >= strict.nh) continue;
+      const k = j * strict.nw + i;
+      if (!sseen[k]) continue;
+      const c = strict.center(k);
+      if (Math.hypot(c.x - x, c.z - z) <= r) return true;
+    }
+    return false;
+  };
+  const lockedAt = (x, z) => { const rm = lv.roomAtWorld(x, z); return !!rm && rm.locked !== undefined; };
+  for (const it of lv.items) {
+    const inLocked = lockedAt(it.x, it.z);
+    if (it.kind === 'keycard' && inLocked) return `keycard ${it.color} behind a lock`;
+    if (!inLocked && !nearS(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2)) return `item ${it.kind} needs a key`;
+  }
+  for (const d of lv.doors) {
+    if (!(d.lock >= 0)) continue;
+    // 上鎖的門：門外那一側要走得到（才刷得到卡）
+    const along = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2, plane = (d.o === 'h' ? d.y : d.x) * CELL;
+    let ok = false;
+    for (const sgn of [-1, 1]) {
+      const px = d.o === 'h' ? along : plane + sgn * 0.7, pz = d.o === 'h' ? plane + sgn * 0.7 : along;
+      if (!lockedAt(px, pz) && nearS(px, pz, 0.6)) ok = true;
+    }
+    if (!ok) return `locked door ${d.id} unreachable`;
+  }
+  if (lv.generatorRoom && fb && !nearS(fb.x + Math.sin(fb.rot) * 0.8, fb.z + Math.cos(fb.rot) * 0.8, 0.6)) return 'fusebox needs a key';
+  if (lv.gate && !nearS(lv.gate.x, lv.gate.z - 0.8, 0.6)) return 'gate needs a key';
+  for (const s of stairs) if (!nearS(s.use.x, s.use.z, 0.6)) return `stairs ${s.id} need a key`;
+  if (lv.altar) {
+    const a = lv.altar, ax = a.x + Math.sin(a.rot) * 0.85, az = a.z + Math.cos(a.rot) * 0.85;
+    if (!near(ax, az, 0.6)) return 'altar unreachable';
+    if (!nearS(ax, az, 0.6)) return 'altar needs a key';
   }
   // 鬼魂的尋路網格比較粗：家具擠在一起時她可能進不了房間，這種樓層重新生成
   const gnav = new NavGrid(lv, GHOST_R, { ghost: true });

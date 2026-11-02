@@ -232,11 +232,11 @@ export function generateLevel(seed, diff, validator, theme, plan = null) {
 // 第 0 層是有大廳與大門的那一層（玩家的起點）；其他樓層的大廳位置換成樓梯間。
 export const MAX_FLOORS = 3;
 const ITEM_KINDS = [['batteries', 6], ['bottles', 4], ['film', 3], ['pills', 3]];
-export function planHospital(seed, theme, count = 1, diff = null) {
+export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   count = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(count)) || 1));
   const t0 = resolveTheme(theme, seed >>> 0);
   const all = [0, 1, 2, 3, 4, 5, 6];
-  if (count === 1) return [{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts: null }];
+  if (count === 1) return planExtras([{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts: null }], seed, opts);
   const rng = new RNG((seed ^ 0x3c6ef372) >>> 0);
   const keys = [t0, ...rng.shuffle(THEME_KEYS.filter((k) => k !== t0)).slice(0, count - 1)];
   // 上下順序：照主題的樓層編號由低到高
@@ -271,15 +271,51 @@ export function planHospital(seed, theme, count = 1, diff = null) {
     const total = Math.round(base * (1 + 0.5 * (count - 1)));
     for (const f of floors) f.counts[kind] = Math.floor(total / count) + (f.index < total % count ? 1 : 0);
   }
+  return planExtras(floors, seed, opts);
+}
+
+// 門禁卡與上鎖的房間（另一個亂數來源：不影響樓層主題、樓梯、保險絲與紙條的分配）
+//   locks = 這一層要上鎖的房間（每一間一種顏色，整棟醫院不重複）
+//   keys  = 這一層要放哪幾種顏色的門禁卡（可能是別層的門）
+//   fuseLocked = 這一層的保險絲有一個鎖在上鎖的房間裡（每層最多一個）
+// 上鎖的房間一定是「只有一扇門的末端房間」，門禁卡一定不放在上鎖的房間裡，
+// 所以不會有「鑰匙在自己的門後」或循環依賴：每一張卡都不用開任何鎖就拿得到。
+export const KEY_COLORS = [
+  { name: '紅色', css: '#e0413a', hex: 0xd8302a },
+  { name: '藍色', css: '#4a86ee', hex: 0x2f6fe0 },
+  { name: '黃色', css: '#f2c232', hex: 0xe8b820 },
+  { name: '綠色', css: '#45c060', hex: 0x30b050 },
+  { name: '紫色', css: '#a868e8', hex: 0x9050d8 },
+  { name: '橘色', css: '#f08a30', hex: 0xe87a20 },
+];
+function planExtras(floors, seed, opts = {}) {
+  const rng = new RNG((seed ^ 0x6a09e667) >>> 0);
+  let color = 0;
+  for (const f of floors) {
+    f.locks = [];
+    f.keys = [];
+    const n = rng.chance(0.45) ? 2 : 1;
+    for (let k = 0; k < n && color < KEY_COLORS.length; k++) f.locks.push(color++);
+    f.fuseLocked = f.fuses > 0 && rng.chance(0.4);
+  }
+  // 門禁卡：多半在同一層，有時候在別層（要走樓梯去拿）
+  for (const f of floors) {
+    for (const c of f.locks) {
+      const kf = floors.length > 1 && rng.chance(0.4) ? rng.pick(floors.filter((o) => o !== f)) : f;
+      kf.keys.push(c);
+    }
+  }
+  void opts;
   return floors;
 }
 
 // 每一層各自生成（各自重試直到通過驗證）；回傳樓層陣列，index 0 是有大門的那一層
 export function floorSeed(seed, i) { return i ? (seed ^ Math.imul(i, 0x85ebca6b)) >>> 0 : seed >>> 0; }
-export function generateHospital(seed, diff, validator, theme, count = 1) {
-  const plan = planHospital(seed >>> 0, theme, count, diff);
+// opts.players：多人連線開局時的人數（2 人以上才有雙人鐵捲門）
+export function generateHospital(seed, diff, validator, theme, count = 1, opts = {}) {
+  const plan = planHospital(seed >>> 0, theme, count, diff, opts);
   return plan.map((p) => {
-    const lv = generateLevel(floorSeed(seed >>> 0, p.index), diff, validator, p.theme, plan.length > 1 ? p : null);
+    const lv = generateLevel(floorSeed(seed >>> 0, p.index), diff, validator, p.theme, p);
     lv.floorIndex = p.index;
     lv.plan = p;
     lv.requestedSeed = seed;
@@ -450,7 +486,7 @@ function fillRooms(lv, rng, LY, eligible, addRoom) {
 function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
   const T = THEMES[themeKey], LY = T.layout;
   // 單層樓：大廳、大門、發電機房、三個保險絲、七張紙條都在這一層
-  const P0 = plan || { entry: 'lobby', generator: true, fuses: 3, notes: [0, 1, 2, 3, 4, 5, 6], stairs: [], counts: null };
+  const P0 = plan || planHospital(seed, themeKey, 1)[0];
   const isLobby = P0.entry !== 'landing';
   const rng = new RNG(seed);
   const M = LY.margin;
@@ -694,7 +730,7 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
     const door = {
       id: lv.doors.length, o: e.o, x: e.x, y: e.y, swing,
       hingeSide: rng.chance(0.5) ? -1 : 1,
-      rooms: [ida, idb], angle: 0, target: 0, locked: false,
+      rooms: [ida, idb], angle: 0, target: 0, lock: -1, unlocked: false,
     };
     lv.doors.push(door);
     lv.doorByEdge.set(`${e.o}${e.x},${e.y}`, door);
@@ -827,14 +863,51 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
     if (rm.type) continue;
     rm.type = rng.weighted(rm.area >= 4 ? R.big : rm.area >= 2 ? R.mid : R.small);
   }
+  // --- 上鎖的房間（彩色門禁卡）：只挑只有一扇門的末端房間，鎖上之後其他地方都還走得到
+  const lockRng = new RNG((seed ^ 0x2545f491) >>> 0);
+  lv.locked = [];
+  if (P0.locks && P0.locks.length) {
+    const cutsOff = (room, door) => {
+      const e = { o: door.o, x: door.x, y: door.y };
+      setEdge(e, E.WALL);
+      const d = lv.bfs(lobbyX, lobbyTop);
+      setEdge(e, E.DOOR);
+      for (let i = 0; i < W * H; i++) {
+        if (lv.cells[i] === VOID || lv.blockedCell[i] || lv.cells[i] === room.id) continue;
+        if (d[i] < 0) return true;
+      }
+      return false;
+    };
+    const cands = normal.filter((rm) => rm.doors.length === 1 && rm !== gen && rm !== lv.stairRoom && rm.type !== 'nurse' && rm.area <= 4)
+      .sort((a, b) => b.dist - a.dist || a.id - b.id);
+    // 偏遠一點的房間優先（前 2/3 裡隨機挑）
+    const pool = lockRng.shuffle(cands.slice(0, Math.max(2, Math.ceil(cands.length * 0.67))));
+    const kinds = lockRng.shuffle((T.locked || [['藥局', 'storage'], ['院長室', 'office'], ['保全室', 'office'], ['器械庫', 'storage']]).slice());
+    for (const c of P0.locks) {
+      let got = null;
+      while (pool.length && !got) {
+        const rm = pool.shift();
+        const door = lv.doors[rm.doors[0]];
+        if (door.lock >= 0 || cutsOff(rm, door)) continue;
+        got = rm;
+        const [label, type] = kinds[lv.locked.length % kinds.length];
+        rm.type = type;
+        rm.label = label;
+        rm.locked = c;
+        door.lock = c;
+        lv.locked.push(rm);
+      }
+      if (!got) throw new Error('no lockable room');
+    }
+  }
   // 房間編號
   const num = R.numbered;
   const numbered = normal.filter((rm) => rm.type === num.type).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
   let n = num.start;
   for (const rm of numbered) { while (num.skip.includes(n)) n++; rm.label = num.fmt(n++); }
   // 劇情房間（707 病房 / 嬰兒室 / 0713 隔離室……）：離大廳最遠的那一間
-  let specialCands = normal.filter((rm) => R.special.types.includes(rm.type));
-  if (!specialCands.length) specialCands = normal.filter((rm) => rm !== gen && rm.type !== 'nurse' && rm.type !== 'stairs');
+  let specialCands = normal.filter((rm) => R.special.types.includes(rm.type) && rm.locked === undefined);
+  if (!specialCands.length) specialCands = normal.filter((rm) => rm !== gen && rm.type !== 'nurse' && rm.type !== 'stairs' && rm.locked === undefined);
   if (specialCands.length) {
     const special = specialCands.reduce((a, b) => (b.dist > a.dist ? b : a));
     special.label = R.special.label;
@@ -849,7 +922,7 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
   const anchors = [[lobby.cx, lobby.cz]];
   if (gen) anchors.push([gen.cx, gen.cz]);
   if (lv.stairRoom && lv.stairRoom !== lobby) anchors.push([lv.stairRoom.cx, lv.stairRoom.cz]);
-  const fuseCandidates = normal.filter((rm) => rm !== gen && rm !== lv.stairRoom);
+  const fuseCandidates = normal.filter((rm) => rm !== gen && rm !== lv.stairRoom && rm.locked === undefined);
   for (let k = 0; k < P0.fuses; k++) {
     let best = null, bestScore = -1;
     for (const rm of fuseCandidates) {
@@ -862,6 +935,8 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
     chosen.push(best);
     anchors.push([best.cx, best.cz]);
   }
+  // 有時候一個保險絲鎖在上鎖的房間裡（每層最多一個）
+  if (P0.fuseLocked && chosen.length && lv.locked.length) chosen[chosen.length - 1] = lockRng.pick(lv.locked);
   lv.fuseRooms = chosen;
 
   // --- 觀察窗（精神科隔離室）與鐵籠護理站：牆上開洞，人過不去
@@ -879,7 +954,7 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
   furnish(lv, rng, T);
 
   // --- 道具
-  placeItems(lv, rng, P0.counts || diff || { batteries: 6, film: 3, pills: 3, bottles: 4 }, P0.notes);
+  placeItems(lv, rng, P0.counts || diff || { batteries: 6, film: 3, pills: 3, bottles: 4 }, P0.notes, P0);
 
   // --- 燈具
   placeLights(lv, rng, T);
@@ -1632,7 +1707,7 @@ function floorPoint(lv, rng, bounds, margin = 0.45) {
   return null;
 }
 
-function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6]) {
+function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6], P0 = {}) {
   const has = (n) => notes.includes(n);
   const usedRooms = new Map();
   const spotInRoom = (room, preferSurface = true) => {
@@ -1693,6 +1768,22 @@ function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6]) {
   if (has(4)) add('note', () => spotInRoom(r707), { note: 4 });
   if (has(5)) add('note', () => spotInRoom(r707), { note: 5 });
   if (has(6) && lv.generatorRoom) add('note', () => spotInRoom(lv.generatorRoom), { note: 6 });
+
+  // 門禁卡：放在不用開任何鎖就走得到的房間（不在上鎖的房間、不在大廳）
+  const xr = new RNG((lv.seed ^ 0x1b873593) >>> 0);
+  const open = others.filter((rm) => rm.locked === undefined && rm.type !== 'landing');
+  for (const c of P0.keys || []) {
+    const pool = open.filter((rm) => rm.dist >= 3);
+    const room = xr.pick(pool.length ? pool : open);
+    add('keycard', () => spotInRoom(room), { color: c, room: room.id });
+  }
+  // 上鎖房間裡的好東西：保險絲那間另外放鎮定劑；其他的放三捲底片、鎮定劑、電池
+  for (const room of lv.locked) {
+    if (lv.fuseRooms.includes(room)) { add('pills', () => spotInRoom(room), { loot: true }); continue; }
+    add('film', () => spotInRoom(room), { loot: true, n: 3 });
+    add('pills', () => spotInRoom(room), { loot: true });
+    add('battery', () => spotInRoom(room), { loot: true });
+  }
 
   const scatter = (kind, n) => {
     const pool = rng.shuffle(others.slice());

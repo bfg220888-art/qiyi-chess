@@ -24,7 +24,7 @@ function cleanState(m) {
     fl: Number.isInteger(m.fl) && m.fl >= 0 && m.fl < 8 ? m.fl : 0, // 樓層（遊戲裡再對照實際層數）
   };
 }
-const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx']);
+const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock']);
 
 export class MP {
   constructor(app) {
@@ -37,7 +37,7 @@ export class MP {
     this.listeners = new Set();
     this.status = '';
     this.results = new Map(); // 中途離開的人的結果（slot → { a, name }）
-    this.carried = new Map(); // 房主：slot → 身上的保險絲（道具索引）
+    this.carried = new Map(); // 房主：slot → 身上的保險絲、門禁卡、遺物（道具索引）
   }
   get active() { return !!this.net; }
   get code() { return this.net ? this.net.code : ''; }
@@ -254,17 +254,18 @@ export class MP {
     for (const slot of [...game.remotes.keys()]) if (!this.players.some((p) => p.slot === slot)) game.mpRemoveRemote(slot);
   }
 
-  // 房主：誰身上帶著哪些保險絲（{ f: 樓層, i: 道具索引 }；被抓走、離開時要放回原處）
+  // 房主：誰身上帶著哪些重要道具（{ f: 樓層, i: 道具索引, k: 種類, c: 門禁卡顏色, r: 遺物 }；被抓走、離開時要放回原處）
   carry(slot, e) {
     const list = this.carried.get(slot) || [];
     list.push(e);
     this.carried.set(slot, list);
   }
-  useCarried(slot) {
+  // 用掉一個符合條件的（插保險絲、刷卡、放遺物）；身上沒有就回傳 null（拒絕）
+  useCarried(slot, pred = () => true) {
     const list = this.carried.get(slot);
-    if (!list || !list.length) return false;
-    list.shift();
-    return true;
+    const k = list ? list.findIndex(pred) : -1;
+    if (k < 0) return null;
+    return list.splice(k, 1)[0];
   }
   dropFuses(slot) {
     const list = this.carried.get(slot);
@@ -274,7 +275,8 @@ export class MP {
       this.bcast({ t: 'respawn', f: e.f, i: e.i });
       this.game.mpRespawnItem(e.f, e.i);
     }
-    this.game.ui.hint('掉落的保險絲回到原本的地方了。', 3);
+    const kinds = { fuse: '保險絲', keycard: '門禁卡', relic: '遺物' };
+    this.game.ui.hint(`掉落的${[...new Set(list.map((e) => kinds[e.k] || '東西'))].join('、')}回到原本的地方了。`, 3);
   }
 
   // 房主：所有人都被抓或逃出去了 → 結束
@@ -380,6 +382,13 @@ export class MP {
         break;
       case 'fuses':
         g.mpApplyFuse(m.n, m.by);
+        break;
+      // 門禁卡：玩家請求刷卡 → 房主核對 → 大家一起開鎖
+      case 'unlock':
+        if (this.isHost) g.mpHostUnlock(m.f, m.i, slot);
+        break;
+      case 'unlocked':
+        g.mpApplyUnlock(m.f, m.i, m.by);
         break;
       // 聲音吸引她、閃光定住她
       case 'noise':

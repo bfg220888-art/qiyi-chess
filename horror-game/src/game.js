@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CELL, GHOST_R, DIFFICULTY, WALL_H } from './config.js';
-import { generateHospital, NOTES, E, MAX_FLOORS } from './level.js';
+import { generateHospital, NOTES, E, MAX_FLOORS, KEY_COLORS } from './level.js';
 import { Collision, NavGrid, validateLevel, sightClear, wallsBetween } from './nav.js';
 import { TextureFactory } from './textures.js';
 import { World } from './world.js';
@@ -466,14 +466,18 @@ export class Game {
       const kind = o.userData.kind;
       if (kind === 'door') {
         const d = this.lv.doors[h.instanceId];
-        if (d) target = { kind, door: d, label: d.target > 0.3 ? '關門' : '開門' };
+        if (d && d.lock >= 0 && !d.unlocked) {
+          const name = KEY_COLORS[d.lock].name;
+          target = { kind: 'locked', door: d, label: P.keys.includes(d.lock) ? `刷${name}門禁卡` : `上鎖了（需要${name}門禁卡）` };
+        } else if (d) target = { kind, door: d, label: d.target > 0.3 ? '關門' : '開門' };
       } else if (kind === 'locker') {
         const l = this.lv.lockers[h.instanceId];
         if (l) target = { kind, locker: l, label: '躲進鐵櫃' };
       } else if (kind === 'item') {
         const it = o.userData.item;
         const names = { fuse: '撿起保險絲', battery: '撿起電池', film: '撿起底片', pills: '撿起鎮定劑', note: '閱讀紙條', bottle: '撿起玻璃瓶' };
-        target = { kind, item: it, label: names[it.kind] };
+        const label = it.kind === 'keycard' ? `撿起${KEY_COLORS[it.color].name}門禁卡` : names[it.kind];
+        target = { kind, item: it, label };
       } else if (kind === 'fusebox') {
         target = { kind, label: P.fuses > 0 ? '插上保險絲' : `配電箱（${this.fusesInserted}/3）` };
       } else if (kind === 'gate') {
@@ -507,6 +511,19 @@ export class Game {
           this.world.setDoor(d, 1.5, 2.6);
           A.play('doorOpen', { pos });
           this.makeNoise(d.cx, d.cz, 3.5);
+        }
+        break;
+      }
+      case 'locked': {
+        const d = t.door, F = this.F;
+        if (P.keys.includes(d.lock)) {
+          if (this.mp && !this.mp.isHost) { this.mp.send({ t: 'unlock', f: F.index, i: d.id }); break; }
+          if (this.mp) { this.mpHostUnlock(F.index, d.id, this.mp.mySlot); break; }
+          this.applyUnlock(F, d, -1);
+        } else {
+          A.play('doorRattle', { pos: d.readerPos ? { x: d.readerPos.x, y: 1.1, z: d.readerPos.z } : { x: d.cx, y: 1.1, z: d.cz } });
+          this.makeNoise(d.cx, d.cz, 3);
+          this.ui.hint(`上鎖了（需要${KEY_COLORS[d.lock].name}門禁卡）`, 2.5);
         }
         break;
       }
@@ -550,11 +567,21 @@ export class Game {
         A.play('battery');
         this.ui.hint('換上新電池。', 2);
         break;
-      case 'film':
-        P.film += 2;
+      case 'film': {
+        const n = it.n === 3 ? 3 : 2;
+        P.film += n;
         A.play('pickup');
-        this.ui.hint('拿到底片 ×2（Q / 「閃」可以用閃光定住她）', 3);
+        this.ui.hint(`拿到底片 ×${n}（Q / 「閃」可以用閃光定住她）`, 3);
         break;
+      }
+      case 'keycard': {
+        P.keys.push(it.color);
+        A.play('pickup');
+        const DF = this.floors.find((F) => F.lv.doors.some((d) => d.lock === it.color));
+        const where = DF && this.floorCount > 1 && DF !== this.F ? `（門在${DF.title}）` : '';
+        this.ui.hint(`拿到${KEY_COLORS[it.color].name}門禁卡。找到同顏色的門，刷卡開鎖${where}。`, 3.5);
+        break;
+      }
       case 'bottle':
         if (P.bottles >= 3) {
           // 拿不下了：放回去
@@ -585,6 +612,23 @@ export class Game {
         break;
       }
     }
+    this.ui.updateHud();
+  }
+
+  // 刷卡開鎖（多人時由房主確認後大家一起套用）：讀卡機轉綠、門自己彈開一點，卡片用掉
+  applyUnlock(F, d, by) {
+    if (!d || d.unlocked) return;
+    F.world.unlockDoor(d);
+    const P = this.player, mine = !this.mp || by === this.mp.mySlot;
+    if (mine) { const k = P.keys.indexOf(d.lock); if (k >= 0) P.keys.splice(k, 1); }
+    if (F === this.F) this.audio.play('cardBeep', { pos: d.readerPos ? { x: d.readerPos.x, y: 1.25, z: d.readerPos.z } : { x: d.cx, y: 1.2, z: d.cz } });
+    this.mpApplying = true;
+    F.world.setDoor(d, 0.35, 1.2);
+    this.mpApplying = false;
+    const room = F.lv.rooms.find((r) => r.locked === d.lock);
+    const name = room ? room.label : '房間';
+    if (mine) this.ui.hint(`${KEY_COLORS[d.lock].name}門禁卡刷過了，${name}的門開了。`, 3);
+    else if (this.mp) this.ui.hint(`${this.mp.slotName(by)} 打開了${F.title && this.floorCount > 1 ? F.title + '的' : ''}${name}。`, 3);
     this.ui.updateHud();
   }
 
@@ -1165,6 +1209,8 @@ export class Game {
     const F = this.mpFloor(m.f);
     const d = F && Number.isInteger(m.i) ? F.lv.doors[m.i] : null;
     if (!d || !Number.isFinite(m.tg) || !Number.isFinite(m.sp)) return null;
+    // 鎖著的門不能被開（不可信任的輸入）
+    if (d.lock >= 0 && !d.unlocked && m.tg > 0.3) return null;
     m = { t: 'door', f: F.index, i: m.i, tg: Math.max(-1.7, Math.min(1.7, m.tg)), sp: Math.max(0.5, Math.min(12, m.sp)) };
     const was = d.target;
     this.mpApplying = true;
@@ -1195,7 +1241,8 @@ export class Game {
     if (!it || it.taken) return;
     const r = this.remotes.get(slot);
     if (slot === this.mp.mySlot ? this.mpStatus !== 0 || this.dying : !r || r.a !== 0) return;
-    if (it.kind === 'fuse') this.mp.carry(slot, { f: F.index, i });
+    // 保險絲、門禁卡、遺物：記下誰帶著（被抓走或離開時放回原處；插保險絲、刷卡、放遺物時核對）
+    if (it.kind === 'fuse' || it.kind === 'keycard' || it.kind === 'relic') this.mp.carry(slot, { f: F.index, i, k: it.kind, c: it.color, r: it.relic });
     this.mp.send({ t: 'took', f: F.index, i, by: slot });
     this.mpTook(F.index, i, slot);
   }
@@ -1209,6 +1256,7 @@ export class Game {
     }
     F.world.removeItem(it);
     if (it.kind === 'fuse') this.ui.hint(`${this.mp.slotName(by)} 撿到了一個保險絲。`, 2.5);
+    else if (it.kind === 'keycard') this.ui.hint(`${this.mp.slotName(by)} 撿到了${KEY_COLORS[it.color].name}門禁卡。`, 2.5);
   }
 
   // 帶著保險絲的人被抓走或離開：保險絲回到原本的位置（原本那一層）
@@ -1227,7 +1275,7 @@ export class Game {
 
   // 保險絲：房主統一計數，避免兩人同時插而重複
   mpHostFuse(slot) {
-    if (this.fusesInserted >= 3 || !this.mp.useCarried(slot)) return;
+    if (this.fusesInserted >= 3 || !this.mp.useCarried(slot, (e) => e.k === 'fuse')) return;
     const n = this.fusesInserted + 1;
     this.mp.send({ t: 'fuses', n, by: slot });
     this.mpApplyFuse(n, slot);
@@ -1239,6 +1287,34 @@ export class Game {
       this.applyFuse(i);
     }
     if (by !== this.mp.mySlot) this.ui.hint(`${this.mp.slotName(by)} 插上了保險絲（${n}/3）`, 3);
+  }
+
+  // 誰（自己或其他玩家）現在在哪裡、還能不能動手：房主核對刷卡、放遺物、拉鐵捲門、救人時用
+  mpActor(slot) {
+    if (slot === this.mp.mySlot) {
+      if (this.mpStatus !== 0 || this.dying || this.downed) return null;
+      return { x: this.player.pos.x, z: this.player.pos.z, floor: this.floorIdx };
+    }
+    const r = this.remotes.get(slot);
+    if (!r || r.a !== 0 || !r.got || r.dying || r.downed) return null;
+    return { x: r.tx, z: r.tz, floor: r.floor };
+  }
+  // 房主：刷卡開鎖。門要真的上鎖、人要在門旁邊、身上真的帶著那個顏色的卡
+  mpHostUnlock(f, i, slot) {
+    const F = this.mpFloor(f);
+    const d = F && Number.isInteger(i) ? F.lv.doors[i] : null;
+    if (!d || !(d.lock >= 0) || d.unlocked) return;
+    const a = this.mpActor(slot);
+    if (!a || a.floor !== F.index || Math.hypot(a.x - d.cx, a.z - d.cz) > 3.2) return;
+    if (!this.mp.useCarried(slot, (e) => e.k === 'keycard' && e.c === d.lock)) return;
+    this.mp.send({ t: 'unlocked', f: F.index, i, by: slot });
+    this.applyUnlock(F, d, slot);
+  }
+  mpApplyUnlock(f, i, by) {
+    const F = this.mpFloor(f);
+    const d = F && Number.isInteger(i) ? F.lv.doors[i] : null;
+    if (!d || !(d.lock >= 0) || !Number.isInteger(by)) return;
+    this.applyUnlock(F, d, by);
   }
 
   // 房主決定的世界事件（牆上的字、熄燈、屍體換姿勢）
@@ -1283,6 +1359,8 @@ export class Game {
     P.locked = false;
     this.ui.fade(0, 0.2);
     P.fuses = 0;
+    P.keys = [];
+    P.relics = [];
     this.post.u.uFade.value = 0;
     this.post.u.uRed.value = 0;
     this.post.u.uDistort.value = 0;

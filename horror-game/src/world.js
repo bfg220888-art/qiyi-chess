@@ -374,11 +374,49 @@ export class World {
         P.box(frame, M.paint, fd, DOOR_H, fw, plane, DOOR_H / 2, m + DOOR_W / 2 - fw / 2 + 0.01);
         P.box(frame, M.paint, fd, fw, DOOR_W + 0.02, plane, DOOR_H - fw / 2 + 0.01, m);
       }
-      // 有些門一開始就是開著的
-      if (P.rng.chance(0.35)) { d.angle = d.target = P.rng.range(0.6, 1.5); }
+      // 有些門一開始就是開著的（上鎖的門一定關著；亂數照樣抽，其他門的狀態才不會變）
+      if (P.rng.chance(0.35)) { const a = P.rng.range(0.6, 1.5); if (!(d.lock >= 0)) d.angle = d.target = a; }
+      if (d.lock >= 0) this.buildLockedDoor(d, frame, m, plane, lw);
     }
     this.bakeGroup(frame);
     this.updateDoorMatrices(true);
+  }
+  // 上鎖的門：門板兩面一條門禁卡顏色的色條＋把手旁的色塊（跟著門板動），門外牆上一台讀卡機（紅燈 = 鎖著、綠燈 = 開了）
+  buildLockedDoor(d, frame, m, plane, lw) {
+    const M = this.M, P = this.props;
+    const col = M.keyColors[d.lock % M.keyColors.length];
+    const leaf = new THREE.Group();
+    for (const s of [-1, 1]) {
+      P.box(leaf, col, lw * 0.92, 0.07, 0.006, lw / 2, 1.62, s * 0.026, { uv: false });
+      P.box(leaf, col, 0.12, 0.16, 0.006, lw - 0.13, 1.28, s * 0.026, { uv: false });
+    }
+    d.lockLeaf = mergeLocal(leaf, mergeGeometries);
+    this.root.add(d.lockLeaf);
+    // 讀卡機裝在門外（鎖著的房間的另一側）、把手那一邊的牆上
+    const lockedRoom = this.lv.rooms.find((r) => r.locked === d.lock);
+    const out = lockedRoom && d.rooms[1] === lockedRoom.id ? -1 : 1; // 讀卡機在牆的哪一側（-1 = 座標較小那側）
+    const along = m - d.hingeSide * (DOOR_W / 2 + 0.24);
+    const off = out * (HT + 0.025);
+    const g = new THREE.Group();
+    if (d.o === 'h') { g.position.set(along, 0, plane + off); g.rotation.y = out > 0 ? 0 : Math.PI; } else { g.position.set(plane + off, 0, along); g.rotation.y = out > 0 ? Math.PI / 2 : -Math.PI / 2; }
+    P.box(g, M.dark, 0.11, 0.17, 0.035, 0, 1.25, 0);
+    P.box(g, col, 0.11, 0.03, 0.037, 0, 1.325, 0, { uv: false });
+    P.box(g, M.steel, 0.07, 0.07, 0.004, 0, 1.22, 0.019);
+    frame.add(g);
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.011, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff2a18 }));
+    led.position.set(0.035, 1.3, 0.02);
+    g.add(led);
+    led.removeFromParent();
+    g.updateMatrixWorld(true);
+    led.position.applyMatrix4(g.matrixWorld);
+    this.root.add(led);
+    d.lockLed = led;
+    d.readerPos = { x: g.position.x, z: g.position.z };
+  }
+  // 刷卡開鎖：讀卡機的燈轉綠
+  unlockDoor(d) {
+    d.unlocked = true;
+    if (d.lockLed) d.lockLed.material.color.set(0x30ff60);
   }
   updateDoorMatrices(force = false) {
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), sc = new THREE.Vector3(1, 1, 1), up = new THREE.Vector3(0, 1, 0);
@@ -389,6 +427,7 @@ export class World {
       pos.set(d.hx, 0.01, d.hz);
       m4.compose(pos, q, sc);
       this.doorMesh.setMatrixAt(d.id, m4);
+      if (d.lockLeaf) { d.lockLeaf.position.copy(pos); d.lockLeaf.quaternion.copy(q); }
       d.dirty = false;
       changed = true;
     }
@@ -1172,7 +1211,7 @@ export class World {
     const P = this.props;
     this.glintMat = new THREE.SpriteMaterial({ map: this.tf.dust().map, color: 0xffd9a0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.5 });
     for (const it of this.lv.items) {
-      const g = mergeLocal(P.pickup(it.kind), mergeGeometries);
+      const g = mergeLocal(P.pickup(it.kind, it), mergeGeometries);
       g.position.set(it.x, it.y, it.z);
       g.rotation.y = it.rot;
       g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });

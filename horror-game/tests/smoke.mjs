@@ -105,6 +105,8 @@ const faceThing = (page, kind, idx = 0) => page.evaluate(([kind, idx]) => {
   else if (kind === 'locker') { const l = lv.lockers[idx]; tx = l.x + Math.sin(l.rot) * 0.3; ty = 1.2; tz = l.z + Math.cos(l.rot) * 0.3; }
   else if (kind === 'door') { const d = lv.doors[idx]; tx = d.cx; ty = 1.2; tz = d.cz; }
   else if (kind === 'stairs') { const s = lv.stairs[idx]; tx = s.x; ty = 0.7; tz = s.z; }
+  else if (kind === 'itemAt') { const it = lv.items[idx]; tx = it.x; ty = it.y + 0.02; tz = it.z; }
+  else if (kind === 'altar') { const a = lv.altar; tx = a.x + Math.sin(a.rot) * 0.1; ty = 0.75; tz = a.z + Math.cos(a.rot) * 0.1; }
   // 找一個站得到的位置（鐵櫃就站在櫃門正前方）
   let best = kind === 'locker' ? { x: lv.lockers[idx].exitX, z: lv.lockers[idx].exitZ } : kind === 'stairs' ? { x: lv.stairs[idx].use.x, z: lv.stairs[idx].use.z } : null;
   for (let r = 0.7; r <= 1.5 && !best; r += 0.1) {
@@ -518,6 +520,61 @@ await run('floors', { viewport: { width: 960, height: 540 } }, { quality: 'low',
   const ge = await page.evaluate(() => { const g = window.__SW.game; return { ghost: g.ghost.floor, player: g.floorIdx, state: g.ghost.state, visible: g.ghost.model.root.visible }; });
   log('ghost after', JSON.stringify(ge));
   assert(ge.ghost === ge.player, 'ghost followed the player to their floor');
+});
+
+// 門禁卡、上鎖的房間、遺物與儀式結局（單人）
+await run('ritual', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'pediatric' }, async (page) => {
+  await startGame(page);
+  await page.evaluate(() => { const g = window.__SW.game; g.ghost.state = 'dormant'; g.ghost.dormantUntil = 1e9; g.director.next = 1e9; });
+  const info = await page.evaluate(() => {
+    const lv = window.__SW.game.lv, d = lv.doors.find((x) => x.lock >= 0);
+    return { door: d.id, color: d.lock, card: lv.items.findIndex((i) => i.kind === 'keycard' && i.color === d.lock), locks: lv.doors.filter((x) => x.lock >= 0).length };
+  });
+  log('locks', JSON.stringify(info));
+  assert(info.card >= 0, 'keycard exists for the locked door');
+  // 鎖著：提示要哪一種卡，按互動打不開
+  let t = await faceThing(page, 'door', info.door);
+  log('locked door', t);
+  assert(t && t.startsWith('locked') && t.includes('上鎖了') && t.includes('門禁卡'), 'locked door prompt ' + t);
+  await page.evaluate(() => { const g = window.__SW.game; g.player.flashOn = true; g.player.battery = 1; });
+  await sim(page, 0.05, { actions: ['interact'] });
+  await sim(page, 0.3);
+  assert(await page.evaluate((i) => window.__SW.game.lv.doors[i].target < 0.3 && !window.__SW.game.lv.doors[i].unlocked, info.door), 'locked door stays shut');
+  // 截圖：退後一點看整扇門與讀卡機
+  await page.evaluate((i) => {
+    const g = window.__SW.game, P = g.player, d = g.lv.doors[i];
+    const dx = P.pos.x - d.cx, dz = P.pos.z - d.cz, l = Math.hypot(dx, dz) || 1;
+    for (let k = 2.6; k > 1; k -= 0.2) { const x = d.cx + dx / l * k, z = d.cz + dz / l * k; if (!g.collision.overlapsAny(x, z, 0.3) && g.sight(x, z, d.cx, d.cz)) { P.pos.x = x; P.pos.z = z; break; } }
+    P.yaw = Math.atan2(-(d.cx - P.pos.x), -(d.cz - P.pos.z)); P.pitch = -0.05; P.applyCamera(0.016, 0);
+  }, info.door);
+  await sim(page, 0.05);
+  await render(page);
+  await shot(page, 'r1-locked-door');
+  // 撿卡：HUD 出現卡片
+  t = await faceThing(page, 'itemAt', info.card);
+  log('card', t);
+  assert(t && t.includes('門禁卡'), 'keycard target ' + t);
+  await render(page);
+  await shot(page, 'r2-keycard');
+  await sim(page, 0.05, { actions: ['interact'] });
+  const hud = await page.evaluate(() => ({ keys: window.__SW.game.player.keys.slice(), shown: !document.getElementById('keyStat').hidden, n: document.querySelectorAll('#keyCards .key-card').length }));
+  log('hud', JSON.stringify(hud));
+  assert(hud.keys.includes(info.color) && hud.shown && hud.n === hud.keys.length, 'keycard in HUD');
+  await render(page);
+  await shot(page, 'r3-keycard-hud');
+  // 刷卡：門開了、卡用掉
+  t = await faceThing(page, 'door', info.door);
+  assert(t && t.includes('刷'), 'swipe prompt ' + t);
+  await sim(page, 0.05, { actions: ['interact'] });
+  await sim(page, 1.0);
+  const after = await page.evaluate((i) => { const g = window.__SW.game, d = g.lv.doors[i]; return { unlocked: d.unlocked, angle: d.angle, keys: g.player.keys.slice(), led: d.lockLed.material.color.getHexString() }; }, info.door);
+  log('unlocked', JSON.stringify(after));
+  assert(after.unlocked && after.angle > 0.2 && !after.keys.includes(info.color) && after.led === '30ff60', 'door unlocked, card consumed');
+  await render(page);
+  await shot(page, 'r4-unlocked');
+  await page.evaluate((i) => { const g = window.__SW.game, d = g.lv.doors[i]; d.angle = d.target = 0; d.dirty = true; g.world.updateDoorMatrices(true); }, info.door);
+  t = await faceThing(page, 'door', info.door);
+  assert(t && t.startsWith('door:開門'), 'unlocked door is a normal door now ' + t);
 });
 
 await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low' }, async (page) => {

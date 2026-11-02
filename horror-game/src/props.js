@@ -1112,9 +1112,18 @@ export class PropBuilder {
   }
 
   // ---- 撿拾道具（不合併，會發光）
-  pickup(kind) {
+  pickup(kind, it = {}) {
     const { M } = this, g = new THREE.Group();
     switch (kind) {
+      case 'keycard': {
+        // 門禁卡：白色卡片、上半部是顏色條、掛著一小段斷掉的識別證繩
+        const col = M.keyColors[(it.color || 0) % M.keyColors.length];
+        this.box(g, M.plasticWhite, 0.14, 0.005, 0.09, 0, 0.0025, 0, { uv: false });
+        this.box(g, col, 0.14, 0.0055, 0.034, 0, 0.003, -0.028, { uv: false });
+        this.box(g, M.dark, 0.03, 0.006, 0.022, -0.04, 0.0035, 0.018, { uv: false }); // 晶片
+        this.box(g, col, 0.014, 0.004, 0.16, 0.01, 0.002, -0.125, { uv: false, ry: 0.35 }); // 斷掉的識別證繩
+        break;
+      }
       case 'fuse':
         this.cyl(g, M.fuseGlass, 0.022, 0.022, 0.1, 0, 0.022, 0, { rz: Math.PI / 2, seg: 10, uv: false });
         this.cyl(g, M.brass, 0.025, 0.025, 0.025, -0.06, 0.022, 0, { rz: Math.PI / 2, seg: 10 });

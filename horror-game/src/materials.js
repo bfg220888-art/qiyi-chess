@@ -1,6 +1,7 @@
 // 材質表：PBR 材質全部共用，靜態物件依材質合併以減少 draw call
 import * as THREE from 'three';
 import { THEMES } from './themes.js';
+import { KEY_COLORS } from './level.js';
 
 const std = (o) => new THREE.MeshStandardMaterial(o);
 
@@ -89,6 +90,8 @@ export function createMaterials(tf, theme = 'ward') {
   M.filmBox = std({ map: grime.map, color: 0xd6b21e, roughness: 0.5, metalness: 0 });
   M.noteMat = std({ map: paperA.map, color: 0xf2ead2, emissive: 0x2a2620, emissiveIntensity: 1, roughness: 0.9, metalness: 0 });
   M.paperMat = std({ map: grime.map, color: 0xd6d0ba, roughness: 0.9, metalness: 0 });
+  // 門禁卡顏色（門上的色條、讀卡機、卡片）：微微自發光，黑暗中也認得出顏色
+  M.keyColors = KEY_COLORS.map((c) => std({ color: c.hex, emissive: c.hex, emissiveIntensity: 0.12, roughness: 0.5, metalness: 0 }));
   M.skin = std({ map: tf.ghostSkin().map, color: 0xb9c0c4, roughness: 0.55, metalness: 0 });
   M.tube = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true });
   M.emergency = std({ color: 0x300000, emissive: 0xff1a0a, emissiveIntensity: 3, roughness: 0.4 });
