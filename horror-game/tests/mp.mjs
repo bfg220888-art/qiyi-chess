@@ -394,13 +394,15 @@ try {
   check(own.v.aware === 0.55 && own.v.targetMe && own.shown, 'client sees its own awareness from host state (eye shown)');
   if (clients[1]) check(await clients[1].evaluate(() => window.__SW.game.detectView().aware === 0), 'other client does not see awareness aimed at someone else');
   // 惡意 / 損壞的值：不在 0..1、不是數字、非整數的目標 → 不理
-  for (const bad of [{ aw: 7, tg: cs }, { aw: 'x', tg: cs }, { aw: -1, tg: cs }, { aw: null, tg: cs }]) {
-    await host.evaluate(([cs, bad]) => { const gh = window.__SW.game.ghost; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', ...bad }; }; gh.__badAt = window.__SW.game.time; }, [cs, bad]);
-    await host.waitForTimeout(700);
-  }
+  // 每一筆都帶一個記號 jk，等玩家 2 真的收到那一筆再看結果
+  const sendJunk = async (bad, jk) => {
+    await host.evaluate(([bad, jk]) => { const gh = window.__SW.game.ghost; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', ...bad, jk }; }; }, [bad, jk]);
+    await until(clients[0], (jk) => { const n = window.__SW.game.ghost.net; return n && n.jk === jk; }, jk, 60000);
+  };
+  let jk = 0;
+  for (const bad of [{ aw: 7, tg: cs }, { aw: 'x', tg: cs }, { aw: -1, tg: cs }, { aw: null, tg: cs }]) await sendJunk(bad, ++jk);
   const junkAw = await clients[0].evaluate(() => { const gh = window.__SW.game.ghost; return { aw: gh.netAware, v: window.__SW.game.detectView().aware }; });
-  await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', aw: 0.3, tg: 1.5 }; }; });
-  await clients[0].waitForTimeout(800);
+  await sendJunk({ aw: 0.3, tg: 1.5 }, ++jk);
   const junkTg = await clients[0].evaluate(() => { const gh = window.__SW.game.ghost; return { tg: gh.netTarget, v: window.__SW.game.detectView() }; });
   log('junk', JSON.stringify(junkAw), JSON.stringify(junkTg));
   check(junkAw.aw === 0.55 && junkAw.v === 0.55 && junkTg.tg === -1 && junkTg.v.aware === 0 && !junkTg.v.targetMe, 'junk awareness / target values are ignored');
