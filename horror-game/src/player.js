@@ -77,7 +77,7 @@ export class Player {
   }
 
   // 手電筒的陰影圖不必每一格都重畫：
-  //   關燈（亮度 0）時完全不畫；手電筒沒動（站著不動、躲起來看）時隔一格畫一次（她走過光束時影子最多慢一格，看不出來）；
+  //   關燈（亮度 0）時完全不畫；手電筒沒動（站著不動、只有呼吸的微晃）時隔一格畫一次（她走過光束時影子最多慢一格，看不出來）；
   //   有動就每一格都畫。在真正要畫的那一刻才判斷（用 needsUpdate 的 getter），
   //   所以別的程式在這之後改了亮度（例如被抓到時手電筒亂閃）也會照實際的狀態處理
   setupFlashShadow(L) {
@@ -87,7 +87,8 @@ export class Player {
       configurable: true,
       get: () => {
         if (!(L.intensity > 0.001)) return false;
-        const moved = last.force || last.p.distanceToSquared(L.position) > 1e-8 || last.t.distanceToSquared(L.target.position) > 1e-8;
+        // 站著時鏡頭還會有呼吸般的微晃（幾公釐），跟上次畫陰影圖時差不到 1 公分、光束方向差不到約 0.2 度就算沒動
+        const moved = last.force || last.p.distanceToSquared(L.position) > 1e-4 || last.t.distanceToSquared(L.target.position) > 4e-4;
         if (moved) { last.skip = false; return true; }
         last.skip = !last.skip;
         return !last.skip;
