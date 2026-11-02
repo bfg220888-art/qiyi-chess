@@ -152,6 +152,27 @@ html, body {
     radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(0, 0, 0, 0.9) 75%),
     repeating-linear-gradient(180deg, rgba(4, 5, 4, 0.97) 0 26px, rgba(0, 0, 0, 0) 26px 40px, rgba(25, 28, 24, 0.9) 40px 43px);
 }
+/* 察覺提示：上方中央一個小眼睛（或耳朵）+ 一行短字，跟 REC 一樣的取景器風格 */
+#detect {
+  position: absolute; left: 50%; top: calc(max(14px, env(safe-area-inset-top)) + 12px); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 8px; color: var(--dc, var(--ink));
+  font-family: var(--body); font-size: calc(14px * var(--sub-scale, 1)); letter-spacing: 0.08em; white-space: nowrap;
+  text-shadow: 0 1px 2px #000, 0 0 6px #000;
+}
+#detect .det-ico { width: 34px; height: auto; overflow: visible; filter: drop-shadow(0 1px 1px #000) drop-shadow(0 0 4px rgba(0, 0, 0, 0.8)); }
+#detect .det-ico.ear { width: 22px; }
+#detEye { transform-box: fill-box; transform-origin: center; transition: transform 0.12s; }
+#detText:empty { display: none; }
+#detect.chase .det-ico { animation: detBeat 0.5s ease-in-out infinite alternate; filter: drop-shadow(0 0 6px rgba(227, 41, 28, 0.85)); }
+#detect.alert #detText { font-weight: 700; font-size: 1.12em; letter-spacing: 0.14em; }
+@keyframes detBeat { from { transform: scale(1); } to { transform: scale(1.12); } }
+/* 方向箭頭：以準心為圓心、在半徑上的一小段弧 */
+#detArrow { position: absolute; left: 50%; top: 50%; width: 0; height: 0; color: var(--dc, var(--ink)); transition: opacity 0.25s; }
+#detArrow svg { position: absolute; left: -30px; top: calc(-1 * min(19vmin, 130px) - 11px); width: 60px; height: 22px; filter: drop-shadow(0 0 3px #000) drop-shadow(0 1px 1px #000); }
+/* 被發現時畫面邊緣紅一下 */
+#alertPulse { position: fixed; inset: 0; z-index: 11; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(190, 10, 0, 0.7)); }
+#alertPulse.go { animation: alertPulse 0.9s ease-out; }
+@keyframes alertPulse { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 #damage { position: fixed; inset: 0; z-index: 11; pointer-events: none; background: radial-gradient(ellipse at center, transparent 40%, rgba(150, 0, 0, 0.75)); opacity: 0; transition: opacity 0.6s; }
 #fade { position: fixed; inset: 0; z-index: 40; pointer-events: none; background: #000; opacity: 0; transition: opacity 1.2s; }
 
@@ -242,7 +263,7 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
   .objective { font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .title, .title::after, #menu::before, #loading::before, #intro::before, .rotate-ico { animation: none; }
+  .title, .title::after, #menu::before, #loading::before, #intro::before, .rotate-ico, #detect.chase .det-ico { animation: none; }
 }
 
 /* 多人連線大廳 */

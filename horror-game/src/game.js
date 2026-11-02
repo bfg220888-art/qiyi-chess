@@ -296,6 +296,7 @@ export class Game {
   }
 
   start() {
+    this.ui.setDetect(null);
     this.ui.showDowned(false);
     this.ui.setHold(0);
     this.audio.startAmbience();
@@ -316,6 +317,17 @@ export class Game {
       this.ui.hint(this.input.touchMode ? '左邊拖曳移動，右邊滑動看四周。看到東西時按「互動」。' : 'WASD 移動・滑鼠看四周・E 互動・F 手電筒・Q 相機閃光・P 暫停', 6);
     }, 4200);
     this.later(() => { if (!this.over) this.ui.subtitle('先看看大廳牆上的平面圖。', 4); }, 11000);
+    // 新手教學（在她第一次出現之前）：怎麼不被看到、怎麼躲、上方的眼睛是什麼意思
+    const touch = this.input.touchMode;
+    this.later(() => {
+      if (this.over || this.stats.chases) return;
+      this.ui.hint(touch ? '她看得到光：按「燈」關掉手電筒、按「蹲」蹲著走，她就比較難發現你。' : '她看得到光：按 F 關掉手電筒、按 C 蹲著走，她就比較難發現你。', 6);
+    }, 17000);
+    this.later(() => {
+      if (this.over || this.stats.chases) return;
+      const eye = this.settings.detectCues !== false;
+      this.ui.hint((eye ? '畫面上方的眼睛睜開，就是她注意到你了——趁它變紅之前離開她的視線，' : '被她看到時，趁她還沒尖叫之前離開她的視線，') + (touch ? '或躲進鐵櫃（「互動」）。' : '或躲進鐵櫃（E）。'), 7);
+    }, Math.min(26000, Math.max(19000, this.grace * 1000 - 12000)));
   }
 
   makeGhostModel() {
@@ -349,8 +361,8 @@ export class Game {
     this.time += dt;
     const P = this.player;
     this.inputMoveX = inp.mx;
-    if (this.dying) { this.updateDying(dt); if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); } return; }
-    if (this.mp && this.mpStatus !== 0) { this.updateSpectator(dt, inp); return; }
+    if (this.dying) { this.ui.setDetect(null); this.updateDying(dt); if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); } return; }
+    if (this.mp && this.mpStatus !== 0) { this.ui.setDetect(null); this.updateSpectator(dt, inp); return; }
 
     // 動作
     inp.crouchToggle = false;
@@ -383,7 +395,7 @@ export class Game {
     if (this.stairT) this.updateStairs(dt);
     this.updateProjectiles(dt);
     this.ghost.update(dt);
-    if (this.over || this.dying) return;
+    if (this.over || this.dying) { this.ui.setDetect(null); return; }
     this.director.update(dt);
     this.updateWorlds(dt, P.camera, P.flashOn && P.battery > 0 && !P.hiding);
     // 日光燈電流聲：每 0.25 秒挑一次最近的亮燈，音量每格跟著閃爍
@@ -438,6 +450,7 @@ export class Game {
       }
     }
     this.updateMood(dt);
+    this.updateDetect(dt);
     if (this.ritual) this.updateRitual(dt);
     this.ui.updateTimecode(this.time);
     if (P.hiding) this.ui.updateBreath(P.breath, P.holdingBreath);
@@ -452,7 +465,7 @@ export class Game {
     const P = this.player, gh = this.ghost, A = this.audio, u = this.post.u;
     const chase = gh.state === 'chase' && gh.floor === this.floorIdx ? 1 : 0;
     const near = gh.state === 'dormant' ? 0 : Math.max(0, 1 - this.ghostDist / 14);
-    const fear = Math.max(chase, near * 0.9, (1 - P.sanity) * 0.55, P.hiding && near > 0.2 ? 0.8 : 0, this.downed ? 0.95 : 0);
+    const fear = Math.max(chase, near * 0.9, (1 - P.sanity) * 0.55, P.hiding && near > 0.2 ? 0.8 : 0, this.downed ? 0.95 : 0, (this.detAware || 0) * 0.8);
     this.fear = (this.fear || 0) + (fear - (this.fear || 0)) * Math.min(1, dt * 2);
     A.setHeartbeat(62 + this.fear * 85, Math.max(0, this.fear - 0.2) * 0.7);
     A.setChase(chase);
@@ -969,9 +982,71 @@ export class Game {
   // ---------------------------------------------------------------------
   // 被抓
   onChaseStart() {
+    // 多人時她追的可能是別人：只有追自己才算、才震動
+    if (!this.detectView().targetMe) return;
     this.stats.chases = (this.stats.chases || 0) + 1;
     this.vibrate([60, 40, 120]);
     if (this.stats.chases === 1) this.ui.hint('歌聲停了——她看到你了！跑！躲起來！', 3);
+  }
+
+  // 她對「我」的察覺：單人與房主直接看她算的值；其他人看房主送來、而且目標是自己的那一份
+  detectView() {
+    const gh = this.ghost, mp = this.mp;
+    if (!gh) return { aware: 0, targetMe: false, tg: -1 };
+    if (mp && !mp.isHost) {
+      const tg = Number.isInteger(gh.netTarget) ? gh.netTarget : -1, me = tg === mp.mySlot;
+      return { aware: me ? gh.netAware || 0 : 0, targetMe: me, tg };
+    }
+    const me = !gh.target || gh.target === this.player;
+    return { aware: gh.awareOf(this.player), targetMe: me, tg: mp ? gh.targetSlot ?? -1 : -1 };
+  }
+
+  // 察覺提示：上方的眼睛（察覺值）、準心旁指向她的弧形箭頭、短訊息（發現你了 / 聽到聲音 / 在附近找你 / 跟丟了 / 在追誰）
+  updateDetect(dt) {
+    const gh = this.ghost, P = this.player, ui = this.ui;
+    if (!gh) return;
+    const on = this.settings.detectCues !== false;
+    ui.clock = this.time;
+    const v = this.detectView();
+    const same = gh.state !== 'dormant' && !gh.banished && gh.floor === this.floorIdx;
+    const dx = gh.pos.x - P.pos.x, dz = gh.pos.z - P.pos.z, dist = same ? Math.hypot(dx, dz) : 99;
+    const st = gh.state;
+    const chaseMe = st === 'chase' && v.targetMe && !gh.banished;
+    this.detAware = v.aware;
+    // 第一次被注意到：教你看眼睛
+    if (on && !this.awareHinted && v.aware > 0.08 && !chaseMe) {
+      this.awareHinted = true;
+      ui.hint('她注意到你了——躲開她的視線！', 4);
+    }
+    // 開始追我 / 追別人 / 跟丟了
+    if (chaseMe && !this.detChaseMe) {
+      if (on) { ui.detectMsg('她發現你了！', 'alert', 3); ui.alertPulse(); }
+    } else if (!chaseMe && this.detChaseMe) {
+      // 追逐結束：「發現你了」不要再蓋住其他訊息
+      ui.endDetectMsg('alert');
+      if (on && (st === 'search' || st === 'wander' || st === 'investigate')) ui.detectMsg('她跟丟了', 'lost', 3);
+    }
+    this.detChaseMe = chaseMe;
+    const chaseOther = st === 'chase' && !v.targetMe && this.mp && v.tg >= 0 && v.tg !== this.mp.mySlot ? v.tg : -1;
+    if (chaseOther >= 0 && chaseOther !== this.detChaseOther && on) ui.detectMsg(`她在追 ${this.mp.slotName(chaseOther)}`, 'warn', 3);
+    this.detChaseOther = chaseOther;
+    // 去查看聲音：你弄出來的、或你附近的聲音
+    const it = this.mp && !this.mp.isHost ? gh.netInvestigate : gh.investigateTarget;
+    const invKey = st === 'investigate' && it ? `${it.x.toFixed(0)},${it.z.toFixed(0)}` : '';
+    if (invKey && invKey !== this.detInv && same && Math.hypot(it.x - P.pos.x, it.z - P.pos.z) < 14 && on) ui.detectMsg('她聽到聲音了', 'ear', 3);
+    this.detInv = invKey;
+    // 在你躲的櫃子外面聽、或在你附近搜索
+    if (on && same && !chaseMe && ((gh.listening && P.hiding && v.targetMe) || (st === 'search' && dist < 9))) ui.detectMsg('她在附近找你', 'ear', 3);
+    if (!on) { ui.setDetect(null); return; }
+    // 箭頭：察覺中、或她在附近追 / 查看 / 搜索時，指向她（她在背後也看得到）
+    const level = chaseMe && same ? 1 : v.aware;
+    const active = same && dist < 20 && (level > 0.02 || chaseMe || ((st === 'investigate' || st === 'search' || st === 'chase') && dist < 14));
+    let arrow = null;
+    if (active && dist > 0.3 && !P.hiding) {
+      const yaw = P.yaw, fwd = -dx * Math.sin(yaw) - dz * Math.cos(yaw), right = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+      arrow = { a: Math.atan2(right, fwd), k: Math.max(0.35, Math.min(1, 1.25 - dist / 20)) };
+    }
+    ui.setDetect({ level, chase: chaseMe, arrow });
   }
   onChaseEnd() { /* 配樂由 updateMood 自動淡出 */ }
 

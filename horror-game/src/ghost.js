@@ -232,7 +232,9 @@ export class Ghost {
     this.replanT = 0;
     this.phase = 0;
     this.speed = 0;
-    this.suspicion = 0;
+    // 察覺值（每個目標各一份，0→1）：看得到目標時慢慢累積，滿了才尖叫追上來；看不到就慢慢退掉
+    this.aware = new Map();
+    this.noticing = false;
     this.lastKnown = null;
     this.lostT = 0;
     this.stepT = 0;
@@ -256,6 +258,10 @@ export class Ghost {
   }
 
   get diff() { return this.game.diff; }
+  // 她對某個玩家的察覺值（多人時只有房主算；其他人用房主送來的、針對自己的那一份，見 game.detectView）
+  awareOf(P) { return (P && this.aware.get(P)) || 0; }
+  get suspicion() { return this.game.mp && !this.game.mp.isHost ? (this.netAware || 0) : this.awareOf(this.target); }
+  set suspicion(v) { if (this.target) this.aware.set(this.target, Math.min(1, Math.max(0, v))); }
   get F() { return this.game.floors[this.floor]; }
   get lv() { return this.F.lv; }
   get nav() { return this.F.ghostNav; }
@@ -332,6 +338,11 @@ export class Ghost {
     this.state = s;
     this.stateT = 0;
     this.path = null;
+    // 察覺值：開始追 = 滿；跟丟了退回一半（剛跟丟時再被看到會比較快又被發現）；退開 / 抓到人就歸零
+    if (s === 'chase' && this.target) this.aware.set(this.target, 1);
+    else if (prev === 'chase' && this.target && (s === 'search' || s === 'wander' || s === 'investigate')) this.aware.set(this.target, Math.min(this.awareOf(this.target), 0.55));
+    if (s === 'dormant' || s === 'stunned' || s === 'kill') this.aware.clear();
+    this.noticing = false;
     if (s === 'chase') {
       this.stopHum();
       this.lostT = 0;
@@ -496,12 +507,13 @@ export class Ghost {
     const dx = eye.x - this.pos.x, dz = eye.z - this.pos.z;
     const dist = same ? Math.hypot(dx, dz) : 99;
     // --- 感知
-    let sees = false;
+    let sees = false, lit = false;
     if (same && !P.hiding && this.state !== 'stunned' && this.state !== 'kill') {
       let range = 12 * this.diff.sight * this.aggression;
+      lit = this.world.lightAt(eye.x, eye.z) > 0.4;
       if (P.flashOn) range *= 1.45;
       if (P.crouching) range *= 0.62;
-      if (this.world.lightAt(eye.x, eye.z) > 0.4) range *= 1.2;
+      if (lit) range *= 1.2;
       if (this.state === 'chase') range *= 1.5;
       if (dist < range) {
         const toP = Math.atan2(dx, dz);
@@ -510,16 +522,33 @@ export class Ghost {
       }
     }
     // 理智歸零時她知道你在哪
-    if (same && P.sanity <= 0.01 && this.state !== 'stunned' && !P.hiding) sees = sees || dist < 25;
+    const insane = same && P.sanity <= 0.01 && this.state !== 'stunned' && this.state !== 'kill' && !P.hiding;
+    if (insane) sees = sees || dist < 25;
     this.seesPlayer = sees;
+    // 察覺：看得到才會累積。越近越快（3 公尺內幾乎馬上），開手電筒、站在燈下、站著（沒蹲）都更快；
+    // 她已經起疑（查看聲音、搜索中）時也更快。看不到就慢慢退掉。滿了才尖叫追上來
+    let aw = this.awareOf(P);
     if (sees) {
       this.lastKnown = { x: eye.x, z: eye.z };
       this.lostT = 0;
-      const rate = (this.state === 'investigate' || this.state === 'search' ? 1.6 : 0.9) * (1 + Math.max(0, 8 - dist) * 0.35) * this.aggression;
-      this.suspicion = Math.min(1.2, this.suspicion + dt * rate);
-    } else {
-      this.suspicion = Math.max(0, this.suspicion - dt * 0.25);
-    }
+      if (this.state === 'chase') aw = 1;
+      else {
+        const base = this.diff.notice ?? 1.1;
+        let rate = base * Math.min(12, Math.max(0.35, Math.pow(7 / Math.max(0.5, dist), 1.6)));
+        if (dist < 3) rate = Math.max(rate, base * 4.5, 3.2);
+        if (P.flashOn) rate *= 1.35;
+        if (lit) rate *= 1.25;
+        if (P.crouching) rate *= 0.6;
+        if (this.state === 'investigate' || this.state === 'search') rate *= 1.5;
+        if (insane) rate *= 2;
+        aw = Math.min(1, aw + dt * rate * this.aggression);
+      }
+    } else if (this.state !== 'chase') aw = Math.max(0, aw - dt * 0.4);
+    if (aw > 0 || this.aware.has(P)) this.aware.set(P, aw);
+    // 其他人（多人時她沒在看的人）的察覺值慢慢退掉
+    for (const [k, v] of this.aware) if (k !== P) { if (v <= dt * 0.4) this.aware.delete(k); else this.aware.set(k, v - dt * 0.4); }
+    // 察覺中（還沒滿）：她停下腳步、轉過來盯著你——這時候躲開她的視線還來得及
+    this.noticing = sees && aw > 0.04 && aw < 1 && this.state !== 'chase' && this.state !== 'stunned' && this.state !== 'kill';
     // 玩家躲在櫃子裡：她在附近停下腳步時會側耳傾聽
     this.listening = false;
     if (same && P.hiding && !this.knowsLocker && (this.state === 'search' || this.state === 'investigate' || this.state === 'wander') && dist < 3.4 && this.speed < 0.35) {
@@ -529,7 +558,7 @@ export class Ghost {
         if (this.hearT > 1) { this.hearT = 0; this.heardHiding(P.hiding); }
       } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.5);
     } else this.hearT = Math.max(0, (this.hearT || 0) - dt * 0.3);
-    if (sees && this.suspicion >= 1 && this.state !== 'chase' && this.state !== 'stunned' && this.state !== 'kill') this.setState('chase');
+    if (sees && aw >= 1 && this.state !== 'chase' && this.state !== 'stunned' && this.state !== 'kill') this.setState('chase');
     if (same && this.enraged && this.state !== 'stunned' && this.state !== 'kill' && this.state !== 'chase' && !P.hiding) {
       this.lastKnown = { x: eye.x, z: eye.z };
       this.setState('chase');
@@ -544,6 +573,10 @@ export class Ghost {
     if (goFloor) {
       speed = (this.state === 'chase' || this.enraged ? (this.enraged ? 4.15 : 3.45) : this.state === 'wander' ? 1.15 : 2.0) * base;
       this.travel(dt, speed, pf);
+    } else if (this.noticing) {
+      // 停下來、慢慢轉向你（看得懂的預警），路線保留，看不到你之後接著走
+      speed = 0;
+      this.yaw += angDiff(Math.atan2(dx, dz), this.yaw) * Math.min(1, dt * 3);
     } else switch (this.state) {
       case 'wander': {
         speed = 1.15 * base;
@@ -605,7 +638,7 @@ export class Ghost {
         } else if (dist < 0.85 && !P.hiding) {
           this.setState('kill');
           g.onCaught(false, P);
-        } else if ((!this.enraged && this.lostT > 3.2) || (P.hiding && !this.knowsLocker)) {
+        } else if ((!this.enraged && this.lostT > (this.diff.giveUp ?? 3.2)) || (P.hiding && !this.knowsLocker)) {
           this.setState('search');
           this.searchN = 0;
         }
@@ -628,7 +661,7 @@ export class Ghost {
           this.path = null;
           this.idleT = 1.5 + Math.random() * 2;
         }
-        if (this.stateT > 16) this.setState('wander');
+        if (this.stateT > (this.diff.search ?? 16)) this.setState('wander');
         break;
       }
       case 'stunned': {
@@ -636,7 +669,7 @@ export class Ghost {
         if (this.stateT > 4.2) {
           // 退開：消失到遠處
           if (!this.teleportNear(18, 40)) this.teleportNear(10, 60);
-          this.suspicion = 0;
+          this.aware.clear();
           this.knowsLocker = null;
           this.state = 'dormant';
           this.dormantUntil = g.time + 7 + Math.random() * 5;
@@ -741,6 +774,9 @@ export class Ghost {
     return {
       t: 'gh', fl: this.floor, x: +this.pos.x.toFixed(2), z: +this.pos.z.toFixed(2), y: +this.yaw.toFixed(2), s: this.state,
       v: +this.speed.toFixed(2), sp: this.seesPlayer ? 1 : 0, tg: this.targetSlot ?? -1, l: this.listening ? 1 : 0,
+      // 她對目前目標（tg）的察覺值（取到 0.05），查看聲音時要去的地方（讓其他人知道是不是自己附近的聲音）
+      aw: Math.round(this.awareOf(this.target) * 20) / 20,
+      ...(this.state === 'investigate' && this.investigateTarget ? { ix: +this.investigateTarget.x.toFixed(1), iz: +this.investigateTarget.z.toFixed(1) } : {}),
     };
   }
   applyNet(m) {
@@ -748,6 +784,10 @@ export class Ghost {
     if (!Number.isInteger(m.fl) || m.fl < 0 || m.fl >= this.game.floors.length) return;
     const first = !this.net;
     this.net = m;
+    // 察覺值與目標：只收 0..1 的有限數字、整數的玩家編號，其他一律不理（保留上一次的值）
+    if (typeof m.aw === 'number' && Number.isFinite(m.aw) && m.aw >= 0 && m.aw <= 1) this.netAware = m.aw;
+    this.netTarget = Number.isInteger(m.tg) && m.tg >= -1 && m.tg < 16 ? m.tg : -1;
+    this.netInvestigate = m.s === 'investigate' && [m.ix, m.iz].every((v) => typeof v === 'number' && Number.isFinite(v)) ? { x: m.ix, z: m.iz } : null;
     // 換樓層：直接跳到新位置
     if (m.fl !== this.floor) { this.setFloor(m.fl); this.pos.set(m.x, 0, m.z); this.yaw = m.y; }
     // 房主那邊瞬間移動（防卡住的傳送）：直接跳過去，不要滑過牆
@@ -774,7 +814,7 @@ export class Ghost {
     this.seesPlayer = !!n.sp;
     this.listening = !!n.l;
     // 她在看誰：自己就看鏡頭，其他人就看那個人的頭
-    const P = n.tg === g.mp.mySlot ? g.player : g.remotes.get(n.tg) || null;
+    const P = this.netTarget === g.mp.mySlot ? g.player : g.remotes.get(this.netTarget) || null;
     this.dist = P && Ghost.floorOf(P) === this.floor ? Math.hypot(P.pos.x - this.pos.x, P.pos.z - this.pos.z) : 99;
     this.animate(dt, P);
   }

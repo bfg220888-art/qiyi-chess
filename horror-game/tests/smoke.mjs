@@ -365,6 +365,122 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low', 
   assert(a1 > 1, 'door opened');
 });
 
+// 察覺：看得到才累積，滿了才追；中途躲開視線會退掉；上方的眼睛、方向箭頭、聽到聲音的提示；設定關掉就不顯示
+await run('detect', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'ward' }, async (page) => {
+  await startGame(page);
+  await page.evaluate(() => { const g = window.__SW.game; g.director.next = 1e9; g.player.lives = 99; g.player.flashOn = false; });
+  // 把她放在離玩家 d 公尺、看得到玩家的地方，面向玩家；behind = 玩家背對她
+  const place = (d, behind) => page.evaluate(([d, behind]) => {
+    const g = window.__SW.game, P = g.player, lv = g.lv, gh = g.ghost;
+    for (let k = 0; k < 4000; k++) {
+      const x = Math.random() * lv.W * 3, z = Math.random() * lv.H * 3;
+      if (!g.ghostNav.isFree(x, z) || g.collision.overlapsAny(x, z, 0.35) || !lv.roomAtWorld(x, z)) continue;
+      const a = Math.random() * Math.PI * 2, gx = x + Math.sin(a) * d, gz = z + Math.cos(a) * d;
+      if (!g.ghostNav.isFree(gx, gz) || !g.sight(x, z, gx, gz)) continue;
+      P.pos.x = x; P.pos.z = z; P.hiding = null; P.crouching = false; P.flashOn = false;
+      const ux = gx - x, uz = gz - z;
+      P.yaw = Math.atan2(-ux, -uz) + (behind ? Math.PI : 0); P.pitch = 0;
+      gh.aware.clear();
+      gh.spawnAt(gx, gz, 'wander');
+      gh.pos.x = gx; gh.pos.z = gz;
+      gh.yaw = Math.atan2(x - gx, z - gz);
+      gh.path = null; gh.idleT = 60; gh.dormantUntil = 0;
+      return { d: Math.hypot(gh.pos.x - x, gh.pos.z - z) };
+    }
+    return null;
+  }, [d, behind]);
+  const step = (sec) => page.evaluate((sec) => {
+    const A = window.__SW, g = A.game, out = [];
+    for (let i = 0; i < Math.round(sec / 0.05) && !g.over; i++) {
+      g.update(0.05, A.emptyInput());
+      out.push({ aw: g.ghost.awareOf(g.player), st: g.ghost.state, sees: g.ghost.seesPlayer });
+    }
+    const el = document.getElementById('detect'), ar = document.getElementById('detArrow');
+    return { trace: out, ui: { shown: !el.hidden, text: document.getElementById('detText').textContent, level: Number(el.dataset.level || 0), arrow: !ar.hidden, rot: ar.style.transform, ear: document.getElementById('detEar').style.display !== 'none', eye: document.getElementById('detEye').parentNode.style.display !== 'none' } };
+  }, sec);
+  // 1. 看到一點點就躲開：察覺值退掉，她不會追
+  let pl = await place(8, false);
+  assert(pl, 'placed ghost in view (8 m)');
+  let r = await step(0.25);
+  for (let k = 0; k < 20 && r.trace.at(-1).aw < 0.3; k++) r = await step(0.1);
+  const peak = r.trace.at(-1).aw;
+  log('partial awareness', peak.toFixed(2), r.trace.at(-1).st, JSON.stringify(r.ui));
+  assert(peak > 0.2 && peak < 1 && r.trace.at(-1).st !== 'chase', 'awareness builds without an instant chase');
+  assert(r.ui.shown && r.ui.eye && r.ui.level > 0.05, 'eye indicator visible while she notices you');
+  await page.evaluate(() => {
+    // 躲到她看不到的地方（隔牆）
+    const g = window.__SW.game, P = g.player, gh = g.ghost, lv = g.lv;
+    for (let k = 0; k < 6000; k++) {
+      const x = gh.pos.x + (Math.random() - 0.5) * 24, z = gh.pos.z + (Math.random() - 0.5) * 24;
+      if (!g.ghostNav.isFree(x, z) || g.collision.overlapsAny(x, z, 0.35) || !lv.roomAtWorld(x, z)) continue;
+      if (Math.hypot(x - gh.pos.x, z - gh.pos.z) < 6 || g.sight(x, z, gh.pos.x, gh.pos.z)) continue;
+      P.pos.x = x; P.pos.z = z; return true;
+    }
+    return false;
+  });
+  r = await step(3);
+  const after = r.trace.at(-1);
+  log('after breaking sight', after.aw.toFixed(2), after.st);
+  assert(r.trace.every((t) => t.st !== 'chase') && after.aw < peak - 0.3, 'breaking line of sight decays awareness, no chase');
+  r = await step(2);
+  assert(r.trace.at(-1).aw === 0 && !r.ui.shown, 'eye hides once awareness is gone');
+  // 2. 一直站在她看得到的地方（她在背後）：慢慢累積，滿了才追
+  pl = await place(7, true);
+  assert(pl, 'placed ghost behind (7 m)');
+  const all = [];
+  let half = false;
+  for (let k = 0; k < 60; k++) {
+    r = await step(0.1);
+    all.push(...r.trace);
+    const t = r.trace.at(-1);
+    if (!half && t.aw >= 0.4 && t.st !== 'chase') {
+      half = true;
+      log('half', t.aw.toFixed(2), JSON.stringify(r.ui));
+      assert(r.ui.arrow && /rotate\(-?[23]\.\d+rad\)/.test(r.ui.rot), 'direction arrow points behind you ' + r.ui.rot);
+      await render(page);
+      await shot(page, 'detect-eye-half');
+    }
+    if (t.st === 'chase') break;
+  }
+  const ci = all.findIndex((t) => t.st === 'chase');
+  const build = all.slice(0, Math.max(0, ci)).filter((t) => t.aw > 0 && t.aw < 1).length;
+  log('chase at step', ci, 'build-up steps', build, 'aw before', ci > 0 && all[ci - 1].aw.toFixed(2));
+  assert(ci > 0, 'she starts chasing after staring long enough');
+  assert(build >= 4 && all[ci].aw === 1 && all.slice(0, ci).every((t) => t.aw < 1), 'chase only starts when awareness reaches 1');
+  assert(r.ui.text === '她發現你了！' && r.ui.shown && r.ui.level > 0.6, 'red eye + 她發現你了！ ' + JSON.stringify(r.ui));
+  r = await step(0.3);
+  await page.evaluate(() => { const g = window.__SW.game, gh = g.ghost, P = g.player; P.yaw = Math.atan2(-(gh.pos.x - P.pos.x), -(gh.pos.z - P.pos.z)) + 0.5; });
+  await step(0.05);
+  await render(page);
+  await shot(page, 'detect-eye-red');
+  // 3. 聽到聲音（她看不到你）：耳朵 + 「她聽到聲音了」
+  await page.evaluate(() => {
+    const g = window.__SW.game, gh = g.ghost, P = g.player;
+    gh.setState('dormant'); gh.aware.clear();
+  });
+  await step(1.5);
+  await page.evaluate(() => {
+    const g = window.__SW.game, gh = g.ghost, P = g.player;
+    let s = gh.findSpot(6, 12, true) || gh.findSpot(5, 18, true);
+    gh.spawnAt(s.x, s.z, 'wander'); gh.path = null; gh.idleT = 60; gh.dormantUntil = 0;
+    g.makeNoise(P.pos.x + 0.5, P.pos.z, 40, 'bottle');
+  });
+  r = await step(0.2);
+  log('noise', r.trace.at(-1).st, JSON.stringify(r.ui));
+  assert(r.ui.shown && r.ui.text === '她聽到聲音了' && (r.ui.ear || r.ui.eye), 'heard-noise cue');
+  await render(page);
+  await shot(page, 'detect-heard');
+  // 4. 設定關掉：察覺照樣累積，但不顯示眼睛、箭頭、訊息
+  await page.evaluate(() => { window.__SW.settings.detectCues = false; });
+  pl = await place(8, true);
+  r = await step(0.4);
+  log('cues off', r.trace.at(-1).aw.toFixed(2), JSON.stringify(r.ui));
+  assert(r.trace.at(-1).aw > 0 && !r.ui.shown && !r.ui.arrow, 'setting off hides the indicator (awareness still builds)');
+  await page.evaluate(() => { window.__SW.settings.detectCues = true; });
+  r = await step(0.1);
+  assert(r.ui.shown || r.trace.at(-1).aw === 0, 'setting on shows it again');
+});
+
 // 她的聲音：哼歌的發聲點跟著她走、隔牆變小變悶、設定「她的聲音提示」會改變音量與距離
 await run('audio', { viewport: { width: 960, height: 540 } }, { quality: 'low', theme: 'ward' }, async (page) => {
   await startGame(page);
@@ -768,11 +884,16 @@ await run('settings', { viewport: { width: 1100, height: 900 } }, { quality: 'lo
   await setRange('sGamma', 1.3);
   await setRange('sSub', 1.4);
   await page.click('#sBob');
+  assert(await page.evaluate(() => document.getElementById('sDetect').checked), 'detect cues default on');
+  await page.evaluate(() => document.getElementById('sDetect').scrollIntoView({ block: 'center' }));
+  await shot(page, 'settings-detect');
+  await page.click('#sDetect');
   await page.evaluate(() => document.getElementById('viewSettings').scrollIntoView());
   await shot(page, 'settings-panel');
   const saved = await page.evaluate(() => ({ ...JSON.parse(localStorage.getItem('silentward.settings')), label: document.getElementById('sFovVal').textContent }));
   log('saved', JSON.stringify({ fov: saved.fov, gamma: saved.gamma, sub: saved.subScale, bob: saved.headBob, label: saved.label }));
   assert(saved.fov === 88 && saved.gamma === 1.3 && saved.subScale === 1.4 && saved.headBob === false, 'view settings persisted');
+  assert(saved.detectCues === false, 'detect cue setting persisted');
   const scale = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--sub-scale').trim());
   assert(scale === '1.4', 'subtitle scale applied live ' + scale);
   await page.click('#btnSettingsBack');

@@ -383,6 +383,28 @@ try {
   const gp = await Promise.all(pages.map((p) => p.evaluate(() => { const gh = window.__SW.game.ghost; return [gh.pos.x, gh.pos.z, gh.state]; })));
   log('ghost', JSON.stringify(gp.map((g) => [g[0].toFixed(1), g[1].toFixed(1), g[2]])));
   check(gp.every((g) => Math.hypot(g[0] - gp[0][0], g[1] - gp[0][1]) < 1.5), 'ghost position sync');
+  // 察覺提示：房主送出她目前目標的察覺值（取到 0.05）與目標編號；每個人只看針對自己的那一份，亂七八糟的值不理
+  check(await host.evaluate(() => { const m = window.__SW.game.ghost.netState(); return typeof m.aw === 'number' && m.aw >= 0 && m.aw <= 1 && Number.isInteger(m.tg); }), 'host ghost state carries awareness + target slot');
+  const cs = slots[1];
+  await host.evaluate((cs) => { const gh = window.__SW.game.ghost; gh.__ns = gh.__ns || gh.netState; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', aw: 0.55, tg: cs }; }; }, cs);
+  await until(clients[0], () => { const g = window.__SW.game; return g.detectView().aware === 0.55 && g.detectView().targetMe; });
+  await clients[0].evaluate(() => { const A = window.__SW, g = A.game; g.update(0.05, A.emptyInput()); });
+  const own = await clients[0].evaluate(() => ({ v: window.__SW.game.detectView(), shown: !document.getElementById('detect').hidden }));
+  log('client awareness', JSON.stringify(own));
+  check(own.v.aware === 0.55 && own.v.targetMe && own.shown, 'client sees its own awareness from host state (eye shown)');
+  if (clients[1]) check(await clients[1].evaluate(() => window.__SW.game.detectView().aware === 0), 'other client does not see awareness aimed at someone else');
+  // 惡意 / 損壞的值：不在 0..1、不是數字、非整數的目標 → 不理
+  for (const bad of [{ aw: 7, tg: cs }, { aw: 'x', tg: cs }, { aw: -1, tg: cs }, { aw: null, tg: cs }]) {
+    await host.evaluate(([cs, bad]) => { const gh = window.__SW.game.ghost; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', ...bad }; }; gh.__badAt = window.__SW.game.time; }, [cs, bad]);
+    await host.waitForTimeout(700);
+  }
+  const junkAw = await clients[0].evaluate(() => { const gh = window.__SW.game.ghost; return { aw: gh.netAware, v: window.__SW.game.detectView().aware }; });
+  await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.netState = function () { return { ...gh.__ns.call(gh), s: 'wander', aw: 0.3, tg: 1.5 }; }; });
+  await clients[0].waitForTimeout(800);
+  const junkTg = await clients[0].evaluate(() => { const gh = window.__SW.game.ghost; return { tg: gh.netTarget, v: window.__SW.game.detectView() }; });
+  log('junk', JSON.stringify(junkAw), JSON.stringify(junkTg));
+  check(junkAw.aw === 0.55 && junkAw.v === 0.55 && junkTg.tg === -1 && junkTg.v.aware === 0 && !junkTg.v.targetMe, 'junk awareness / target values are ignored');
+  await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.netState = gh.__ns; delete gh.__ns; });
 
   // 玩家 2 撿起一個保險絲，等一下被抓走時它要回到原處
   const fuseI = await findFuse();

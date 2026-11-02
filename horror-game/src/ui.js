@@ -4,6 +4,7 @@ import { CELL } from './config.js';
 import { KEY_COLORS } from './level.js';
 
 const $ = (id) => document.getElementById(id);
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * Math.min(1, Math.max(0, t)));
 
 export class UI {
   constructor() {
@@ -14,7 +15,12 @@ export class UI {
       map: $('mapView'), mapCanvas: $('mapCanvas'), tInteract: $('tInteract'), tInteractLabel: $('tInteractLabel'), touch: $('touch'),
       fps: $('fps'), bottles: $('bottleCount'), bottleStat: $('bottleStat'), tThrow: $('tThrow'), tBreath: $('tBreath'),
       polaroid: $('polaroid'),
+      detect: $('detect'), detEye: $('detEye'), detEar: $('detEar'), detText: $('detText'), detArrow: $('detArrow'), alertPulse: $('alertPulse'),
     };
+    this.clock = 0;          // 察覺提示用的時鐘（遊戲時間，由 game.updateDetect 設定）
+    this.detMsg = null;      // 目前顯示的察覺訊息 { text, kind, pri, until }
+    this.detShown = new Map(); // 每一種訊息上一次出現的時間（防洗版）
+    this.detLevel = 0;
     this.hintT = 0;
     this.subT = 0;
     this.game = null;
@@ -102,6 +108,76 @@ export class UI {
   fade(v, dur = 1.2) {
     this.el.fade.style.transitionDuration = dur + 's';
     this.el.fade.style.opacity = String(v);
+  }
+
+  // ---- 察覺提示（上方中央的眼睛 / 耳朵與短訊息、準心旁的方向箭頭）
+  // 短訊息：同一句 8 秒內不重複；「發現你了」顯示中不會被其他訊息蓋掉，其他的新訊息蓋掉舊的
+  detectMsg(text, kind = 'ear', dur = 3) {
+    const pri = { alert: 3, warn: 2, lost: 2, ear: 1 }[kind] || 1;
+    const last = this.detShown.get(text);
+    if (last !== undefined && this.clock >= last && this.clock - last < 8) return false;
+    const cur = this.detMsg;
+    if (cur && cur.until > this.clock && cur.pri >= 3 && cur.pri > pri) return false;
+    this.detShown.set(text, this.clock);
+    this.detMsg = { text, kind, pri, until: this.clock + dur };
+    return true;
+  }
+  endDetectMsg(kind) { if (this.detMsg && this.detMsg.kind === kind) this.detMsg = null; }
+  // 被發現：畫面邊緣紅一下
+  alertPulse() {
+    const el = this.el.alertPulse;
+    if (!el) return;
+    el.classList.remove('go');
+    void el.offsetWidth;
+    el.classList.add('go');
+  }
+  // d = null 隱藏；{ level 0..1, chase, arrow: { a 弧度（0 = 正前方、順時針為正）, k 透明度 } | null }
+  setDetect(d) {
+    const E = this.el;
+    if (!E.detect) return;
+    if (!d) {
+      this.detMsg = null;
+      this.detLevel = 0;
+      if (this.lastDet !== '') { this.lastDet = ''; E.detect.hidden = true; E.detArrow.hidden = true; }
+      return;
+    }
+    // 眼睛睜開得很快、閉上得慢一點（看得出她剛剛差點發現你）
+    const k = d.level > this.detLevel ? 0.35 : d.level <= 0 ? 0.15 : 0.08;
+    this.detLevel += (d.level - this.detLevel) * k;
+    if (d.level <= 0 && this.detLevel < 0.01) this.detLevel = 0;
+    const msg = this.detMsg && this.detMsg.until > this.clock ? this.detMsg : null;
+    const lvl = this.detLevel;
+    // 聽到聲音 / 在附近找你：耳朵；她同時也盯著你（察覺值還高）就兩個都顯示
+    const ear = !!msg && msg.kind === 'ear';
+    const eye = ear ? lvl > 0.3 || d.chase : lvl > 0.01 || d.chase || !!msg;
+    const show = eye || ear || !!msg;
+    // 顏色：骨白 → 琥珀 → 紅
+    const c = d.chase ? [227, 41, 28] : ear && lvl < 0.5 ? [236, 162, 46] : lvl < 0.5 ? mix([230, 224, 211], [236, 162, 46], lvl / 0.5) : mix([236, 162, 46], [227, 41, 28], (lvl - 0.5) / 0.5);
+    const col = `rgb(${c.map((v) => Math.round(v)).join(',')})`;
+    const open = d.chase ? 1 : msg && msg.kind === 'lost' && lvl < 0.15 ? 0.15 : 0.12 + lvl * 0.88;
+    const key = show ? `${eye ? 1 : 0}${ear ? 1 : 0}|${open.toFixed(2)}|${col}|${msg ? msg.text : ''}|${d.chase ? 1 : 0}` : '';
+    if (key !== this.lastDetKey) {
+      this.lastDetKey = key;
+      E.detect.hidden = !show;
+      if (show) {
+        E.detect.style.setProperty('--dc', col);
+        E.detEye.parentNode.style.display = eye ? '' : 'none';
+        E.detEar.style.display = ear ? '' : 'none';
+        E.detEye.style.transform = `scaleY(${open.toFixed(2)})`;
+        E.detText.textContent = msg ? msg.text : '';
+        E.detect.classList.toggle('chase', !!d.chase);
+        E.detect.classList.toggle('alert', !!msg && msg.kind === 'alert');
+        E.detect.dataset.level = lvl.toFixed(2);
+      }
+    }
+    this.lastDet = 'on';
+    const a = d.arrow;
+    E.detArrow.hidden = !a;
+    if (a) {
+      E.detArrow.style.transform = `rotate(${a.a.toFixed(3)}rad)`;
+      E.detArrow.style.opacity = (a.k * (0.45 + 0.55 * Math.max(lvl, d.chase ? 1 : 0.35))).toFixed(2);
+      E.detArrow.style.setProperty('--dc', col);
+    }
   }
 
   update(dt) {

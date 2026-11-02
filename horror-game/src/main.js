@@ -47,6 +47,8 @@ class App {
       quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
       // 畫面與舒適度
       fov: 70, headBob: true, gamma: 1, subScale: 1,
+      // 察覺提示（上方的眼睛、方向箭頭、短訊息）
+      detectCues: true,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
@@ -57,6 +59,7 @@ class App {
     this.settings.aa = this.settings.aa !== false;
     clampNum('fov', 60, 100); clampNum('gamma', 0.7, 1.6); clampNum('subScale', 0.8, 1.6);
     this.settings.headBob = this.settings.headBob !== false;
+    this.settings.detectCues = this.settings.detectCues !== false;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
     const touch = matchMedia('(pointer: coarse)').matches;
     // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
@@ -306,6 +309,7 @@ class App {
       el.addEventListener('change', () => { this.settings[key] = el.checked; if (fn) fn(); this.saveSettings(); });
     };
     bindCheck('sInvert', 'invertY');
+    bindCheck('sDetect', 'detectCues', () => { if (this.game && !this.settings.detectCues) this.ui.setDetect(null); });
     bindCheck('sAA', 'aa', () => { if (this.game && this.game.post) this.game.post.setAA(this.settings.aa); });
     bindCheck('sFps', 'showFps', () => this.ui.setFps(this.settings.showFps && this.state === 'playing'));
     // 畫面與舒適度：視野、頭部晃動、畫面亮度（伽瑪）、字幕大小，全部即時套用
