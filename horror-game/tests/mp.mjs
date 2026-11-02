@@ -234,7 +234,10 @@ try {
   // 遺物：撿一件、走到搖籃那一層放回去 → 每個人的搖籃裡都有；沒帶在身上的那件放不進去
   const rel = await host.evaluate(() => {
     const g = window.__SW.game, out = [];
-    for (const F of g.floors) F.lv.items.forEach((it, i) => { if (it.kind === 'relic') out.push([F.index, i, it.relic]); });
+    // 先挑不在還鎖著的房間裡的遺物（鎖著的房間進不去）
+    const inLocked = (F, it) => { const rm = F.lv.roomAtWorld(it.x, it.z); return rm && rm.locked !== undefined && !F.lv.doors.some((d) => d.rooms && d.rooms.includes(rm.id) && d.unlocked); };
+    for (const F of g.floors) F.lv.items.forEach((it, i) => { if (it.kind === 'relic') out.push([F.index, i, it.relic, inLocked(F, it) ? 1 : 0]); });
+    out.sort((a, b) => a[3] - b[3]);
     return { list: out, altar: g.altarFloor.index };
   });
   const [rf, ri, rr] = rel.list[0];
