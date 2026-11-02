@@ -404,7 +404,7 @@ export class Game {
 
     // 逃出大門（大門在第 0 層）
     const gate = this.ground.lv.gate;
-    if (this.floorIdx === 0 && gate.open && P.pos.z > gate.z + 0.7) { if (this.mp) this.mpEscaped(); else this.win(); return; }
+    if (this.floorIdx === 0 && gate.open && !this.downed && P.pos.z > gate.z + 0.7) { if (this.mp) this.mpEscaped(); else this.win(); return; }
     // 進入發電機房
     if (!this.seenGenerator) {
       const room = this.lv.roomAtWorld(P.pos.x, P.pos.z);
@@ -750,6 +750,7 @@ export class Game {
     if (this.ritual || this.ritualDone) return;
     const AF = this.altarFloor, a = AF.lv.altar, gh = this.ghost, A = this.audio;
     this.ritual = { t: 0, step: 0 };
+    this.ritualStarted = true;
     gh.banish();
     A.setChase(0);
     const here = this.F === AF;
@@ -943,9 +944,11 @@ export class Game {
 
   onCaught(fromLocker, who) {
     const P = this.player;
+    if (this.ghost && this.ghost.banished) return;
     // 房主的女鬼抓到別人：通知那個人，她過一下就消失
     if (this.mp && who && who !== P) {
       this.mp.send({ t: 'caught', s: who.slot, lk: fromLocker ? 1 : 0 });
+      who.caughtAt = this.time;
       this.mpGhostRetreat(1.6);
       return;
     }
@@ -985,6 +988,12 @@ export class Game {
     P.crouching = false;
     this.cranking = null;
     this.reviving = null;
+    // 正在鑽進鐵櫃的途中被抓：取消動畫，停在櫃子外面
+    if (P.hideAnim) {
+      const l = P.hideAnim.locker;
+      P.hideAnim = null;
+      if (l) { l.target = 0; l.dirty = true; P.pos.x = l.exitX; P.pos.z = l.exitZ; }
+    }
     if (P.hiding) {
       const l = P.hiding;
       l.hideDoor = false; l.target = 1.2; l.dirty = true;
@@ -1005,9 +1014,12 @@ export class Game {
   }
   updateDowned(dt) {
     const D = this.downed;
+    // 她已經安息了：沒有人會再被帶走，自己站起來
+    if (this.ghost.banished) { this.mpSelfRevive(); return; }
     D.t -= dt;
-    this.ui.showDowned(true, D.t);
-    if (D.t <= 0) this.mpTakeDowned();
+    this.ui.showDowned(true, Math.max(0, D.t));
+    // 由房主決定什麼時候被帶走（'taken'）；自己這邊的計時只是房主沒回應時的保險
+    if (D.t <= -4 || (this.mp.isHost && D.t <= 0)) this.mpTakeDowned();
   }
   // 倒地的人被帶走（30 秒沒人扶、或所有人都倒了）：照原本被抓的流程播完再觀戰
   mpTakeDowned() {
@@ -1016,6 +1028,15 @@ export class Game {
     this.player.downed = false;
     this.ui.showDowned(false);
     this.startDying(true);
+  }
+  mpSelfRevive() {
+    const P = this.player;
+    this.downed = null;
+    P.downed = false;
+    this.damage = 0;
+    this.ui.showDowned(false);
+    this.ui.hint('她不見了……你撐著牆站了起來。', 4);
+    this.mp.sendT = 0;
   }
   mpApplyRevived(s, by) {
     if (!Number.isInteger(s) || !Number.isInteger(by)) return;
@@ -1107,6 +1128,7 @@ export class Game {
   // 房主每格：倒地超過 30 秒的人帶走、全部的人都倒了就一起帶走；決定每一道鐵捲門開或關
   mpHostCoop(dt) {
     const me = this.mp.mySlot, alive = [];
+    if (this.ghost.banished) { this.mpHostShutters(dt, [...this.remotes.values()].filter((r) => r.a === 0).length + (this.mpStatus === 0 ? 1 : 0)); return; }
     if (this.mpStatus === 0) alive.push({ slot: me, down: !!this.downed || !!this.dying });
     for (const r of this.remotes.values()) {
       if (r.a !== 0) continue;
@@ -1122,6 +1144,12 @@ export class Game {
     }
     this.mpHostShutters(dt, alive.length);
   }
+  mpSomeoneIn(F, cells) {
+    const W = F.lv.W, cell = (x, z) => Math.floor(z / CELL) * W + Math.floor(x / CELL);
+    if (this.mpStatus === 0 && this.floorIdx === F.index && cells.has(cell(this.player.pos.x, this.player.pos.z))) return true;
+    for (const r of this.remotes.values()) if (r.a === 0 && r.floor === F.index && cells.has(cell(r.tx, r.tz))) return true;
+    return false;
+  }
   mpTake(r) {
     if (r.takenAt != null && this.time - r.takenAt < 2) return;
     r.takenAt = this.time;
@@ -1136,7 +1164,9 @@ export class Game {
         const c = sh.crank;
         let want = 0;
         const j = sh.jammed || jam;
-        if (j) want = 1;
+        // 死路那一側有人（站著或倒地）：門一直開著，免得被關在裡面（把手只在外面）
+        const inside = sh.cut && this.mpSomeoneIn(F, sh.cut);
+        if (j || inside) want = 1;
         else {
           if (this.cranking && this.cranking.s === sh && this.cranking.f === F.index && this.mpActor(me) && Math.hypot(this.player.pos.x - c.useX, this.player.pos.z - c.useZ) < 1.8) want = 1;
           for (const r of this.remotes.values()) {
@@ -1271,7 +1301,7 @@ export class Game {
     this.ui.prompt('');
     this.ui.fade(1, 1.6);
     const allNotes = this.notesRead.size === NOTES.length;
-    const text = this.ritualDone
+    const text = this.ritualStarted
       ? '三件遺物回到了搖籃裡。你走出大門的時候，身後的燈一盞一盞熄滅，最後一盞底下，一個穿護理服的女人抱著孩子，輕輕哼著那首搖籃曲。她終於找到了，也終於可以休息了。'
       : allNotes
       ? '你讀完了所有的紀錄。走出大門時，你聽見身後傳來孩子的笑聲，和一聲很輕的「謝謝」。她終於找到了。'
@@ -1281,7 +1311,7 @@ export class Game {
     const id = setTimeout(() => {
       this.timers.delete(id);
       if (this.disposed || this.app.game !== this) return;
-      this.ui.showEnd(true, rows, text, this.ritualDone ? '安息' : '');
+      this.ui.showEnd(true, rows, text, this.ritualStarted ? '安息' : '');
       this.ui.fade(0, 0.8);
       this.app.onGameOver(true);
     }, 1700);
@@ -1365,7 +1395,7 @@ export class Game {
       ['保險絲', `${this.fusesInserted}/3`],
       ['讀過的紀錄', `${this.notesRead.size}/${NOTES.length}`],
       ['放回的遺物', `${this.relicsPlaced.size}/3`],
-      ...(this.ritualDone ? [['結局', '安息']] : []),
+      ...(this.ritualStarted ? [['結局', '安息']] : []),
       ['用閃光定住她', `${this.stats.stuns} 次`],
       ['拍到她的臉', `${this.stats.photos} 張`],
       ['躲進鐵櫃', `${this.stats.hides} 次`],
@@ -1506,7 +1536,9 @@ export class Game {
     r.ck = s.ck;
     // 倒地：告訴大家去扶他
     // 剛被扶起來的那一下，路上還有幾個舊的「倒地」狀態：忽略
-    const down = !!s.dn && s.a === 0 && !(r.revivedAt != null && this.time - r.revivedAt < 1.5);
+    let down = !!s.dn && s.a === 0 && !(r.revivedAt != null && this.time - r.revivedAt < 1.5);
+    // 房主只承認真的被她抓到的人倒地（剛送出 'caught' 的那幾秒內，或已經倒著的人）
+    if (down && this.mp.isHost && !r.downed && !(r.caughtAt != null && this.time - r.caughtAt < 6)) down = false;
     if (down && !r.downed) this.ui.subtitle(`${this.mp.slotName(slot)} 倒下了！快去扶他起來（站到旁邊${this.input.touchMode ? '按住「互動」' : '按住 E'}）`, 4);
     r.downed = down;
     if (s.a !== r.a && r.a === 0) {
@@ -1604,7 +1636,7 @@ export class Game {
     const d = F && Number.isInteger(m.i) ? F.lv.doors[m.i] : null;
     if (!d || !Number.isFinite(m.tg) || !Number.isFinite(m.sp)) return null;
     // 鎖著的門不能被開（不可信任的輸入）
-    if (d.lock >= 0 && !d.unlocked && m.tg > 0.3) return null;
+    if (d.lock >= 0 && !d.unlocked && Math.abs(m.tg) > 0.3) return null;
     m = { t: 'door', f: F.index, i: m.i, tg: Math.max(-1.7, Math.min(1.7, m.tg)), sp: Math.max(0.5, Math.min(12, m.sp)) };
     const was = d.target;
     this.mpApplying = true;
@@ -1634,7 +1666,9 @@ export class Game {
     const it = F && Number.isInteger(i) ? F.lv.items[i] : null;
     if (!it || it.taken) return;
     const r = this.remotes.get(slot);
-    if (slot === this.mp.mySlot ? this.mpStatus !== 0 || this.dying : !r || r.a !== 0) return;
+    if (slot === this.mp.mySlot ? this.mpStatus !== 0 || this.dying || this.downed : !r || r.a !== 0 || r.downed || r.floor !== F.index) return;
+    // 要站在道具旁邊才撿得到（不可信任的輸入）
+    if (slot !== this.mp.mySlot && Math.hypot(r.tx - it.x, r.tz - it.z) > 4) return;
     // 保險絲、門禁卡、遺物：記下誰帶著（被抓走或離開時放回原處；插保險絲、刷卡、放遺物時核對）
     if (it.kind === 'fuse' || it.kind === 'keycard' || it.kind === 'relic') this.mp.carry(slot, { f: F.index, i, k: it.kind, c: it.color, r: it.relic });
     this.mp.send({ t: 'took', f: F.index, i, by: slot });
@@ -1885,17 +1919,19 @@ export class Game {
     document.getElementById('specBar').hidden = true;
     const rows = res.map((p) => [(p.n || this.mp.slotName(p.s)) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
     rows.push(...this.statRows());
-    const text = anyOut && this.ritualDone
+    const text = anyOut && this.ritualStarted
       ? '三件遺物回到了搖籃裡，她終於找到了她的孩子。走出大門時，身後的燈一盞一盞熄滅——這一次，醫院裡再也沒有人哼歌了。'
       : anyOut
       ? (res.every((p) => p.a === 2) ? '所有人都活著走出了大門。身後的燈一盞一盞熄滅。' : '有人逃了出來。被留下的人，再也沒有出來過。')
       : '沒有人走出那扇門。隔天早上，警衛只找到幾台還在錄影的攝影機。';
-    this.ui.showEnd(this.mpStatus === 2, rows, text, anyOut && this.ritualDone ? '安息' : '');
+    this.ui.showEnd(this.mpStatus === 2, rows, text, anyOut && this.ritualStarted ? '安息' : '');
     this.app.onGameOver(this.mpStatus === 2);
   }
 
   mpHostLost() {
     if (this.over) return;
+    this.ui.showDowned(false);
+    this.ui.setHold(0);
     document.getElementById('specBar').hidden = true;
     this.over = true;
     this.audio.stopAll();

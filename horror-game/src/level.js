@@ -1039,7 +1039,7 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null, attempt = 0) {
       const wx = dx ? (dx > 0 ? (kx + 1) * CELL - HT : kx * CELL + HT) : kcx;
       const wz = dy ? (dy > 0 ? (ky + 1) * CELL - HT : ky * CELL + HT) : kcz;
       const cr = { x: wx, z: wz, rot: Math.atan2(-dx, -dy), useX: wx - dx * 0.75, useZ: wz - dy * 0.75 };
-      lv.shutters.push({ id: lv.shutters.length, x, y, axis: ax ? 'x' : 'z', cx, cz, box, crank: cr, gated: !!gated, open: 0, target: 0, jammed: false });
+      lv.shutters.push({ id: lv.shutters.length, x, y, axis: ax ? 'x' : 'z', cx, cz, box, crank: cr, gated: !!gated, cut: gated ? new Set(gated) : null, open: 0, target: 0, jammed: false });
       lv.shutterCells.add(idx(x, y));
       // 家具與道具不要擋在鐵捲門底下或把手前面
       lv.blockers.push({ ...cellBounds(x, y), clearance: true });

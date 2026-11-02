@@ -46,6 +46,36 @@ for (let i = 0; i < N; i++) {
   pages.push(page);
 }
 const [host, ...clients] = pages;
+
+// 房主只讓站在道具旁邊（同一層、4 公尺內）的人撿：先把玩家移到道具旁邊、等房主看到，再撿；撿到後回到原處
+async function moveNear(page, f, i) {
+  const slot = await page.evaluate(([f, i]) => {
+    const A = window.__SW, g = A.game, P = g.player, it = g.floors[f].lv.items[i];
+    g.pickBack = { f: g.floorIdx, x: P.pos.x, z: P.pos.z };
+    if (g.floorIdx !== f) g.setFloor(f);
+    P.pos.x = it.x; P.pos.z = it.z; g.mp.sendT = 0;
+    g.mp.tick(0.016);
+    return g.mp.mySlot;
+  }, [f, i]);
+  try {
+    await until(pages[0], ([s, f, i]) => { const g = window.__SW.game, r = g.remotes.get(s), it = g.floors[f].lv.items[i]; return r && r.floor === f && Math.hypot(r.tx - it.x, r.tz - it.z) < 1.5; }, [slot, f, i]);
+  } catch (e) {
+    log('moveNear', JSON.stringify(await pages[0].evaluate(([s, f, i]) => { const g = window.__SW.game, r = g.remotes.get(s), it = g.floors[f].lv.items[i]; return { r: r && [r.floor, r.tx, r.tz], it: [it.x, it.z, it.kind, it.taken] }; }, [slot, f, i])), JSON.stringify(await page.evaluate(() => { const g = window.__SW.game; return [g.floorIdx, g.player.pos.x, g.player.pos.z]; })));
+    throw e;
+  }
+}
+async function moveBack(page) {
+  const b = await page.evaluate(() => { const g = window.__SW.game, B = g.pickBack, P = g.player; if (!B) return null; if (g.floorIdx !== B.f) g.setFloor(B.f); P.pos.x = B.x; P.pos.z = B.z; g.pickBack = null; g.mp.sendT = 0; g.mp.tick(0.016); return { s: g.mp.mySlot, ...B }; });
+  // 等房主看到他回到原處（之後的刷卡、放遺物都會核對距離）
+  if (b) await until(pages[0], (b) => { const r = window.__SW.game.remotes.get(b.s); return r && r.floor === b.f && Math.hypot(r.tx - b.x, r.tz - b.z) < 0.6; }, b);
+}
+async function pickNear(page, f, i) {
+  await moveNear(page, f, i);
+  await page.evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, [f, i]);
+  try { await until(page, ([f, i]) => window.__SW.game.floors[f].lv.items[i].taken, [f, i]); } catch (e) { log('pick not granted', f, i); throw e; }
+  await moveBack(page);
+}
+
 const t0 = Date.now();
 try {
   // 大廳
@@ -130,10 +160,13 @@ try {
 
   // 道具：兩個人搶同一個電池，只有一個拿到
   const itemI = await host.evaluate(() => window.__SW.game.lv.items.findIndex((it) => it.kind === 'battery' && !it.taken));
+  const itemF = await host.evaluate(() => window.__SW.game.floorIdx);
+  for (const c of clients) await moveNear(c, itemF, itemI);
   await Promise.all(clients.map((c) => c.evaluate((i) => { const g = window.__SW.game; g.player.battery = 0.2; g.mpRequestPick(g.lv.items[i]); }, itemI)));
   for (const p of pages) await until(p, (i) => window.__SW.game.lv.items[i].taken, itemI);
   await host.waitForTimeout(500);
   const bats = await Promise.all(clients.map((c) => c.evaluate(() => window.__SW.game.player.battery)));
+  for (const c of clients) await moveBack(c);
   check(bats.filter((b) => b > 0.5).length === 1, `item taken once (batteries ${bats.map((b) => b.toFixed(2))})`);
 
   // 保險絲
@@ -144,7 +177,7 @@ try {
   // 保險絲分散在各層：找任何一層還沒被撿的
   const findFuse = () => host.evaluate(() => { for (const F of window.__SW.game.floors) { const i = F.lv.items.findIndex((it) => it.kind === 'fuse' && !it.taken); if (i >= 0) return [F.index, i]; } return null; });
   const f0 = await findFuse();
-  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, f0);
+  await pickNear(clients[0], ...f0);
   await until(clients[0], () => window.__SW.game.player.fuses === 1);
   await clients[0].evaluate(() => window.__SW.game.useFusebox());
   for (const p of pages) await until(p, () => window.__SW.game.fusesInserted === 1);
@@ -175,7 +208,7 @@ try {
   await host.waitForTimeout(500);
   check(await host.evaluate((i) => window.__SW.game.floors[0].lv.doors[i].target < 0.3, lk.i), 'locked door ignores door-open messages');
   await clients[0].evaluate(() => { window.__SW.game.player.keys = []; });
-  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, lk.card);
+  await pickNear(clients[0], ...lk.card);
   await until(clients[0], (c) => window.__SW.game.player.keys.includes(c), lk.color);
   await until(clients[0], () => !document.getElementById('keyStat').hidden);
   await clients[0].evaluate((d) => window.__SW.game.mp.send({ t: 'unlock', f: 0, i: d.i }), lk);
@@ -189,7 +222,7 @@ try {
     return { list: out, altar: g.altarFloor.index };
   });
   const [rf, ri, rr] = rel.list[0];
-  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, [rf, ri]);
+  await pickNear(clients[0], ...[rf, ri]);
   await until(clients[0], (r) => window.__SW.game.player.relics.includes(r), rr);
   await clients[0].evaluate(() => { const A = window.__SW, g = A.game; if (g.ui.noteOpen) { g.ui.closeNote(); g.player.locked = false; } });
   // 走樓梯到搖籃那一層，站到搖籃前
@@ -310,7 +343,7 @@ try {
 
   // 玩家 2 撿起一個保險絲，等一下被抓走時它要回到原處
   const fuseI = await findFuse();
-  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, fuseI);
+  await pickNear(clients[0], ...fuseI);
   for (const p of pages) await until(p, ([f, i]) => window.__SW.game.floors[f].lv.items[i].taken, fuseI);
   check(await clients[0].evaluate(() => window.__SW.game.player.fuses === 1), 'fuse picked by player 2');
   // 惡意資料：角度給超大的數字不能讓房主卡死
@@ -323,8 +356,9 @@ try {
   await host.evaluate((s) => { const g = window.__SW.game; g.onCaught(false, g.remotes.get(s)); }, s1);
   await until(clients[0], () => !!window.__SW.game.downed);
   await until(host, (s) => window.__SW.game.remotes.get(s).downed, s1);
-  // 倒數快轉到最後一秒
-  await clients[0].evaluate(() => { window.__SW.game.downed.t = 0.6; });
+  // 倒數快轉：房主那邊的 30 秒到了 → 房主送 'taken'（由房主決定，玩家自己的計時只是保險）
+  await host.evaluate((s) => { const g = window.__SW.game, r = g.remotes.get(s); r.downSince = g.time - 40; }, s1);
+  await until(clients[0], () => !window.__SW.game.downed);
   await clients[0].evaluate(() => { const A = window.__SW, g = A.game; for (let i = 0; i < 80 && g.mpStatus === 0; i++) g.update(0.05, A.emptyInput()); });
   await until(clients[0], () => window.__SW.game.mpStatus === 1, null, 15000);
   await until(host, (s) => window.__SW.game.remotes.get(s).a === 1, s1);

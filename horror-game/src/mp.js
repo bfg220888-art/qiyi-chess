@@ -433,7 +433,7 @@ export class MP {
         break;
       // 被抓
       case 'caught':
-        if (!this.isHost && m.s === this.mySlot && g.mpStatus === 0 && !g.dying && !g.over) g.onCaught(!!m.lk, g.player);
+        if (!this.isHost && m.s === this.mySlot && g.mpStatus === 0 && !g.dying && !g.downed && !g.over) g.onCaught(!!m.lk, g.player);
         break;
       // 音效、世界事件
       case 'sfx':
