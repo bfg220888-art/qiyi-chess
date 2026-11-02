@@ -26,7 +26,7 @@ function cleanState(m) {
     ck: Number.isInteger(m.ck) && m.ck >= 0 && m.ck < 16 ? m.ck : -1, // 正在轉哪一道鐵捲門的把手（那一層的索引）
   };
 }
-const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock', 'relic', 'rv']);
+const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock', 'relic', 'rv', 'sync']);
 
 export class MP {
   constructor(app) {
@@ -206,8 +206,11 @@ export class MP {
         case 'ready': {
           const p = this.players.find((q) => q.id === from);
           if (p) p.ready = true;
-          // 已經開始了才載入完：直接讓他開始
-          if (p && this.began) this.net.send(from, { t: 'go' });
+          // 已經開始了才載入完：直接讓他開始，並送上現在的世界狀態（開了的鎖、拿走的道具、保險絲、遺物、門、鐵捲門……）
+          if (p && this.began) {
+            this.net.send(from, { t: 'go' });
+            if (g) this.net.send(from, g.mpSnapshot());
+          }
           this.checkAllReady();
           return;
         }
@@ -254,6 +257,8 @@ export class MP {
     this.endSent = false;
     // 載入期間離開的人
     for (const slot of [...game.remotes.keys()]) if (!this.players.some((p) => p.slot === slot)) game.mpRemoveRemote(slot);
+    // 玩家：載入完才接上遊戲，這之前房主送的世界事件都收不到 → 跟房主要一份現在的世界狀態
+    if (!this.isHost && this.net) this.net.broadcast({ t: 'sync' });
   }
 
   // 房主：誰身上帶著哪些重要道具（{ f: 樓層, i: 道具索引, k: 種類, c: 門禁卡顏色, r: 遺物 }；被抓走、離開時要放回原處）
@@ -360,6 +365,13 @@ export class MP {
         break;
       case 'gh':
         if (!this.isHost) g.ghost.applyNet(m);
+        break;
+      // 晚到的人：房主送一份現在的世界狀態（只在玩家這邊套用，每一項都核對）
+      case 'sync':
+        if (this.isHost && slot >= 0) this.net.send(from, g.mpSnapshot());
+        break;
+      case 'snap':
+        if (!this.isHost) g.mpApplySnapshot(m);
         break;
       // 門
       case 'door': {
@@ -470,20 +482,46 @@ export function makeFallbackAvatar(slot) {
   legs.position.y = 0.48;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 12), skin);
   head.position.y = 1.62;
-  root.add(body, legs, head);
+  // 倒地爬行用的手臂（平常藏起來）
+  const arms = [1, -1].map((sx) => {
+    const a = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.45, 4, 8), mat);
+    a.visible = false;
+    a.userData.sx = sx;
+    return a;
+  });
+  root.add(body, legs, head, ...arms);
   const lightSocket = new THREE.Object3D();
   lightSocket.position.set(0.22, 1.25, 0.25);
   root.add(lightSocket);
   root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-  let t = 0;
+  let t = 0, ct = 0;
   return {
     root, lightSocket,
-    update(dt, { speed = 0, crouch = false, dead = false } = {}) {
+    update(dt, { speed = 0, crouch = false, dead = false, crawl = false } = {}) {
       t += dt * (1 + speed * 2);
-      body.position.y = (crouch ? 0.85 : 1.15) + Math.abs(Math.sin(t * 3)) * 0.02 * Math.min(1, speed);
-      head.position.y = crouch ? 1.3 : 1.62;
-      legs.scale.y = crouch ? 0.6 : 1;
       root.rotation.z = dead ? Math.PI / 2 : 0;
+      for (const a of arms) a.visible = crawl;
+      this.crawlW = crawl ? 1 : 0;
+      if (crawl) {
+        // 趴在地上（頭朝前）：雙手往前交替划，不動時停著
+        if (speed > 0.05) ct += dt * speed * 6;
+        body.rotation.x = legs.rotation.x = Math.PI / 2;
+        body.position.set(0, 0.22, 0.05);
+        legs.position.set(0, 0.16, -0.6);
+        legs.scale.y = 1;
+        head.position.set(0, 0.3, 0.55);
+        for (const a of arms) {
+          const k = 0.5 + 0.5 * Math.sin(ct + (a.userData.sx > 0 ? 0 : Math.PI));
+          a.rotation.set(Math.PI / 2 - 0.25, 0, 0);
+          a.position.set(a.userData.sx * 0.24, 0.15, 0.45 + 0.25 * k);
+        }
+        return;
+      }
+      body.rotation.x = legs.rotation.x = 0;
+      body.position.set(0, (crouch ? 0.85 : 1.15) + Math.abs(Math.sin(t * 3)) * 0.02 * Math.min(1, speed), 0);
+      legs.position.set(0, 0.48, 0);
+      head.position.set(0, crouch ? 1.3 : 1.62, 0);
+      legs.scale.y = crouch ? 0.6 : 1;
     },
     setFlashlight() {},
     dispose() { root.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); mat.dispose(); skin.dispose(); dark.dispose(); },

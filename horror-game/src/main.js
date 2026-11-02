@@ -45,6 +45,8 @@ class App {
     const defaults = {
       volume: 0.85, music: 0.8, sfx: 1, herCue: 'std', brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
       quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
+      // 畫面與舒適度
+      fov: 70, headBob: true, gamma: 1, subScale: 1,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
@@ -53,6 +55,8 @@ class App {
     this.settings.invertY = this.settings.invertY === true;
     this.settings.showFps = this.settings.showFps === true;
     this.settings.aa = this.settings.aa !== false;
+    clampNum('fov', 60, 100); clampNum('gamma', 0.7, 1.6); clampNum('subScale', 0.8, 1.6);
+    this.settings.headBob = this.settings.headBob !== false;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
     const touch = matchMedia('(pointer: coarse)').matches;
     // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
@@ -304,6 +308,22 @@ class App {
     bindCheck('sInvert', 'invertY');
     bindCheck('sAA', 'aa', () => { if (this.game && this.game.post) this.game.post.setAA(this.settings.aa); });
     bindCheck('sFps', 'showFps', () => this.ui.setFps(this.settings.showFps && this.state === 'playing'));
+    // 畫面與舒適度：視野、頭部晃動、畫面亮度（伽瑪）、字幕大小，全部即時套用
+    const showVal = (id, text) => { const o = $(id); if (o) o.textContent = text; };
+    const applyView = () => {
+      const S = this.settings;
+      showVal('sFovVal', `${Math.round(S.fov)}°`);
+      showVal('sGammaVal', S.gamma.toFixed(2));
+      showVal('sSubVal', `${Math.round(S.subScale * 100)}%`);
+      document.documentElement.style.setProperty('--sub-scale', String(S.subScale));
+      if (this.game && this.game.post) this.game.post.u.uGamma.value = S.gamma;
+    };
+    bindRange('sFov', 'fov', applyView);
+    bindRange('sGamma', 'gamma', applyView);
+    bindRange('sSub', 'subScale', applyView);
+    bindCheck('sBob', 'headBob');
+    this.applyView = applyView;
+    applyView();
     // 鍵盤操作選單
     addEventListener('keydown', (e) => {
       if (this.state === 'menu' && !$('menu').hidden && (e.code === 'Enter') && $('help').hidden && $('settings').hidden && $('mpPanel').hidden) this.startGame();
@@ -480,6 +500,7 @@ class App {
       return;
     }
     this.game = game;
+    this.applyView();
     $('loading').hidden = true;
     const begin = () => {
       if (this.game !== game) return;

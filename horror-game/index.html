@@ -239,6 +239,15 @@
     <label class="row" for="sTouch">觸控靈敏度 <input id="sTouch" type="range" min="0.2" max="3" step="0.05"></label>
     <label class="row" for="sInvert">上下反轉 <input id="sInvert" type="checkbox"></label>
     <label class="row" for="sFps">顯示 FPS <input id="sFps" type="checkbox"></label>
+    <!-- 畫面與舒適度（獨立一區） -->
+    <div class="settings-block" id="viewSettings">
+      <h3>畫面與舒適度</h3>
+      <label class="row" for="sFov"><span>視野 <output id="sFovVal" class="val"></output></span> <input id="sFov" type="range" min="60" max="100" step="1"></label>
+      <label class="row" for="sBob">頭部晃動 <input id="sBob" type="checkbox"></label>
+      <label class="row" for="sGamma"><span>畫面亮度（暗部） <output id="sGammaVal" class="val"></output></span> <input id="sGamma" type="range" min="0.7" max="1.6" step="0.05"></label>
+      <label class="row" for="sSub"><span>字幕大小 <output id="sSubVal" class="val"></output></span> <input id="sSub" type="range" min="0.8" max="1.6" step="0.05"></label>
+      <p class="note-small">容易頭暈時：關掉頭部晃動、把視野調寬。看不清楚暗處時調高畫面亮度（「亮度」是整體曝光，這個只提亮暗部）。</p>
+    </div>
     <button id="btnSettingsBack" class="btn primary" type="button">完成</button>
   </div>
 </section>

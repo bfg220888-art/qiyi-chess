@@ -567,9 +567,15 @@ await run('floors', { viewport: { width: 960, height: 540 } }, { quality: 'low',
     log('arrived', JSON.stringify(st));
     assert(st.cur === to && st.pf === to && st.vis.filter(Boolean).length === 1 && st.vis[to] && !st.locked && !st.stair && st.inside, 'switched to floor ' + to);
     seen.add(to);
-    const w0 = await sim(page, 0.05);
-    const w1 = await sim(page, 1.5, { my: 1 });
-    assert(Math.hypot(w1.x - w0.x, w1.z - w0.z) > 1, 'can walk on the new floor');
+    // 樓梯間裡可能有兩座樓梯並排：抵達時正前方是另一座樓梯，就換個方向走
+    let walked = 0;
+    for (const dir of [{ my: 1 }, { mx: 1 }, { mx: -1 }, { my: -1 }]) {
+      const w0 = await sim(page, 0.05);
+      const w1 = await sim(page, 1.5, dir);
+      walked = Math.max(walked, Math.hypot(w1.x - w0.x, w1.z - w0.z));
+      if (walked > 1) break;
+    }
+    assert(walked > 1, 'can walk on the new floor');
     const r = await render(page);
     log(`render floor ${to}`, JSON.stringify(r));
     await shot(page, `f${hop}-floor${to}`);
@@ -749,6 +755,43 @@ await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, h
   await shot(page, 'p1-menu');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   assert(!overflow, 'no horizontal overflow');
+});
+
+// 設定：畫面與舒適度（視野、頭部晃動、畫面亮度、字幕大小）會存起來，進遊戲後即時套用
+await run('settings', { viewport: { width: 1100, height: 900 } }, { quality: 'low', theme: 'ward' }, async (page) => {
+  await page.goto(base);
+  await page.waitForSelector('#btnStart');
+  await page.click('#btnSettings');
+  await page.waitForSelector('#viewSettings', { state: 'visible' });
+  const setRange = (id, v) => page.evaluate(([id, v]) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, [id, v]);
+  await setRange('sFov', 88);
+  await setRange('sGamma', 1.3);
+  await setRange('sSub', 1.4);
+  await page.click('#sBob');
+  await page.evaluate(() => document.getElementById('viewSettings').scrollIntoView());
+  await shot(page, 'settings-panel');
+  const saved = await page.evaluate(() => ({ ...JSON.parse(localStorage.getItem('silentward.settings')), label: document.getElementById('sFovVal').textContent }));
+  log('saved', JSON.stringify({ fov: saved.fov, gamma: saved.gamma, sub: saved.subScale, bob: saved.headBob, label: saved.label }));
+  assert(saved.fov === 88 && saved.gamma === 1.3 && saved.subScale === 1.4 && saved.headBob === false, 'view settings persisted');
+  const scale = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--sub-scale').trim());
+  assert(scale === '1.4', 'subtitle scale applied live ' + scale);
+  await page.click('#btnSettingsBack');
+  // 不重新載入頁面（測試的初始化腳本會把設定蓋回去）：直接開始
+  await page.click('#btnStart');
+  await page.waitForFunction(() => window.__SW && window.__SW.state === 'playing', null, { timeout: 180000 });
+  await page.evaluate(() => { window.__SW.paused = true; });
+  const v = await page.evaluate(() => {
+    const A = window.__SW, g = A.game, P = g.player;
+    // 走一段路：關掉頭部晃動時鏡頭高度不跟著步伐上下
+    const ys = [];
+    for (let i = 0; i < 30; i++) { g.update(0.05, { ...A.emptyInput(), my: 1 }); ys.push(P.camera.position.y); }
+    return { fov: P.camera.fov, gamma: g.post.u.uGamma.value, spread: Math.max(...ys.slice(10)) - Math.min(...ys.slice(10)), roll: P.camera.rotation.z };
+  });
+  log('in game', JSON.stringify(v));
+  assert(Math.abs(v.fov - 88) < 1.5 && v.gamma === 1.3 && v.spread < 0.01 && v.roll === 0, 'view settings applied in game');
+  // 遊戲中改視野：下一格就套用
+  await page.evaluate(() => { const A = window.__SW; A.settings.fov = 64; for (let i = 0; i < 30; i++) A.game.update(0.05, A.emptyInput()); });
+  assert(Math.abs(await page.evaluate(() => window.__SW.game.player.camera.fov) - 64) < 1, 'fov applies live');
 });
 
 await browser.close();

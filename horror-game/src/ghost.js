@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { CELL } from './config.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { sightClear } from './nav.js';
+import { sightClear, pushOut, SHUTTER_PASS } from './nav.js';
 
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
@@ -373,10 +373,13 @@ export class Ghost {
 
   // 找一個離玩家指定距離、看不到玩家的位置
   findSpot(minD, maxD, needHidden = true) {
-    const g = this.game, lv = this.lv, nav = this.nav, pp = (this.target || g.player).pos;
+    const g = this.game, lv = this.lv, nav = this.nav, tg = this.target || g.player, pp = tg.pos;
+    // 只挑走得到目標的地方（目標在別層時：走得到樓梯口 / 大廳的地方），不會瞬移進鎖著的房間或關著的鐵捲門後面
+    const home = Ghost.floorOf(tg) === this.floor ? pp : (lv.stairs[0] ? lv.stairs[0].use : lv.spawn);
+    const want = nav.compAt(home.x, home.z);
     for (let t = 0; t < 80; t++) {
       const x = Math.random() * lv.W * CELL, z = Math.random() * lv.H * CELL;
-      if (!nav.isFree(x, z)) continue;
+      if (!nav.isFree(x, z) || (want >= 0 && nav.compAt(x, z) !== want)) continue;
       const d = Math.hypot(x - pp.x, z - pp.z);
       if (d < minD || d > maxD) continue;
       if (needHidden && sightClear(lv, x, z, pp.x, pp.z)) continue;
@@ -388,8 +391,24 @@ export class Ghost {
 
   teleportNear(minD, maxD) {
     const s = this.findSpot(minD, maxD);
-    if (s) { this.pos.set(s.x, 0, s.z); this.path = null; return true; }
+    if (s) { this.pos.set(s.x, 0, s.z); this.path = null; this.failN = 0; return true; }
     return false;
+  }
+
+  // 她的尋路網格變了（開了鎖、鐵捲門開或關）：重新規劃路線
+  navChanged() {
+    this.path = null;
+    this.travelLink = null;
+  }
+  // 關著的鐵捲門：跟玩家一樣被推到她原本那一側（不會卡在裡面、也不會穿過去）
+  keepOutOfShutters() {
+    for (const sh of this.lv.shutters || []) {
+      if (sh.open >= SHUTTER_PASS) continue;
+      const b = sh.box;
+      if (this.pos.x < b.minX - 0.6 || this.pos.x > b.maxX + 0.6 || this.pos.z < b.minZ - 0.6 || this.pos.z > b.maxZ + 0.6) continue;
+      const before = this.pos.x + this.pos.z;
+      if (pushOut(this.pos, 0.3, b) && Math.abs(this.pos.x + this.pos.z - before) > 1e-6) this.path = null;
+    }
   }
 
   hearNoise(x, z, radius, kind = '', floor = this.floor) {
@@ -450,9 +469,12 @@ export class Ghost {
   }
 
   goTo(x, z) {
-    const p = this.nav.findPath(this.pos.x, this.pos.z, x, z);
+    // 目標在另一個連通區塊（鎖著的房間、關著的鐵捲門另一邊沒有別的路）：不用跑 A* 也知道走不到
+    const nav = this.nav, c = nav.base ? nav.compAt(this.pos.x, this.pos.z) : -1;
+    const p = c >= 0 && nav.compAt(x, z) !== c ? null : nav.findPath(this.pos.x, this.pos.z, x, z);
     this.path = p;
     this.pathI = 0;
+    this.failN = p ? 0 : (this.failN || 0) + 1;
     return !!p;
   }
 
@@ -513,7 +535,8 @@ export class Ghost {
       this.setState('chase');
     }
 
-    const base = this.diff.ghostSpeed * (0.85 + 0.15 * this.aggression);
+    // 憤怒讓她更快，但速度最多只算到 1.6 倍憤怒（插滿保險絲又放回遺物時，普通難度發狂也不會比全力奔跑快）；感知照樣跟著憤怒變敏銳
+    const base = this.diff.ghostSpeed * (0.85 + 0.15 * Math.min(this.aggression, 1.6));
     let speed = 0;
     // 目標在別層：追逐中（或發狂時）馬上跟著走樓梯；閒晃 / 搜索一陣子之後也會換到那一層
     const busy = this.state === 'stunned' || this.state === 'kill';
@@ -529,8 +552,13 @@ export class Ghost {
           let target = null;
           if (Math.random() < 0.55 + 0.1 * this.aggression) target = this.findSpot(6, 20, false);
           if (!target || !same) {
-            const room = lv.rooms[1 + Math.floor(Math.random() * (lv.rooms.length - 1))];
-            target = { x: room.cx, z: room.cz };
+            // 隨便挑一間她走得到的房間（還鎖著的、關著的鐵捲門後面的不算）
+            const here = this.nav.compAt(this.pos.x, this.pos.z);
+            for (let t = 0; t < 8; t++) {
+              const room = lv.rooms[1 + Math.floor(Math.random() * (lv.rooms.length - 1))];
+              target = { x: room.cx, z: room.cz };
+              if (this.nav.compAt(room.cx, room.cz) === here) break;
+            }
           }
           if (!this.goTo(target.x, target.z)) this.idleT = 1;
         } else if (this.moveAlong(dt, speed)) {
@@ -589,12 +617,13 @@ export class Ghost {
           if (this.idleT > 0) { this.idleT -= dt; speed = 0; this.yaw += dt * 1.2 * Math.sin(this.stateT); break; }
           const c = this.lastKnown || { x: this.pos.x, z: this.pos.z };
           let ok = false;
+          const here = this.nav.compAt(this.pos.x, this.pos.z);
           for (let t = 0; t < 10 && !ok; t++) {
             const x = c.x + (Math.random() - 0.5) * 10, z = c.z + (Math.random() - 0.5) * 10;
-            if (this.nav.isFree(x, z)) ok = this.goTo(x, z);
+            if (this.nav.isFree(x, z) && this.nav.compAt(x, z) === here) ok = this.goTo(x, z);
           }
           this.searchN = (this.searchN || 0) + 1;
-          if (!ok) this.idleT = 1;
+          if (!ok) { this.idleT = 1; this.failN = (this.failN || 0) + 2; }
         } else if (this.moveAlong(dt, speed)) {
           this.path = null;
           this.idleT = 1.5 + Math.random() * 2;
@@ -622,6 +651,12 @@ export class Ghost {
       }
     }
     this.speed += (speed - this.speed) * Math.min(1, dt * 5);
+    this.keepOutOfShutters();
+    // 一直找不到路（被關著的鐵捲門隔開、目標在她走不到的地方）：換到走得到目標的地方，不會永遠卡住
+    if ((this.failN || 0) >= 10 && this.state !== 'kill' && this.state !== 'stunned') {
+      this.failN = 0;
+      if (!this.teleportNear(12, 40)) this.teleportNear(6, 80);
+    }
 
     // 卡住偵測
     if (this.path && speed > 0) {

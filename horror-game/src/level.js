@@ -2,7 +2,7 @@
 // 這個模組不碰 DOM / three.js，可以在 Node 裡測試。
 import { RNG } from './rng.js';
 import { CORPSE_POSES, corpseShift } from './corpse-poses.js';
-import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
+import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H, COOP_ITEMS } from './config.js';
 import { THEMES, THEME_KEYS, resolveTheme } from './themes.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
@@ -238,7 +238,16 @@ export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   count = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(count)) || 1));
   const t0 = resolveTheme(theme, seed >>> 0);
   const all = [0, 1, 2, 3, 4, 5, 6];
-  if (count === 1) return planExtras([{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts: null }], seed, opts);
+  // 多人：每個人的手電筒各自耗電、底片各自用，道具卻只有一份 → 每多一個人多放幾成（COOP_ITEMS）
+  const np = Math.max(1, Math.min(4, Math.floor(Number(opts.players)) || 1));
+  const totalOf = (kind, def, floorsK) => {
+    const base = diff && Number.isFinite(diff[kind]) ? diff[kind] : def;
+    return Math.round(base * floorsK * (1 + (COOP_ITEMS[kind] || 0) * (np - 1)));
+  };
+  if (count === 1) {
+    const counts = np > 1 ? Object.fromEntries(ITEM_KINDS.map(([kind, def]) => [kind, totalOf(kind, def, 1)])) : null;
+    return planExtras([{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts }], seed, opts);
+  }
   const rng = new RNG((seed ^ 0x3c6ef372) >>> 0);
   const keys = [t0, ...rng.shuffle(THEME_KEYS.filter((k) => k !== t0)).slice(0, count - 1)];
   // 上下順序：照主題的樓層編號由低到高
@@ -269,8 +278,7 @@ export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   for (const f of floors) f.notes.sort((a, b) => a - b);
   // 電池、瓶子、底片、鎮定劑：總量比單層多一半左右，平均分到每一層
   for (const [kind, def] of ITEM_KINDS) {
-    const base = diff && Number.isFinite(diff[kind]) ? diff[kind] : def;
-    const total = Math.round(base * (1 + 0.5 * (count - 1)));
+    const total = totalOf(kind, def, 1 + 0.5 * (count - 1));
     for (const f of floors) f.counts[kind] = Math.floor(total / count) + (f.index < total % count ? 1 : 0);
   }
   return planExtras(floors, seed, opts);

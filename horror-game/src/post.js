@@ -21,13 +21,14 @@ const HorrorShader = {
     uFade: { value: 0 },
     uFlash: { value: 0 },
     uPulse: { value: 0 },
+    uGamma: { value: 1 }, // 設定裡的「畫面亮度」（伽瑪）：1 = 原樣，大於 1 暗部變亮
   },
   vertexShader: `
     varying vec2 vUv;
     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
     uniform sampler2D tDiffuse;
-    uniform float uTime, uGrain, uVignette, uAberr, uDistort, uStatic, uRed, uDesat, uFade, uFlash, uPulse;
+    uniform float uTime, uGrain, uVignette, uAberr, uDistort, uStatic, uRed, uDesat, uFade, uFlash, uPulse, uGamma;
     uniform vec2 uRes;
     varying vec2 vUv;
     float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -112,6 +113,7 @@ const HorrorShader = {
       col *= 1.0 - uStatic * 0.15 * step(0.5, fract(uv.y * uRes.y * 0.5));
       col = mix(col, vec3(1.0), uFlash);
       col *= 1.0 - uFade;
+      col = pow(max(col, vec3(0.0)), vec3(1.0 / uGamma));
       gl_FragColor = vec4(col, 1.0);
     }`,
 };

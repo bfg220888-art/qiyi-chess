@@ -1,5 +1,6 @@
 // 多人模式裡「其他玩家」的第三人稱模型：Microsoft Rocketbox（MIT）的一男一女（見 tools/players/），
 // 穿便服、手裡拿著手電筒的探險者。動作有待機、走、跑、蹲、蹲著走、倒地，依移動速度混合。
+// 倒地（多人）時改成趴在地上爬：在待機動作上用程序化的骨頭姿勢疊出來（雙手往前伸、手腳交替慢慢划）。
 // 每個玩家編號有自己的上衣顏色（紅、藍、綠、黃），偶數號是男生、奇數號是女生。
 //
 // 座標與單位（公尺、弧度）：
@@ -318,7 +319,22 @@ export function makePlayerModel(assets, slot = 0) {
   let phase = Math.random();
   let wasDead = false;
   let armW = 1;
+  let crawlW = 0, crawlPhase = 0;
   let t = Math.random() * 10;
+  const limbs = ['L', 'R'].map((side) => ({ side, sx: side === 'L' ? 1 : -1, upper: bone(side + '_UpperArm'), fore: bone(side + '_Forearm'), hand: bone(side + '_Hand'), thigh: bone(side + '_Thigh'), calf: bone(side + '_Calf'), foot: bone(side + '_Foot') }));
+  const neck = bone('Neck'), head = bone('Head');
+  const cd = V();
+  // 爬行的骨頭方向（模型座標：+Z 前、+Y 上、+X 左），k = 這一側現在往前伸的程度 0..1
+  const crawlLimb = (L, k, w) => {
+    const sx = L.sx;
+    const lift = Math.max(0, Math.sin(k * Math.PI)) * 0.25; // 往前伸的途中手抬離地面一點
+    aimBone(L.upper, L.fore, cd.set(sx * 0.42, -0.35 + lift * 0.5, 0.35 + 0.75 * k).normalize().applyQuaternion(rq), w, tmp);
+    aimBone(L.fore, L.hand, cd.set(sx * (0.25 - 0.15 * k), -0.5 + lift, 0.45 + 0.7 * k).normalize().applyQuaternion(rq), w, tmp);
+    // 腳：另一側的手往前時這一側的膝蓋往旁邊彎上來（青蛙式），平常往後伸直
+    const bend = 1 - k;
+    aimBone(L.thigh, L.calf, cd.set(sx * (0.12 + 0.5 * bend), -0.22, -1 + 0.55 * bend).normalize().applyQuaternion(rq), w, tmp);
+    aimBone(L.calf, L.foot, cd.set(sx * (0.05 + 0.25 * bend), -0.15 + 0.25 * bend, -1).normalize().applyQuaternion(rq), w, tmp);
+  };
   const rq = Q(), up = new THREE.Vector3(0, 1, 0), fwd = V(), dUpper = V(), dFore = V(), dSide = V();
 
   const model = {
@@ -337,14 +353,15 @@ export function makePlayerModel(assets, slot = 0) {
     headWorldPosition(out = new THREE.Vector3()) {
       return bone('Head').getWorldPosition(out);
     },
-    // speed：水平移動速度（公尺 / 秒）；crouch / running / dead：狀態；pitch：視角上下（弧度，往上為正），手電筒會跟著抬高或壓低
-    update(dt, { speed = 0, crouch = false, running = false, dead = false, pitch = 0 } = {}) {
+    // speed：水平移動速度（公尺 / 秒）；crouch / running / dead / crawl（倒地爬行）：狀態；pitch：視角上下（弧度，往上為正），手電筒會跟著抬高或壓低
+    update(dt, { speed = 0, crouch = false, running = false, dead = false, crawl = false, pitch = 0 } = {}) {
       dt = clamp(dt, 0, 0.1);
       t += dt;
       speed = Math.max(0, speed);
       // --- 目標權重
       const target = Object.fromEntries(Object.keys(actions).map((k) => [k, 0]));
       if (dead) target.dead = 1;
+      else if (crawl) target.idle = 1;
       else if (crouch) {
         const k = smooth(0.05, 0.35, speed);
         target.crouch = 1 - k; target.crouchwalk = k;
@@ -371,9 +388,15 @@ export function makePlayerModel(assets, slot = 0) {
       }
       for (const k in actions) actions[k].setEffectiveWeight(sum > 0 ? weights[k] / sum : (k === 'idle' ? 1 : 0));
       mixer.update(dt);
+      // --- 倒地爬行：整個身體轉成趴著（頭朝前、臉朝下），骨盆在原點附近
+      crawlW += ((crawl && !dead ? 1 : 0) - crawlW) * Math.min(1, dt * 4);
+      if (crawlW < 1e-3) crawlW = 0;
+      model.crawlW = crawlW;
+      body.rotation.x = crawlW * Math.PI / 2;
+      body.position.set(0, crawlW * 0.16, -crawlW * 0.85);
       body.updateMatrixWorld(true);
       // --- 拿手電筒的右手：上臂往下往前、前臂朝前，燈頭跟著視角上下
-      armW += ((dead ? 0 : 1) - armW) * Math.min(1, dt * 5);
+      armW += ((dead || crawl ? 0 : 1) - armW) * Math.min(1, dt * 5);
       if (armW > 0.01) {
         root.getWorldQuaternion(rq);
         const p = clamp(pitch, -0.9, 0.7);
@@ -387,6 +410,17 @@ export function makePlayerModel(assets, slot = 0) {
         // 手電筒（小指→食指方向）朝前，手指朝下包住握把
         dSide.copy(up).applyQuaternion(rq).negate();
         alignBone(hand, beamLocal, fwd, fingerLocal, dSide, armW, tmp);
+      }
+      if (crawlW > 0.01) {
+        root.getWorldQuaternion(rq);
+        // 爬的時候手腳交替、很慢；不動時停在一手前一手後，只剩呼吸的起伏
+        if (speed > 0.05) crawlPhase = (crawlPhase + dt * clamp(speed, 0, 1.5) / 0.9) % 1;
+        const breathe = Math.sin(t * 1.7) * 0.03;
+        const c = Math.sin(crawlPhase * Math.PI * 2);
+        crawlLimb(limbs[0], clamp(0.5 + 0.5 * c + breathe, 0, 1), crawlW);
+        crawlLimb(limbs[1], clamp(0.5 - 0.5 * c - breathe, 0, 1), crawlW);
+        // 頭微微抬起來看前面
+        if (neck && head) aimBone(neck, head, cd.set(0.05 * c, 0.42 + breathe, 1).normalize().applyQuaternion(rq), crawlW * 0.8, tmp);
       }
     },
     setFlashlight(on) {

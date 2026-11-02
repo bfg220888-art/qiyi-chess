@@ -31,13 +31,14 @@ export class Director {
     const g = this.game, P = g.player, gh = g.ghost;
     const t = g.time;
     // 第一次讓她現身：先在遠處瞥見
-    if (!this.firstPeekDone && t > g.diff.grace - 12 && gh.state === 'dormant' && !gh.dormantUntil) {
+    const grace = g.grace || g.diff.grace;
+    if (!this.firstPeekDone && t > grace - 12 && gh.state === 'dormant' && !gh.dormantUntil) {
       if (this.peek(true)) this.firstPeekDone = true;
     }
     // 鬼魂登場 / 回來（多人時只有房主決定）
     const authority = !g.mp || g.mp.isHost;
     if (authority && gh.state === 'dormant' && !gh.banished) {
-      const ready = gh.dormantUntil ? t > gh.dormantUntil : (t > g.diff.grace || g.fusesInserted > 0 || P.fuses > 0);
+      const ready = gh.dormantUntil ? t > gh.dormantUntil : (t > grace || g.fusesInserted > 0 || P.fuses > 0);
       if (ready && !g.dying) {
         // 在她要找的人那一層出現
         gh.setFloor(gh.constructor.floorOf(gh.target || P));
