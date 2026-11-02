@@ -534,7 +534,8 @@ export class Ghost {
       this.setState('chase');
     }
 
-    const base = this.diff.ghostSpeed * (0.85 + 0.15 * this.aggression);
+    // 憤怒讓她更快，但速度最多只算到 1.6 倍憤怒（插滿保險絲又放回遺物時，普通難度發狂也不會比全力奔跑快）；感知照樣跟著憤怒變敏銳
+    const base = this.diff.ghostSpeed * (0.85 + 0.15 * Math.min(this.aggression, 1.6));
     let speed = 0;
     // 目標在別層：追逐中（或發狂時）馬上跟著走樓梯；閒晃 / 搜索一陣子之後也會換到那一層
     const busy = this.state === 'stunned' || this.state === 'kill';

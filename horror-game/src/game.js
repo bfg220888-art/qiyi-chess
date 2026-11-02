@@ -90,6 +90,8 @@ export class Game {
       explored: new Uint8Array(lv.W * lv.H), world: null, collision: null, ghostNav: null,
     }));
     this.floorCount = this.floors.length;
+    // 開局的安全時間：樓層越多要走的路越遠，每多一層多 25%
+    this.grace = this.diff.grace * (1 + 0.25 * (this.floorCount - 1));
     for (const F of this.floors) for (const it of F.lv.items) it.floor = F.index;
     this.ground = this.floors[0];
     this.genFloor = this.floors.find((F) => F.lv.generatorRoom) || this.ground;
@@ -1001,7 +1003,7 @@ export class Game {
       void fromLocker;
       return;
     }
-    // 多人：還有站著的隊友、這一局還沒被扶過 → 先倒地 30 秒，等人來扶
+    // 多人：還有站著的隊友、這一局還沒被扶過 → 先倒地（依難度 40 / 30 / 25 秒），等人來扶
     if (this.mp && !this.reviveUsed && this.mpTeammateUp()) { this.startDowned(); return; }
     this.startDying(fromLocker);
   }
@@ -1011,7 +1013,8 @@ export class Game {
   mpTeammateUp() { return [...this.remotes.values()].some((r) => r.a === 0 && r.got && !r.downed && !r.dying); }
   startDowned() {
     const P = this.player;
-    this.downed = { t: 30 };
+    const downT = this.diff.downed || 30;
+    this.downed = { t: downT };
     P.downed = true;
     P.crouching = false;
     this.cranking = null;
@@ -1035,7 +1038,7 @@ export class Game {
     this.damage = 1.2;
     P.shake = 1.6;
     this.post.u.uFlash.value = 0.3;
-    this.ui.showDowned(true, 30);
+    this.ui.showDowned(true, downT);
     this.ui.hint(this.input.touchMode ? '你倒下了……等隊友站到你旁邊按住「互動」扶你起來。' : '你倒下了……等隊友站到你旁邊按住 E 扶你起來。', 5);
     if (this.mp.isHost) this.mpGhostRetreat(0.4);
     this.mp.sendT = 0;
@@ -1153,7 +1156,7 @@ export class Game {
       this.mpApplyRevived(target, by);
     }
   }
-  // 房主每格：倒地超過 30 秒的人帶走、全部的人都倒了就一起帶走；決定每一道鐵捲門開或關
+  // 房主每格：倒地超過時限（依難度）的人帶走、全部的人都倒了就一起帶走；決定每一道鐵捲門開或關
   mpHostCoop(dt) {
     const me = this.mp.mySlot, alive = [];
     if (this.ghost.banished) { this.mpHostShutters(dt, [...this.remotes.values()].filter((r) => r.a === 0).length + (this.mpStatus === 0 ? 1 : 0)); return; }
@@ -1164,7 +1167,7 @@ export class Game {
       if (!r.downed) { r.downSince = null; r.takenAt = null; continue; }
       if (r.downSince == null) r.downSince = this.time;
       // 已經被扶過一次的人又倒地：直接帶走（每人每局只能被扶一次）
-      if (this.time - r.downSince > 31.5 || this.mpRevived.has(r.slot)) this.mpTake(r);
+      if (this.time - r.downSince > (this.diff.downed || 30) + 1.5 || this.mpRevived.has(r.slot)) this.mpTake(r);
     }
     if (alive.length && alive.every((p) => p.down)) {
       if (this.downed) this.mpTakeDowned();

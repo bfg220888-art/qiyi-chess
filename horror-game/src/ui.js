@@ -70,7 +70,7 @@ export class UI {
     el.hidden = !k;
     if (k) el.style.setProperty('--p', k);
   }
-  // 倒地：剩下幾秒（30 秒的倒數條）
+  // 倒地：剩下幾秒（倒數條的長度依難度：簡單 40、普通 30、惡夢 25 秒）
   showDowned(on, t = 0) {
     const el = $('downed');
     if (!el) return;
@@ -82,7 +82,8 @@ export class UI {
     this.lastDown = key;
     const touch = this.game && this.game.input.touchMode;
     $('downText').textContent = `${sec} 秒內要有隊友站到你旁邊${touch ? '按住「互動」' : '按住 E'}扶你起來`;
-    $('downBar').style.width = `${Math.min(100, (t / 30) * 100).toFixed(1)}%`;
+    const total = (this.game && this.game.diff.downed) || 30;
+    $('downBar').style.width = `${Math.min(100, (t / total) * 100).toFixed(1)}%`;
   }
   setHiding(on) {
     this.el.hide.hidden = !on;

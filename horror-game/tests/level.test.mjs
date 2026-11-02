@@ -3,7 +3,7 @@
 //   node tests/level.test.mjs [數量] [主題]
 import { generateLevel, generateHospital, E, VOID, FURN } from '../src/level.js';
 import { validateLevel, NavGrid, Collision, sightClear, lockedDoorBox } from '../src/nav.js';
-import { DIFFICULTY, GHOST_R, CELL } from '../src/config.js';
+import { DIFFICULTY, GHOST_R, CELL, COOP_ITEMS } from '../src/config.js';
 import { THEME_KEYS, THEMES, resolveTheme } from '../src/themes.js';
 
 const N = Number(process.argv[2] || 300);
@@ -213,6 +213,11 @@ for (let s = 1; s <= MS; s++) {
   try { fl = generateHospital(seed, diff, (l) => validateLevel(l), theme, count, { players: 2 + (s % 3) }); } catch (e) { fails++; console.error('shutters', s, 'FAILED:', e.message); continue; }
   const n = fl.reduce((a, l) => a + l.shutters.length, 0);
   shTotal += n;
+  // 多人：電池等道具照人數多放（每個人的手電筒各自耗電）
+  const np = 2 + (s % 3);
+  const wantBat = Math.round(diff.batteries * (1 + 0.5 * (count - 1)) * (1 + COOP_ITEMS.batteries * (np - 1)));
+  const gotBat = fl.reduce((a, l) => a + l.items.filter((i) => i.kind === 'battery' && !i.loot).length, 0);
+  assert(gotBat === wantBat, `co-op battery count ${gotBat} != ${wantBat} for ${np} players`);
   assert(n >= 1 && n <= 2, `1-2 shutters per hospital (${n})`);
   checkLocks(fl, assert);
   checkRelics(fl, assert);

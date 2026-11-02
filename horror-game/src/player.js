@@ -203,13 +203,16 @@ export class Player {
 
   applyCamera(dt, speed) {
     const c = this.camera;
-    const bobAmp = this.sprinting ? 0.055 : this.crouchNow ? 0.018 : 0.032;
+    const S = this.game.settings || {};
+    // 設定裡關掉「頭部晃動」：走路時鏡頭不上下左右晃、不側傾（呼吸的微晃也減到很小）
+    const bobOn = S.headBob !== false;
+    const bobAmp = !bobOn ? 0 : this.sprinting ? 0.055 : this.crouchNow ? 0.018 : 0.032;
     const moving = Math.min(1, speed / 2.5);
     const by = Math.sin(this.bobPhase * 2) * bobAmp * moving;
     const bx = Math.cos(this.bobPhase) * bobAmp * 0.6 * moving;
     // 呼吸般的微晃
     const t = this.game.time;
-    const idle = Math.sin(t * 1.3) * 0.006;
+    const idle = Math.sin(t * 1.3) * (bobOn ? 0.006 : 0.002);
     const sh = this.shake;
     this.shake = Math.max(0, this.shake - dt * 1.5);
     const sx = (Math.random() - 0.5) * sh * 0.06, syy = (Math.random() - 0.5) * sh * 0.06;
@@ -217,8 +220,10 @@ export class Player {
       const r = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
       c.position.set(this.pos.x + r.x * bx, this.eye + by + idle, this.pos.z + r.z * bx);
     }
-    c.rotation.set(this.pitch + syy + Math.sin(t * 0.9) * 0.003, this.yaw + sx, Math.cos(this.bobPhase) * 0.006 * moving - (this.game.inputMoveX || 0) * 0.012);
-    const wantFov = (this.game.input.touchMode ? 74 : 70) + (this.sprinting ? 6 : 0) + this.fovKick;
+    c.rotation.set(this.pitch + syy + Math.sin(t * 0.9) * 0.003, this.yaw + sx, bobOn ? Math.cos(this.bobPhase) * 0.006 * moving - (this.game.inputMoveX || 0) * 0.012 : 0);
+    // 視野（設定，60～100 度）；手機的預設多 4 度。奔跑時拉寬一點（關掉頭部晃動時也不拉）
+    const baseFov = (Number.isFinite(S.fov) ? S.fov : 70) + (this.game.input.touchMode ? 4 : 0);
+    const wantFov = baseFov + (this.sprinting && bobOn ? 6 : 0) + this.fovKick;
     if (Math.abs(c.fov - wantFov) > 0.05) { c.fov += (wantFov - c.fov) * Math.min(1, dt * 5); c.updateProjectionMatrix(); }
     c.updateMatrixWorld();
   }
