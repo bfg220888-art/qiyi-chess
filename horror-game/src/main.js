@@ -699,7 +699,8 @@ class App {
     if (!(dt > 0)) return;
     const frameDt = Math.min(dt, 0.25);
     dt = Math.min(dt, 0.05);
-    this.ui.update(dt);
+    // 單人暫停時提示與字幕的倒數也停住（回來時才不會錯過「往大門跑」之類的提示）
+    if (!(this.paused && this.game && !this.game.mp)) this.ui.update(dt);
     const g = this.game;
     if (!g) return;
     if (this.state === 'playing' && (!this.paused || g.mp)) {

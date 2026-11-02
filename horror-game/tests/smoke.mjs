@@ -185,8 +185,8 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   assert(fb && fb.startsWith('fusebox'), 'fusebox target ' + fb);
   for (let k = 0; k < 3; k++) await sim(page, 0.1, { actions: ['interact'] });
   assert(await page.evaluate(() => window.__SW.game.fusesInserted) === 3, '3 fuses inserted');
-  await page.waitForTimeout(2200); // setTimeout 的通電演出
-  await sim(page, 1.5);
+  // 通電演出的延遲動作用遊戲時間：推進模擬時間
+  await sim(page, 3.5);
   await render(page);
   await shot(page, 'd6-power');
   const gate = await page.evaluate(() => window.__SW.game.lv.gate.open);
@@ -925,8 +925,8 @@ await run('ritual', { viewport: { width: 960, height: 540 } }, { quality: 'low',
   assert(await page.evaluate(() => window.__SW.game.ghost.state === 'dormant'), 'ghost stays gone');
   // 安息結局：還是要通電開門才出得去
   await page.evaluate(() => { const g = window.__SW.game; for (let i = 0; i < 3; i++) g.applyFuse(g.fusesInserted++); });
-  await page.waitForTimeout(2200);
-  await sim(page, 1.5);
+  // 大門的延遲動作用遊戲時間：推進模擬時間
+  await sim(page, 3.5);
   assert(await page.evaluate(() => window.__SW.game.lv.gate.open && window.__SW.game.ghost.state === 'dormant'), 'gate open, still no ghost');
   await page.evaluate(() => { const g = window.__SW.game, P = g.player; P.pos.x = g.lv.gate.x; P.pos.z = g.lv.gate.z - 1.2; P.yaw = Math.PI; P.pitch = 0; });
   await sim(page, 3, { my: 1 });

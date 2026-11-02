@@ -338,14 +338,20 @@ export class Game {
   }
 
   // 會在遊戲結束或離開後自動取消的計時器
+  // 延遲執行：用遊戲時間計算（暫停時不會偷偷繼續，例如大門在暫停中打開、提示在暫停中消失）
   later(fn, ms) {
-    const id = setTimeout(() => {
-      this.timers.delete(id);
+    (this.laterQ || (this.laterQ = [])).push({ at: this.time + ms / 1000, fn });
+  }
+  runLater() {
+    const Q = this.laterQ;
+    if (!Q || !Q.length) return;
+    for (let i = 0; i < Q.length; ) {
+      if (Q[i].at > this.time) { i++; continue; }
+      const { fn } = Q[i];
+      Q.splice(i, 1);
       if (this.over || this.disposed || this.app.game !== this) return;
       fn();
-    }, ms);
-    this.timers.add(id);
-    return id;
+    }
   }
 
   // 噪音：會吸引她（只有同一層聽得到）
@@ -359,6 +365,7 @@ export class Game {
   update(dt, inp) {
     if (this.over) return;
     this.time += dt;
+    this.runLater();
     const P = this.player;
     this.inputMoveX = inp.mx;
     if (this.dying) { this.ui.setDetect(null); this.updateDying(dt); if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); } return; }

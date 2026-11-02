@@ -621,6 +621,10 @@ export class Ghost {
         if (P.hiding && this.knowsLocker !== P.hiding) {
           if (this.lostT < 0.6 && dist < 14) this.knowsLocker = P.hiding;
         }
+        // 逃亡階段她不會放棄：看不到你一陣子後，她「感覺」得到你大概在哪裡（不然她會站在最後看到你的地方不動）
+        if (this.enraged && !sees && same && !P.hiding && this.lostT > 1.5 && this.replanT <= 0) {
+          this.lastKnown = { x: P.pos.x + (Math.random() - 0.5) * 3, z: P.pos.z + (Math.random() - 0.5) * 3 };
+        }
         const tgt = this.knowsLocker ? { x: this.knowsLocker.exitX, z: this.knowsLocker.exitZ } : (sees ? eye : this.lastKnown);
         if (tgt && (this.replanT <= 0 || !this.path)) {
           this.replanT = 0.35;

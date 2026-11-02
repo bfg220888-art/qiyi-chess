@@ -202,7 +202,7 @@ console.log(`hospitals: ${MF} (1-3 floors, ${mfLevels} floors), ${((Date.now() -
 // 雙人鐵捲門（多人、開局 2 人以上）：整棟 1～2 道；關著的時候也不會擋住任何必要的東西（捷徑，或後面只有額外好東西的死路）；
 // 把手不用開鎖、不用拉起鐵捲門就走得到；同一組種子＋人數生成同一棟醫院；開局 1 人（或單人）沒有鐵捲門
 const MS = Math.max(6, Math.round(N / 6));
-let shTotal = 0, shGated = 0;
+let shTotal = 0, shGated = 0, noShutter = 0;
 for (let s = 1; s <= MS; s++) {
   const count = 1 + (s % 3);
   const diff = DIFFICULTY[['easy', 'normal', 'nightmare'][count - 1]];
@@ -218,7 +218,9 @@ for (let s = 1; s <= MS; s++) {
   const wantBat = Math.round(diff.batteries * (1 + 0.5 * (count - 1)) * (1 + COOP_ITEMS.batteries * (np - 1)));
   const gotBat = fl.reduce((a, l) => a + l.items.filter((i) => i.kind === 'battery' && !i.loot).length, 0);
   assert(gotBat === wantBat, `co-op battery count ${gotBat} != ${wantBat} for ${np} players`);
-  assert(n >= 1 && n <= 2, `1-2 shutters per hospital (${n})`);
+  // 鐵捲門是加分的機關：偶爾放不下（找不到夠長的繞路）可以接受，但不能太常發生
+  assert(n <= 2, `at most 2 shutters per hospital (${n})`);
+  if (n === 0) noShutter++;
   checkLocks(fl, assert);
   checkRelics(fl, assert);
   for (const l of fl) {
@@ -256,7 +258,8 @@ for (let s = 1; s <= MS; s++) {
     assert(solo.every((l) => l.shutters.length === 0), 'no shutters with one player');
   }
 }
-console.log(`shutter hospitals: ${MS}, shutters ${shTotal} (${shGated} gating a dead end)`);
+if (noShutter > Math.ceil(MS * 0.08)) { fails++; console.error(`too many hospitals without a shutter: ${noShutter}/${MS}`); }
+console.log(`shutter hospitals: ${MS}, shutters ${shTotal} (${shGated} gating a dead end, ${noShutter} without any)`);
 // 每一種樓層的劇情房間（707 病房、0713 冷藏室、嬰兒室、0713 隔離室、第 7 手術室、313 病房）都放得下搖籃
 if (!onlyTheme && N >= 6) for (const k of THEME_KEYS) if (!altarThemes.has(k)) { fails++; console.error(`no altar generated for theme ${k}`); }
 const dt = Date.now() - t0;

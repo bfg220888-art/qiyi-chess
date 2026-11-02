@@ -491,7 +491,7 @@ export class NavGrid {
 export function validateLevel(lv, playerRadius = 0.3) {
   const nav = new NavGrid(lv, playerRadius);
   const seen = nav.reachable(lv.spawn.x, lv.spawn.z);
-  const near = (x, z, r) => {
+  const near = (x, z, r, see = false) => {
     const i0 = Math.floor((x - r) / nav.res), i1 = Math.floor((x + r) / nav.res);
     const j0 = Math.floor((z - r) / nav.res), j1 = Math.floor((z + r) / nav.res);
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
@@ -499,13 +499,14 @@ export function validateLevel(lv, playerRadius = 0.3) {
       const k = j * nav.nw + i;
       if (!seen[k]) continue;
       const c = nav.center(k);
-      if (Math.hypot(c.x - x, c.z - z) <= r) return true;
+      if (Math.hypot(c.x - x, c.z - z) <= r && (!see || sightClear(lv, c.x, c.z, x, z))) return true;
     }
     return false;
   };
   if (!seen[nav.nearestFree(lv.spawn.x, lv.spawn.z)]) return 'spawn blocked';
   // 互動射線長 2.4m：檯面上的道具水平可以遠一點
-  for (const it of lv.items) if (!near(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2)) return `item ${it.kind} unreachable`;
+  // 站的位置和道具之間不能隔著牆（不然互動射線打不到，例如小房間被病床塞滿、只剩牆外的走廊）
+  for (const it of lv.items) if (!near(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2, true)) return `item ${it.kind} unreachable`;
   for (const l of lv.lockers) if (!near(l.exitX, l.exitZ, 0.5)) return `locker ${l.id} blocked`;
   const fb = lv.fusebox;
   if (lv.generatorRoom) {

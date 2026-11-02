@@ -212,7 +212,7 @@ export const WALL_WRITINGS = ['救救我', '她在看你', '不要回頭', '707'
 export function generateLevel(seed, diff, validator, theme, plan = null) {
   const themeKey = resolveTheme(theme, seed >>> 0);
   let lastErr = null;
-  for (let attempt = 0; attempt < 40; attempt++) {
+  for (let attempt = 0; attempt < 90; attempt++) {
     try {
       const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey, plan, attempt);
       if (validator) {

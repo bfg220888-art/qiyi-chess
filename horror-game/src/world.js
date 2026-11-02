@@ -666,6 +666,7 @@ export class World {
       const s = new THREE.Sprite(this.flameGlowMat);
       s.scale.setScalar(0.22);
       s.position.copy(o.position);
+      s.raycast = () => {}; // 互動射線不要打到看不見的光暈（會擋住旁邊的道具）
       out.add(s);
       this.flames.push({ mesh: o, sy: o.scale.y, phase: Math.random() * 10 });
     }
@@ -673,6 +674,7 @@ export class World {
     this.altarGlow.position.set(0, 0.85, 0.05);
     this.altarGlow.scale.setScalar(2.4);
     this.altarGlow.visible = false;
+    this.altarGlow.raycast = () => {};
     out.add(this.altarGlow);
   }
   // 雙人鐵捲門：天花板下的捲軸箱與兩側導軌合併成靜態網格；門板（一片片波浪鋼板＋黃黑警示條）上下移動；
