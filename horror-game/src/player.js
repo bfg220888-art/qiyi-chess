@@ -8,6 +8,8 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 // 射線對一個軸的區間 [-h, h] 做 slab 測試，結果累積在 RAY（每格呼叫很多次，不配置陣列）
 const RAY = { t0: 0, t1: 0 };
+// 每格都會用到的暫存向量（不要在每一格 new 新的物件，垃圾回收也會讓筆電發燙）
+const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _up = new THREE.Vector3(), _r = new THREE.Vector3();
 function slab(p, v, h) {
   if (Math.abs(v) < 1e-6) { if (p < -h || p > h) RAY.t0 = Infinity; return; }
   let a = (-h - p) / v, b = (h - p) / v;
@@ -64,6 +66,7 @@ export class Player {
     L.shadow.focus = 1.08; // 投射貼圖稍大於光錐，光圈邊緣不會出現方形的切邊
     L.map = game.tf.flashlightCookie().map;
     this.flash = L;
+    this.setupFlashShadow(L);
     this.aim = new THREE.Vector3(0, 0, -1);
     game.scene.add(L, L.target);
     // 相機閃光用的點光源
@@ -71,6 +74,32 @@ export class Player {
     game.scene.add(this.photo);
     this.lightLevel = 1;
     this.flicker = 1;
+  }
+
+  // 手電筒的陰影圖不必每一格都重畫：
+  //   關燈（亮度 0）時完全不畫；手電筒沒動（站著不動、躲起來看）時隔一格畫一次（她走過光束時影子最多慢一格，看不出來）；
+  //   有動就每一格都畫。在真正要畫的那一刻才判斷（用 needsUpdate 的 getter），
+  //   所以別的程式在這之後改了亮度（例如被抓到時手電筒亂閃）也會照實際的狀態處理
+  setupFlashShadow(L) {
+    const S = L.shadow, last = { p: new THREE.Vector3(1e9, 0, 0), t: new THREE.Vector3(), skip: false, force: true };
+    S.autoUpdate = false;
+    Object.defineProperty(S, 'needsUpdate', {
+      configurable: true,
+      get: () => {
+        if (!(L.intensity > 0.001)) return false;
+        const moved = last.force || last.p.distanceToSquared(L.position) > 1e-8 || last.t.distanceToSquared(L.target.position) > 1e-8;
+        if (moved) { last.skip = false; return true; }
+        last.skip = !last.skip;
+        return !last.skip;
+      },
+      // three.js 畫完之後會設成 false：記下這次畫的位置；外部要求重畫（true）就下一次一定畫
+      set: (v) => {
+        if (v) { last.force = true; return; }
+        last.force = false;
+        last.p.copy(L.position);
+        last.t.copy(L.target.position);
+      },
+    });
   }
 
   forward(out = new THREE.Vector3()) {
@@ -217,7 +246,7 @@ export class Player {
     this.shake = Math.max(0, this.shake - dt * 1.5);
     const sx = (Math.random() - 0.5) * sh * 0.06, syy = (Math.random() - 0.5) * sh * 0.06;
     if (!this.hideAnim) {
-      const r = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+      const r = _r.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
       c.position.set(this.pos.x + r.x * bx, this.eye + by + idle, this.pos.z + r.z * bx);
     }
     c.rotation.set(this.pitch + syy + Math.sin(t * 0.9) * 0.003, this.yaw + sx, bobOn ? Math.cos(this.bobPhase) * 0.006 * moving - (this.game.inputMoveX || 0) * 0.012 : 0);
@@ -230,11 +259,11 @@ export class Player {
 
   updateFlashlight(dt) {
     const g = this.game, c = this.camera, L = this.flash;
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(c.quaternion);
+    const fwd = _fwd.set(0, 0, -1).applyQuaternion(c.quaternion);
     // 手電筒方向稍微落後視線（手持的重量感）
     this.aim.lerp(fwd, 1 - Math.exp(-dt * 13)).normalize();
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(c.quaternion);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(c.quaternion);
+    const right = _right.set(1, 0, 0).applyQuaternion(c.quaternion);
+    const up = _up.set(0, 1, 0).applyQuaternion(c.quaternion);
     L.position.copy(c.position).addScaledVector(right, 0.17).addScaledVector(up, -0.17).addScaledVector(fwd, 0.08);
     L.target.position.copy(L.position).addScaledVector(this.aim, 6);
     L.target.updateMatrixWorld();
@@ -259,8 +288,9 @@ export class Player {
     const expo = Math.min(1, Math.max(0.045, (near / 2.6) ** 2 * (0.6 + 0.4 * Math.min(1, near / 2.6))));
     this.expo = (this.expo ?? 1) + (expo - (this.expo ?? 1)) * Math.min(1, dt * 6);
     const strength = on ? (0.35 + Math.min(1, bat * 4) * 0.65) * this.flicker : 0;
+    // 關燈只把亮度設成 0，不切換 visible：燈的數量一變，所有材質都要重新編譯著色器（第一次關燈會卡一下）。
+    // 關著的時候也不畫陰影圖（見 setupFlashShadow）
     L.intensity = strength * 120 * this.expo;
-    L.visible = strength > 0.001;
     if (this.photo.intensity > 0) this.photo.position.copy(c.position).addScaledVector(fwd, 0.4);
   }
 

@@ -44,7 +44,7 @@ class App {
     this.canvas = $('game');
     const defaults = {
       volume: 0.85, music: 0.8, sfx: 1, herCue: 'std', brightness: 1.15, mouseSens: 1, touchSens: 1, invertY: false, showFps: false,
-      quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
+      quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME, powerSave: 'auto',
       // 畫面與舒適度
       fov: 70, headBob: true, gamma: 1, subScale: 1,
       // 察覺提示（上方的眼睛、方向箭頭、短訊息）
@@ -66,6 +66,7 @@ class App {
     if (!['s', 'm', 'l'].includes(this.settings.touchSize)) this.settings.touchSize = 'm';
     this.settings.touchAccel = this.settings.touchAccel === true;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
+    if (!['auto', 'on', 'off'].includes(this.settings.powerSave)) this.settings.powerSave = 'auto';
     const touch = matchMedia('(pointer: coarse)').matches;
     // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
     if ((this.settings.cfgVer || 1) < 2 && this.settings.quality === 'high' && !this.settings.qualityChosen) this.settings.quality = null;
@@ -97,6 +98,12 @@ class App {
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFShadowMap;
     r.setClearColor(0x000000, 1);
+    // 不透明物件的繪製順序：先依距離分成 8 公尺一段、由近到遠，同一段裡再依材質排（少切換著色器）。
+    // three.js 預設是「先依材質、再依距離」，同一種材質（例如所有的牆）裡由近到遠，但不同材質之間沒有，
+    // 遠處被牆擋住的地板、家具照樣先畫、算完整的光照才被蓋掉。先畫近的，後面被擋住的像素在深度測試就被丟掉
+    r.setOpaqueSort((a, b) => (a.groupOrder - b.groupOrder) || (a.renderOrder - b.renderOrder)
+      || (Math.floor(a.z / 8) - Math.floor(b.z / 8)) || (a.material.id - b.material.id)
+      || ((a.materialVariant || 0) - (b.materialVariant || 0)) || (a.z - b.z) || (a.id - b.id));
     this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.fatal('顯示卡資源不足，畫面中斷了。請重新整理頁面，或在設定裡把畫質調低。'); });
     this.input = new Input(this.canvas, $('touch'), this.settings);
     installTouchGuards();
@@ -116,6 +123,7 @@ class App {
     this.paused = false;
     this.state = 'menu';
     this.frameTimes = [];
+    this.onBattery = false;
     this.lastRender = 0;
     this.ghostTries = 0;
     this.corpseTries = 0;
@@ -139,6 +147,14 @@ class App {
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
     if (location.search.includes('debug')) window.__SW = this;
+    // 電池（Battery Status API，只有部分瀏覽器有）：省電模式設成「自動」時，沒插電就開啟
+    try {
+      if (navigator.getBattery) navigator.getBattery().then((b) => {
+        const upd = () => { const was = this.powerSaving(); this.onBattery = !b.charging; if (was !== this.powerSaving()) this.applyPower(true); };
+        upd();
+        b.addEventListener('chargingchange', upd);
+      }).catch(() => {});
+    } catch (e) { /* 不支援 */ }
     setTimeout(() => this.prefetchAssets(), 400);
   }
 
@@ -198,7 +214,29 @@ class App {
 
   pixelRatio() {
     const q = this.quality;
+    // 省電模式：最多 1 倍像素，再縮小一點（交給 FXAA 柔化）
+    if (this.powerSaving()) return Math.max(0.55, Math.min(devicePixelRatio || 1, q.maxDpr, 1) * q.scale * 0.85 * this.resScale);
     return Math.max(0.55, Math.min(devicePixelRatio || 1, q.maxDpr) * q.scale * this.resScale);
+  }
+  // 省電模式：設定「開」，或「自動」而且正在用電池
+  powerSaving() {
+    const p = this.settings.powerSave;
+    return p === 'on' || (p === 'auto' && this.onBattery);
+  }
+  // 實際的更新率上限：省電模式最多 30
+  fpsCap() {
+    const cap = this.settings.fpsCap;
+    return this.powerSaving() && (cap === 0 || cap > 30) ? 30 : cap;
+  }
+  // 套用省電模式（解析度、更新率、泛光）；notify：遊戲中自動切換時提示一下
+  applyPower(notify = false) {
+    this.vsyncN = 0;
+    this.frameTimes.length = 0;
+    const on = this.powerSaving();
+    const g = this.game;
+    if (g && g.post && g.post.bloom) g.post.bloom.enabled = !on;
+    if (this.renderer) this.resize();
+    if (notify && g && this.state === 'playing') this.ui.hint(on ? '使用電池中：已開啟省電模式（30 FPS、較低解析度）。可在設定裡關掉。' : '已接上電源：關閉省電模式。', 3.5);
   }
   resize() {
     if (this.game) this.game.resize();
@@ -290,6 +328,15 @@ class App {
     };
     for (const b of fs.querySelectorAll('button')) b.addEventListener('click', () => setFps(Number(b.dataset.fps)));
     setFps(this.settings.fpsCap);
+    const ps = $('powerSeg');
+    const setPower = (v) => {
+      this.settings.powerSave = v;
+      if (ps) for (const b of ps.querySelectorAll('button')) b.classList.toggle('on', b.dataset.power === v);
+      this.saveSettings();
+      this.applyPower();
+    };
+    if (ps) for (const b of ps.querySelectorAll('button')) b.addEventListener('click', () => setPower(b.dataset.power));
+    setPower(this.settings.powerSave);
     const bindRange = (id, key, fn) => {
       const el = $(id);
       el.value = this.settings[key];
@@ -534,6 +581,7 @@ class App {
     }
     this.game = game;
     this.applyView();
+    this.applyPower();
     $('loading').hidden = true;
     const begin = () => {
       if (this.game !== game) return;
@@ -553,6 +601,7 @@ class App {
       this.checkOrientation();
       game.start();
       this.busy = false;
+      if (this.settings.powerSave === 'auto' && this.onBattery) setTimeout(() => { if (this.game === game && this.state === 'playing') this.ui.hint('使用電池中：已自動開啟省電模式（30 FPS、較低解析度）。', 3.5); }, 1500);
     };
     this.state = 'intro';
     if (mpOpts) {
@@ -688,7 +737,7 @@ class App {
     }
     // 更新率上限：每 N 次螢幕更新畫一次，144 / 90 Hz 螢幕也維持穩定間隔；
     // 剛好卡在一半時（90 Hz 配 60）選比較省電的那邊。再加時間保護，兩次繪製至少隔 N 格
-    const cap = this.settings.fpsCap;
+    const cap = this.fpsCap();
     if (cap > 0 && this.state === 'playing' && this.vsync) {
       this.vsyncN = Math.max(1, Math.round(1000 / cap / this.vsync + 0.05));
       if (now - this.lastRender < this.vsyncN * this.vsync - this.vsync / 2) return;
@@ -718,13 +767,13 @@ class App {
   // 動態解析度：掉幀就降低渲染解析度
   adaptResolution(dt) {
     // 目標是實際做得到的更新率（例如 90 Hz 螢幕配 60 上限 → 45），偶爾一格卡頓不算太重
-    const target = this.settings.fpsCap && this.vsyncN && this.vsync ? 1000 / (this.vsyncN * this.vsync) : 60;
+    const target = this.fpsCap() && this.vsyncN && this.vsync ? 1000 / (this.vsyncN * this.vsync) : 60;
     const ft = this.frameTimes;
     ft.push(Math.min(dt, 2 / target));
     if (ft.length < 90) return;
     const avg = ft.reduce((a, b) => a + b, 0) / ft.length;
     ft.length = 0;
-    if (this.settings.showFps) this.ui.setFps(true, `${(1 / avg).toFixed(0)} FPS・${this.quality.label}・${(this.pixelRatio()).toFixed(2)}x`);
+    if (this.settings.showFps) this.ui.setFps(true, `${(1 / avg).toFixed(0)} FPS・${this.quality.label}・${(this.pixelRatio()).toFixed(2)}x${this.powerSaving() ? '・省電' : ''}`);
     // 不要一下子降太多：解析度太低畫面會糊成一片。偶爾一段慢不算，連續兩段慢（或非常慢）才降，每次降 0.08，最低 0.7
     let changed = false;
     this.slowRuns = avg > 1.45 / target ? (this.slowRuns || 0) + 1 : 0;

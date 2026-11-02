@@ -9,7 +9,15 @@ import { makeCorpse, placeCorpse } from './corpses.js';
 import { THEMES } from './themes.js';
 
 const HT = WALL_T / 2;
+// 靜態網格的分組（見 World.areaKey）：走廊每 AREA×AREA 格一組，房間每個房間一組（大房間再切成 ROOM_AREA 格見方）
+const AREA = 3;
+const ROOM_AREA = 4;
+// 家具、貼花等小東西：材質種類多，分太細繪製次數會暴增，維持 6×6 格一組
 const CHUNK = 6;
+// 霧的距離剔除：FogExp2 的剩餘比例 exp(-(密度·深度)²)；(密度·深度)² > 6.9 時只剩 0.1%，跟霧的顏色分不出來
+const FOG_CULL = Math.sqrt(6.9);
+const _v = new THREE.Vector3();
+const _col = new THREE.Color();
 const AO_KNOTS = [[0, 0.42], [0.12, 0.62], [0.45, 0.9], [1.2, 1.0], [WALL_H - 0.35, 1.0], [WALL_H, 0.7]];
 function aoAt(y) {
   for (let i = 1; i < AO_KNOTS.length; i++) {
@@ -75,7 +83,8 @@ export class World {
     this.opts = opts;
     this.root = new THREE.Group();
     scene.add(this.root);
-    this.static = new Map(); // materialKey -> Map(chunkKey -> geos)
+    this.static = new Map(); // materialKey -> Map(areaKey -> geos)
+    this.cull = []; // 霧的距離剔除清單（見 updateCull）
     this.interactables = [];
     this.removed = [];
     this.time = 0;
@@ -116,10 +125,22 @@ export class World {
   addStatic(geo, mat, cx, cz, opts = {}) {
     const key = mat.uuid + (opts.noShadow ? ':ns' : '') + (opts.noCast ? ':nc' : '');
     if (!this.static.has(key)) this.static.set(key, { mat, opts, chunks: new Map() });
-    const ck = Math.floor(cx / (CELL * CHUNK)) + ',' + Math.floor(cz / (CELL * CHUNK));
+    const ck = opts.fine ? this.areaKey(cx, cz) : this.chunkKey(cx, cz);
     const entry = this.static.get(key);
     if (!entry.chunks.has(ck)) entry.chunks.set(ck, []);
     entry.chunks.get(ck).push(geo);
+  }
+  // 靜態網格合併的分組鍵。以前整層切成 18 公尺的大塊，幾乎每一塊都有一角在畫面裡，
+  // 視錐剔除剔不掉，排序也只能用大塊的中心（遠處被牆擋住的像素照樣算一次光照）。
+  // 牆、地板、天花板（畫面上面積最大、最花像素的部分）改成「一個房間一組、走廊 3×3 格一組」：
+  // 看不到的房間整組略過，由近到遠排序也比較準。家具與貼花材質種類多，維持大塊（chunkKey），繪製次數才不會暴增
+  chunkKey(x, z) { return Math.floor(x / (CELL * CHUNK)) + ',' + Math.floor(z / (CELL * CHUNK)); }
+  areaKey(x, z) {
+    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+    const id = this.lv.cellAt(cx, cz);
+    const room = id > 0 ? this.lv.rooms[id] : null;
+    if (room) return 'r' + id + ':' + Math.floor((cx - room.x0) / ROOM_AREA) + ',' + Math.floor((cz - room.y0) / ROOM_AREA);
+    return 'c' + Math.floor(cx / AREA) + ',' + Math.floor(cz / AREA);
   }
   // 把一個 Group 的所有 mesh 烘進靜態合併表
   bakeGroup(group, opts = {}) {
@@ -156,6 +177,7 @@ export class World {
         m.matrixAutoUpdate = false;
         m.updateMatrix();
         this.root.add(m);
+        this.addCull(m);
         for (const g of geos) if (g !== merged) g.dispose();
       }
     }
@@ -230,8 +252,9 @@ export class World {
       const room = id > 0 ? lv.rooms[id] : null;
       return (room && look.wall[room.type]) || look.wall.default;
     };
+    // 牆面依「朝向哪一側」分組：朝房間內的那一面跟房間一組，朝走廊的那一面跟走廊一組
     const getWB = (cx, cz, kind) => {
-      const k = kind + '|' + Math.floor(cx / (CELL * CHUNK)) + ',' + Math.floor(cz / (CELL * CHUNK));
+      const k = kind + '|' + this.areaKey(cx, cz);
       if (!wallBuilders.has(k)) wallBuilders.set(k, { b: new GeoBuilder(true), x: cx, z: cz, kind });
       return wallBuilders.get(k).b;
     };
@@ -245,7 +268,7 @@ export class World {
     for (const p of lv.wallPieces) {
       const ys = cuts(p.minY, p.maxY);
       const cx = (p.minX + p.maxX) / 2, cz = (p.minZ + p.maxZ) / 2;
-      const B = (x, z) => getWB(cx, cz, wallKindAt(x, z));
+      const B = (x, z) => getWB(x, z, wallKindAt(x, z));
       const b = B(cx, cz);
       const U = (v) => v / CELL;
       for (let k = 0; k < ys.length - 1; k++) {
@@ -273,12 +296,12 @@ export class World {
     }
     for (const { b, x, z, kind } of wallBuilders.values()) {
       if (b.empty) continue;
-      this.addStatic(b.build(), M.walls[kind] || M.wall, x, z);
+      this.addStatic(b.build(), M.walls[kind] || M.wall, x, z, { fine: true });
     }
     // 地板與天花板
     const floorB = new Map();
     const fb = (mat, cx, cz) => {
-      const k = mat.uuid + '|' + Math.floor(cx / (CELL * CHUNK)) + ',' + Math.floor(cz / (CELL * CHUNK));
+      const k = mat.uuid + '|' + this.areaKey(cx, cz);
       if (!floorB.has(k)) floorB.set(k, { b: new GeoBuilder(false), mat, x: cx, z: cz });
       return floorB.get(k).b;
     };
@@ -313,7 +336,7 @@ export class World {
         fb(M.ceiling, cx, cz).quad([x0, WALL_H, z0], [x1, WALL_H, z0], [x1, WALL_H, z1], [x0, WALL_H, z1], [0, -1, 0], [[U(x0), U(z0)], [U(x1), U(z0)], [U(x1), U(z1)], [U(x0), U(z1)]]);
       }
     }
-    for (const { b, mat, x, z } of floorB.values()) this.addStatic(b.build(), mat, x, z, { noCast: true });
+    for (const { b, mat, x, z } of floorB.values()) this.addStatic(b.build(), mat, x, z, { noCast: true, fine: true });
   }
 
   // ---------------------------------------------------------------------
@@ -549,6 +572,7 @@ export class World {
         if (o) { const b = f.box; f.box = { minX: Math.min(b.minX, o.minX), maxX: Math.max(b.maxX, o.maxX), minZ: Math.min(b.minZ, o.minZ), maxZ: Math.max(b.maxZ, o.maxZ) }; }
         this.root.add(corpse);
         this.corpseMeshes.push(corpse);
+        this.addCull(corpse);
       }
       switch (f.kind) {
         case 'bed': g = P.bed(f); break;
@@ -1089,7 +1113,7 @@ export class World {
       for (const g of list) {
         g.computeBoundingSphere();
         const c = g.boundingSphere.center;
-        const k = Math.floor(c.x / (CELL * CHUNK)) + ',' + Math.floor(c.z / (CELL * CHUNK));
+        const k = this.chunkKey(c.x, c.z);
         if (!byChunk.has(k)) byChunk.set(k, []);
         byChunk.get(k).push(g);
       }
@@ -1099,6 +1123,7 @@ export class World {
         m.castShadow = !noCast;
         m.renderOrder = 1;
         this.root.add(m);
+        this.addCull(m);
       }
     };
     add(sets.blood, M.blood);
@@ -1249,7 +1274,8 @@ export class World {
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
       fragmentShader: `uniform float uLit; void main() { gl_FragColor = vec4(vec3(0.7, 0.8, 0.9) * uLit, uLit); }`,
     }));
-    this.rain.frustumCulled = false;
+    // 雨絲在著色器裡往下掉（0～7 公尺高），包圍球要涵蓋整個範圍，才能照常做視錐剔除
+    rg.boundingSphere = new THREE.Sphere(new THREE.Vector3(gx, 3.7, gz + 7.1), Math.hypot(8.1, 3.8, 6.6));
     this.root.add(this.rain);
   }
   openGate() {
@@ -1334,6 +1360,7 @@ export class World {
       tv.traverse((o) => { if (o.isMesh) o.castShadow = true; });
       this.root.add(tv);
       this.tv = tv;
+      this.tvPos = new THREE.Vector3(tvx, 2.3, tvz);
     }
     // 電話
     if (lv.phone) {
@@ -1366,6 +1393,7 @@ export class World {
       it.mesh = g;
       this.root.add(g);
       this.interactables.push(g);
+      this.addCull(g);
     }
   }
   makePickupMesh(kind, it = {}) {
@@ -1380,6 +1408,51 @@ export class World {
       if (!this.removed.includes(it.mesh)) this.removed.push(it.mesh);
       const i = this.interactables.indexOf(it.mesh);
       if (i >= 0) this.interactables.splice(i, 1);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 霧的距離剔除：濃霧裡超過「只剩 0.1%」深度的東西跟霧的顏色分不出來，乾脆不畫（也不進陰影）。
+  // 用 layers 關掉（mask = 0），不碰 visible，其他程式切換 visible 不會互相干擾；燈不放進來（燈的數量變了會重新編譯著色器）。
+  // 只放不會移動的東西，球體算一次就好
+  addCull(o) {
+    const meshes = [];
+    let fogOk = true;
+    o.traverse((m) => {
+      if (!(m.isMesh || m.isPoints || m.isLine || m.isSprite)) return;
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (!mat || mat.fog === false || mat.isShaderMaterial) fogOk = false;
+      meshes.push(m);
+    });
+    // 不受霧影響的東西（大門外的背景、路燈……）在遠處照樣看得到，不能剔除
+    if (!fogOk || !meshes.length) return;
+    o.updateMatrixWorld(true);
+    let sphere;
+    if (o.isMesh && o.geometry.boundingSphere && !o.isInstancedMesh) sphere = o.geometry.boundingSphere.clone().applyMatrix4(o.matrixWorld);
+    else sphere = new THREE.Box3().setFromObject(o).getBoundingSphere(new THREE.Sphere());
+    if (!Number.isFinite(sphere.radius) || sphere.radius < 0) return;
+    this.cull.push({ meshes, c: sphere.center, r: sphere.radius, on: true });
+  }
+  // 依相機前方的「深度」判斷（霧用的是畫面深度，不是直線距離，畫面邊緣的東西深度比距離小，要照深度算才不會剔掉還看得到的）
+  updateCull(camera) {
+    const fog = this.scene.fog;
+    // 剔掉之後露出來的是背景：沒有大門的樓層（完全封閉，看不到外面）把背景換成霧的顏色，跟遠處的霧一模一樣；
+    // 有大門的樓層背景維持黑色（門外的天空），只有霧接近黑色時才剔除（霧比較亮的燒毀舊院區就不剔）
+    let far = Infinity;
+    if (fog && fog.isFogExp2 && fog.density > 0) {
+      const dark = Math.max(fog.color.r, fog.color.g, fog.color.b) < 0.004;
+      const fogBg = !this.lv.gate;
+      const bg = this.scene.background;
+      if (bg && bg.isColor) { if (fogBg) bg.copy(fog.color); else bg.setRGB(0, 0, 0); }
+      if (dark || (fogBg && bg && bg.isColor)) far = FOG_CULL / fog.density;
+    }
+    const e = camera.matrixWorld.elements;
+    const px = e[12], py = e[13], pz = e[14], fx = -e[8], fy = -e[9], fz = -e[10];
+    for (const c of this.cull) {
+      const depth = (c.c.x - px) * fx + (c.c.y - py) * fy + (c.c.z - pz) * fz;
+      const on = depth - c.r < far;
+      if (on === c.on) continue;
+      c.on = on;
+      for (const m of c.meshes) m.layers.mask = on ? 1 : 0;
     }
   }
 
@@ -1479,7 +1552,7 @@ export class World {
     const lv = this.lv;
     // 燈具
     let colorDirty = false;
-    const col = new THREE.Color();
+    const col = _col;
     for (let i = 0; i < lv.fixtures.length; i++) {
       const f = lv.fixtures[i];
       if (f.warm > 0) f.warm -= dt;
@@ -1539,9 +1612,9 @@ export class World {
         }
       }
     }
+    // 沒分配到燈的光源只把亮度設成 0，不切換 visible：場景裡的燈數一變，所有材質都要重新編譯著色器（遊戲中會卡一下）
     for (const p of this.pool) {
-      if (!p.src) { p.light.intensity = 0; p.light.visible = false; continue; }
-      p.light.visible = true;
+      if (!p.src) { p.light.intensity = 0; continue; }
       p.light.intensity = p.emergency ? p.src.level * 1.6 : p.src.level * 9;
     }
     // 窗外：雨水流動、閃電
@@ -1555,8 +1628,8 @@ export class World {
     if (this.rain) this.rainUniforms.uTime.value = t;
     // 道具閃光
     this.glintMat.opacity = 0.25 + 0.25 * Math.sin(t * 2.7);
-    // 電視雜訊
-    if (this.tvCtx && (Math.floor(t * 30) % 2 === 0)) {
+    // 電視雜訊：只在看得到的距離內更新（每次都要重畫一張畫布再上傳成貼圖）
+    if (this.tvCtx && (Math.floor(t * 30) % 2 === 0) && (!this.tvPos || this.tvPos.distanceToSquared(cp) < 22 * 22)) {
       const g = this.tvCtx;
       const img = this.tvImg || (this.tvImg = g.createImageData(80, 60));
       for (let i = 0; i < 80 * 60; i++) {
@@ -1571,7 +1644,10 @@ export class World {
       this.dustUniforms.uTime.value = t;
       this.dustUniforms.uCenter.value.copy(cp);
       this.dustUniforms.uFlash.value += ((flashOn ? 1 : 0) - this.dustUniforms.uFlash.value) * Math.min(1, dt * 8);
+      // 灰塵只在手電筒光束裡看得到：關燈時整批不畫
+      this.dust.visible = this.dustUniforms.uFlash.value > 0.004;
     }
+    this.updateCull(camera);
     // 搖籃旁的燭火
     if (this.flames) for (const f of this.flames) f.mesh.scale.y = f.sy * (0.85 + 0.25 * Math.sin(t * 9 + f.phase) * Math.sin(t * 5.3 + f.phase * 2));
     // 自己在搖的搖搖馬

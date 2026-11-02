@@ -234,8 +234,13 @@
         <button type="button" data-fps="30">30 省電</button><button type="button" data-fps="60">60</button><button type="button" data-fps="0">不限</button>
       </span>
     </div>
+    <div class="row">省電模式
+      <span class="seg small" id="powerSeg" role="group" aria-label="省電模式">
+        <button type="button" data-power="auto">自動</button><button type="button" data-power="on">開</button><button type="button" data-power="off">關</button>
+      </span>
+    </div>
     <label class="row" for="sAA">抗鋸齒 <input id="sAA" type="checkbox"></label>
-    <p class="note-small">電腦或手機發燙時，選「低」畫質與「30 省電」。抗鋸齒讓邊緣比較柔和，幾乎不影響效能。</p>
+    <p class="note-small">電腦或手機發燙時，選「低」畫質與「30 省電」，或打開省電模式（最多 30 FPS、解析度降低、關掉泛光；「自動」＝沒插電時開啟）。抗鋸齒讓邊緣比較柔和，幾乎不影響效能。</p>
     <label class="row" for="sBright">亮度 <input id="sBright" type="range" min="0.6" max="2" step="0.05"></label>
     <label class="row" for="sVolume">主音量 <input id="sVolume" type="range" min="0" max="1" step="0.05"></label>
     <label class="row" for="sSfx">音效 <input id="sSfx" type="range" min="0" max="1" step="0.05"></label>
