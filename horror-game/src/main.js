@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { QUALITY, DIFFICULTY, MP_FLOORS } from './config.js';
 import { AudioEngine } from './audio.js';
-import { Input } from './input.js';
+import { Input, installTouchGuards } from './input.js';
 import { UI, fmtTime } from './ui.js';
 import { Game } from './game.js';
 import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
@@ -47,6 +47,8 @@ class App {
       quality: null, difficulty: 'normal', fpsCap: 60, aa: true, theme: RANDOM_THEME,
       // 畫面與舒適度
       fov: 70, headBob: true, gamma: 1, subScale: 1,
+      // 按鍵配置（觸控）：慣用手、按鈕大小、視角加速
+      touchLayout: 'right', touchSize: 'm', touchAccel: false,
     };
     this.settings = { ...defaults, ...store.get('settings', {}) };
     const clampNum = (k, a, b) => { const v = Number(this.settings[k]); this.settings[k] = Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : defaults[k]; };
@@ -57,6 +59,9 @@ class App {
     this.settings.aa = this.settings.aa !== false;
     clampNum('fov', 60, 100); clampNum('gamma', 0.7, 1.6); clampNum('subScale', 0.8, 1.6);
     this.settings.headBob = this.settings.headBob !== false;
+    if (!['right', 'left'].includes(this.settings.touchLayout)) this.settings.touchLayout = 'right';
+    if (!['s', 'm', 'l'].includes(this.settings.touchSize)) this.settings.touchSize = 'm';
+    this.settings.touchAccel = this.settings.touchAccel === true;
     if (![0, 30, 60].includes(this.settings.fpsCap)) this.settings.fpsCap = 60;
     const touch = matchMedia('(pointer: coarse)').matches;
     // 舊版會把電腦預設成「高」畫質（4 倍取樣 + 高解析度），筆電容易發燙；沒手動選過的改回「中」
@@ -91,6 +96,16 @@ class App {
     r.setClearColor(0x000000, 1);
     this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.fatal('顯示卡資源不足，畫面中斷了。請重新整理頁面，或在設定裡把畫質調低。'); });
     this.input = new Input(this.canvas, $('touch'), this.settings);
+    installTouchGuards();
+    // iOS Safari 只在 touchend / click 裡才肯解鎖聲音：第一次碰螢幕就解鎖，成功後拿掉
+    const unlock = () => {
+      if (this.audio.ctx && this.audio.ctx.state === 'running') {
+        for (const ev of ['touchend', 'click']) removeEventListener(ev, unlock, true);
+        return;
+      }
+      if (this.state === 'menu' || this.state === 'intro') this.audio.resume();
+    };
+    for (const ev of ['touchend', 'click']) addEventListener(ev, unlock, true);
     this.input.onLockChange = (locked) => {
       if (!locked && this.game && !this.paused && !this.game.over && !this.game.dying && !this.ui.noteOpen && !this.input.touchMode && !this.input.lockFailed && !this.allowUnlock) this.pause();
     };
@@ -306,6 +321,21 @@ class App {
       el.addEventListener('change', () => { this.settings[key] = el.checked; if (fn) fn(); this.saveSettings(); });
     };
     bindCheck('sInvert', 'invertY');
+    // 按鍵配置（觸控裝置才顯示）：慣用手、按鈕大小，改了立刻套用
+    $('touchSettings').hidden = !this.input.touchMode;
+    const segPick = (segId, attr, key) => {
+      const seg = $(segId);
+      const set = (v) => {
+        this.settings[key] = v;
+        for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset[attr] === v);
+        this.input.applyTouchLayout();
+      };
+      for (const b of seg.querySelectorAll('button')) b.addEventListener('click', () => { set(b.dataset[attr]); this.saveSettings(); });
+      set(this.settings[key]);
+    };
+    segPick('touchHandSeg', 'hand', 'touchLayout');
+    segPick('touchSizeSeg', 'size', 'touchSize');
+    bindCheck('sTouchAccel', 'touchAccel');
     bindCheck('sAA', 'aa', () => { if (this.game && this.game.post) this.game.post.setAA(this.settings.aa); });
     bindCheck('sFps', 'showFps', () => this.ui.setFps(this.settings.showFps && this.state === 'playing'));
     // 畫面與舒適度：視野、頭部晃動、畫面亮度（伽瑪）、字幕大小，全部即時套用
@@ -477,8 +507,7 @@ class App {
     $('loadFloor').textContent = themeTitle(theme) + (floors > 1 ? `・共 ${floors} 層` : '');
     const touch = this.input.touchMode;
     if (touch) {
-      try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { /* 不支援全螢幕 */ }
-      try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch (e) { /* 不支援鎖定方向 */ }
+      await this.enterFullscreen();
     }
     const game = new Game(this, {
       difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
@@ -548,6 +577,21 @@ class App {
     }
   }
 
+  // 手機：全螢幕＋鎖定橫向。iPad Safari 只有 webkit 前綴；iPhone Safari 不支援元素全螢幕
+  // （要「加入主畫面」才能全螢幕），失敗就算了。只能在玩家點擊的當下呼叫
+  async enterFullscreen() {
+    const de = document.documentElement;
+    try {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (de.requestFullscreen) await de.requestFullscreen({ navigationUI: 'hide' });
+        else if (de.webkitRequestFullscreen) de.webkitRequestFullscreen();
+      }
+    } catch (e) { /* 不支援全螢幕 */ }
+    // 玩家選了「直接玩」直立的話就不再硬轉成橫向
+    if (this.rotateDismissed) return;
+    try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch (e) { /* 不支援鎖定方向 */ }
+  }
+
   pause() {
     if (!this.game || this.state !== 'playing' || this.paused) return;
     this.paused = true;
@@ -568,6 +612,8 @@ class App {
     this.input.enabled = true;
     this.input.clear();
     this.last = performance.now();
+    // 手機上被滑掉全螢幕時，按「繼續」順便再進一次（這時候是玩家點擊，瀏覽器才允許）
+    if (this.input.touchMode) this.enterFullscreen();
     if (!this.input.touchMode) {
       this.input.requestLock();
       // 用 Esc 繼續時瀏覽器不允許立刻鎖定滑鼠：提示玩家點一下
@@ -656,6 +702,7 @@ class App {
       // 多人時暫停選單打開也不能停下（別人還在玩），只是不接受操作
       const inp = this.paused ? this.emptyInput() : this.input.poll();
       g.update(dt, inp);
+      this.input.syncTouch(g);
       g.render(dt);
       this.adaptResolution(frameDt);
     } else if (this.state === 'over' || this.state === 'intro') {

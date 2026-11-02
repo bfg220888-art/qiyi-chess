@@ -163,10 +163,12 @@
 </div>
 
 <div id="touch" hidden>
+  <!-- 浮動搖桿：拇指放下的地方就是中心；推到底往前 = 奔跑 -->
   <div id="joyHome"><span>移動</span></div>
-  <div id="joy"><div id="joyKnob"></div></div>
+  <div id="joy"><div id="joyKnob"></div><span class="joy-run">奔跑</span></div>
+  <!-- 情境按鈕（大的那顆）只在看著可以互動的東西時出現，字依目標變化 -->
   <div class="tbtns">
-    <button class="tb big" data-action="interact" id="tInteract" type="button" aria-label="互動"><b>互動</b><small id="tInteractLabel"></small></button>
+    <button class="tb big ctx-off" data-action="interact" id="tInteract" type="button" aria-label="互動"><b>互動</b><small id="tInteractLabel"></small></button>
     <button class="tb" data-action="flashlight" type="button" aria-label="手電筒">燈</button>
     <button class="tb" data-action="camera" type="button" aria-label="相機閃光">閃</button>
     <button class="tb" data-action="crouch" type="button" aria-label="蹲下" id="tCrouch">蹲</button>
@@ -239,6 +241,22 @@
     <label class="row" for="sTouch">觸控靈敏度 <input id="sTouch" type="range" min="0.2" max="3" step="0.05"></label>
     <label class="row" for="sInvert">上下反轉 <input id="sInvert" type="checkbox"></label>
     <label class="row" for="sFps">顯示 FPS <input id="sFps" type="checkbox"></label>
+    <!-- 按鍵配置（觸控裝置才顯示） -->
+    <div class="settings-block" id="touchSettings" hidden>
+      <h3>按鍵配置</h3>
+      <div class="row">慣用手
+        <span class="seg small" id="touchHandSeg" role="group" aria-label="慣用手">
+          <button type="button" data-hand="right">右手</button><button type="button" data-hand="left">左手</button>
+        </span>
+      </div>
+      <div class="row">按鈕大小
+        <span class="seg small" id="touchSizeSeg" role="group" aria-label="按鈕大小">
+          <button type="button" data-size="s">小</button><button type="button" data-size="m">中</button><button type="button" data-size="l">大</button>
+        </span>
+      </div>
+      <label class="row" for="sTouchAccel">視角加速 <input id="sTouchAccel" type="checkbox"></label>
+      <p class="note-small">左手：搖桿換到右邊、按鈕換到左邊。視角加速：手指甩得越快，轉得越多（慢慢拖動仍然精準）。</p>
+    </div>
     <!-- 畫面與舒適度（獨立一區） -->
     <div class="settings-block" id="viewSettings">
       <h3>畫面與舒適度</h3>
@@ -277,9 +295,11 @@
       <div>
         <h3>手機</h3>
         <dl>
-          <dt>左半邊</dt><dd>拖曳搖桿移動，推到底就是奔跑</dd>
+          <dt>左半邊</dt><dd>手指放下的地方就是搖桿，拖曳移動，往前推到底就是奔跑</dd>
           <dt>右半邊</dt><dd>滑動看四周，輕點 = 互動</dd>
-          <dt>按鈕</dt><dd>燈 = 手電筒、閃 = 相機、蹲 = 蹲下、跑 = 按住奔跑、丟 = 丟玻璃瓶、屏息 = 躲藏時按住、按住「互動」= 扶起隊友 / 轉鐵捲門的把手（多人）</dd>
+          <dt>大按鈕</dt><dd>看著門、鐵櫃、樓梯、物品時才出現，字會變成「開門」「躲」「上樓」「撿起」……；扶起隊友、轉鐵捲門的把手要按住</dd>
+          <dt>按鈕</dt><dd>燈 = 手電筒、閃 = 相機、蹲 = 蹲下、跑 = 按住奔跑、丟 = 丟玻璃瓶、屏息 = 躲藏時按住</dd>
+          <dt>設定</dt><dd>「按鍵配置」可以換成左手模式（搖桿在右邊）、調按鈕大小、開視角加速</dd>
         </dl>
         <h3>求生守則</h3>
         <ul>

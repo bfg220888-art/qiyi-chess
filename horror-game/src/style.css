@@ -18,7 +18,7 @@
 html, body {
   margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
   font-family: var(--body); -webkit-user-select: none; user-select: none;
-  -webkit-tap-highlight-color: transparent; overscroll-behavior: none; touch-action: none;
+  -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior: none; touch-action: none;
 }
 [hidden] { display: none !important; }
 #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
@@ -156,30 +156,93 @@ html, body {
 #fade { position: fixed; inset: 0; z-index: 40; pointer-events: none; background: #000; opacity: 0; transition: opacity 1.2s; }
 
 /* ---------- 觸控 ---------- */
-#touch { position: fixed; inset: 0; z-index: 12; touch-action: none; }
-#joyHome { position: absolute; left: calc(max(16px, env(safe-area-inset-left)) + 36px); bottom: calc(max(16px, env(safe-area-inset-bottom)) + 36px); width: 110px; height: 110px; border-radius: 50%; border: 1px dashed rgba(230, 224, 211, 0.22); display: flex; align-items: center; justify-content: center; font-size: 13px; color: rgba(230, 224, 211, 0.35); pointer-events: none; }
-#joy { position: absolute; display: none; width: 124px; height: 124px; margin: -62px 0 0 -62px; border-radius: 50%; border: 2px solid rgba(230, 224, 211, 0.3); background: rgba(0, 0, 0, 0.18); pointer-events: none; }
-#joyKnob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px; border-radius: 50%; background: rgba(230, 224, 211, 0.35); border: 1px solid rgba(230, 224, 211, 0.6); }
-.tbtns { position: absolute; right: calc(max(16px, env(safe-area-inset-right)) + 8px); bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px); width: 220px; height: 220px; pointer-events: none; }
-.tb {
-  position: absolute; width: 58px; height: 58px; border-radius: 50%; border: 1px solid rgba(230, 224, 211, 0.38);
-  background: rgba(10, 10, 10, 0.4); color: var(--ink); font: 700 17px var(--body); pointer-events: auto; touch-action: none;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px);
+/* 按鈕尺寸：--tu 一般按鈕、--tbig 情境大按鈕；設定「按鈕大小」換 html.th-s / th-l。
+   其他按鈕排在大按鈕周圍兩圈弧線上（內圈半徑 --tr1、外圈 --tr2），拇指以右下角為支點都按得到 */
+:root {
+  --tu: 58px; --tg: 10px;
+  --sa-t: max(14px, env(safe-area-inset-top)); --sa-r: max(16px, env(safe-area-inset-right));
+  --sa-b: max(14px, env(safe-area-inset-bottom)); --sa-l: max(16px, env(safe-area-inset-left));
+  --tbig: calc(var(--tu) * 1.45);
+  --tr1: calc(var(--tbig) / 2 + var(--tu) / 2 + var(--tg) * 1.4);
+  --tr2: calc(var(--tr1) + var(--tu) + var(--tg));
+  /* 外圈兩顆（跑、丟）的角度（從大按鈕往左為 0°，往上為 90°）的 cos / sin */
+  --sp-c: 0.985; --sp-s: 0.174; --th-c: 0.707; --th-s: 0.707;
+  /* 整組按鈕佔的寬高（字幕、體力條用來讓位） */
+  --tcw: calc(var(--tbig) / 2 + var(--tr2) * 0.985 + var(--tu) / 2 + 8px);
+  --tch: calc(var(--tbig) / 2 + var(--tr2) * 0.707 + var(--tu) / 2 + 8px);
 }
+html.th-s { --tu: 50px; --tg: 9px; }
+html.th-l { --tu: 68px; --tg: 12px; }
+#touch { position: fixed; inset: 0; z-index: 12; touch-action: none; -webkit-touch-callout: none; }
+#joyHome { position: absolute; left: calc(var(--sa-l) + 36px); bottom: calc(var(--sa-b) + 36px); width: 110px; height: 110px; border-radius: 50%; border: 1px dashed rgba(230, 224, 211, 0.22); display: flex; align-items: center; justify-content: center; font-size: 13px; color: rgba(230, 224, 211, 0.35); pointer-events: none; transition: opacity 1.2s; }
+#joyHome.used { opacity: 0; }
+html.th-left #joyHome { left: auto; right: calc(var(--sa-r) + 36px); }
+#joy { --jr: 56px; position: absolute; display: none; width: calc(var(--jr) * 2 + 12px); height: calc(var(--jr) * 2 + 12px); margin: calc(var(--jr) * -1 - 6px) 0 0 calc(var(--jr) * -1 - 6px); border-radius: 50%; border: 2px solid rgba(230, 224, 211, 0.3); background: rgba(0, 0, 0, 0.18); pointer-events: none; transition: border-color 0.12s, box-shadow 0.12s; }
+/* 死區：中間的小圈，拇指在裡面時不會走 */
+#joy::before { content: ""; position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px; border-radius: 50%; border: 1px solid rgba(230, 224, 211, 0.25); }
+#joyKnob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px; border-radius: 50%; background: rgba(230, 224, 211, calc(0.28 + var(--mag, 0) * 0.22)); border: 1px solid rgba(230, 224, 211, 0.6); }
+.joy-run { position: absolute; left: 50%; top: -24px; transform: translateX(-50%); font: 700 12px var(--body); letter-spacing: 0.2em; color: var(--rec); text-shadow: 0 1px 2px #000; opacity: 0; transition: opacity 0.12s; white-space: nowrap; }
+#joy.run { border-color: var(--rec); box-shadow: 0 0 14px rgba(227, 41, 28, 0.45); }
+#joy.run #joyKnob { background: rgba(163, 23, 15, 0.7); border-color: var(--rec); }
+#joy.run .joy-run { opacity: 1; }
+
+.tbtns { position: absolute; right: calc(var(--sa-r) + 8px); bottom: calc(var(--sa-b) + 8px); width: calc(var(--tcw) - 8px); height: calc(var(--tch) - 8px); pointer-events: none; }
+html.th-left .tbtns { right: auto; left: calc(var(--sa-l) + 8px); }
+.tb {
+  --x: 0px; --y: 0px;
+  position: absolute; right: var(--x); bottom: var(--y); width: var(--tu); height: var(--tu); border-radius: 50%; border: 1px solid rgba(230, 224, 211, 0.38);
+  background: rgba(10, 10, 10, 0.4); color: var(--ink); font: 700 calc(var(--tu) * 0.29) var(--body); pointer-events: auto; touch-action: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px);
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+html.th-left .tbtns .tb { right: auto; left: var(--x); }
 .tb.press, .tb.on { background: rgba(163, 23, 15, 0.55); border-color: var(--rec); }
-.tb.big { width: 84px; height: 84px; right: 0; bottom: 0; font-size: 18px; }
-.tb.big small { font-size: 10px; font-weight: 400; max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.tb.big { width: var(--tbig); height: var(--tbig); font-size: calc(var(--tu) * 0.31); transition: opacity 0.15s, transform 0.15s; }
+.tb.big small { font-size: calc(var(--tu) * 0.17); font-weight: 400; max-width: calc(var(--tbig) - 12px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 .tb.big.ready { border-color: var(--ink); background: rgba(230, 224, 211, 0.16); }
 .tb.big.ready small { color: var(--ink); }
-.tbtns [data-action="flashlight"] { right: 96px; bottom: 6px; }
-.tbtns [data-action="camera"] { right: 14px; bottom: 98px; }
-.tbtns [data-action="crouch"] { right: 88px; bottom: 82px; }
-.tbtns [data-action="sprint"] { right: 160px; bottom: 30px; }
+/* 沒東西可以互動：大按鈕收起來（右半邊仍然可以輕點互動） */
+.tb.big.ctx-off { opacity: 0; transform: scale(0.8); pointer-events: none; }
+/* 要按住的（扶人、轉把手）：虛線外框 */
+.tb.big.hold { border: 2px dashed var(--ink); }
+.tbtns [data-action="flashlight"] { --x: calc(var(--tbig) / 2 + var(--tr1) - var(--tu) / 2); --y: calc(var(--tbig) / 2 - var(--tu) / 2); }
+.tbtns [data-action="crouch"] { --x: calc(var(--tbig) / 2 + var(--tr1) * 0.707 - var(--tu) / 2); --y: calc(var(--tbig) / 2 + var(--tr1) * 0.707 - var(--tu) / 2); }
+.tbtns [data-action="camera"] { --x: calc(var(--tbig) / 2 - var(--tu) / 2); --y: calc(var(--tbig) / 2 + var(--tr1) - var(--tu) / 2); }
+.tbtns [data-action="sprint"] { --x: calc(var(--tbig) / 2 + var(--tr2) * var(--sp-c) - var(--tu) / 2); --y: calc(var(--tbig) / 2 + var(--tr2) * var(--sp-s) - var(--tu) / 2); }
+.tbtns [data-action="throw"] { --x: calc(var(--tbig) / 2 + var(--tr2) * var(--th-c) - var(--tu) / 2); --y: calc(var(--tbig) / 2 + var(--tr2) * var(--th-s) - var(--tu) / 2); }
 #touch.hiding [data-action="flashlight"], #touch.hiding [data-action="camera"], #touch.hiding [data-action="sprint"], #touch.hiding [data-action="crouch"] { display: none; }
-.tbtns [data-action="throw"] { right: 162px; bottom: 102px; }
-.tbtns [data-action="breath"] { right: 96px; bottom: 6px; width: 72px; height: 72px; font-size: 15px; }
-.ttop { position: absolute; top: calc(max(16px, env(safe-area-inset-top)) + 54px); right: calc(max(16px, env(safe-area-inset-right)) + 12px); display: flex; gap: 10px; }
-.tb.small { position: static; width: 46px; height: 46px; font-size: 14px; }
+.tbtns [data-action="breath"] { --x: calc(var(--tbig) + var(--tg)); width: calc(var(--tu) * 1.25); height: calc(var(--tu) * 1.25); font-size: calc(var(--tu) * 0.26); }
+/* 地圖、暫停：右上角，在電量與底片數字下面 */
+.ttop { position: absolute; top: calc(var(--sa-t) + 54px); right: calc(var(--sa-r) + 12px); display: flex; gap: 10px; }
+.tb.small { position: static; width: max(48px, calc(var(--tu) * 0.85)); height: max(48px, calc(var(--tu) * 0.85)); font-size: 14px; }
+
+/* 觸控時 HUD 讓位給按鈕：字幕排在搖桿那側與按鈕之間，提示不壓到右上角的按鈕 */
+html.touch-ui .subtitle-line { left: calc(var(--sa-l) + 12px); right: calc(var(--sa-r) + var(--tcw) + 16px); width: auto; transform: none; }
+html.touch-ui.th-left .subtitle-line { left: calc(var(--sa-l) + var(--tcw) + 16px); right: calc(var(--sa-r) + 12px); }
+@media (orientation: landscape) {
+  /* 提示和字幕一樣排在按鈕旁邊；矮螢幕上 22% 會壓到左上角的目標說明，所以至少往下 112px */
+  html.touch-ui .hint { left: calc(var(--sa-l) + 12px); right: calc(var(--sa-r) + var(--tcw) + 16px); width: auto; transform: none; top: max(22%, calc(var(--sa-t) + 112px)); }
+  html.touch-ui.th-left .hint { left: calc(var(--sa-l) + var(--tcw) + 16px); right: calc(var(--sa-r) + 12px); }
+}
+/* 直立玩（按了「直接玩」）：畫面窄，外圈的「跑」「丟」改排到上方，整組變窄變高，
+   不佔用左下角拇指放搖桿的位置；字幕與體力條移到按鈕上方 */
+@media (orientation: portrait) {
+  :root { --sp-c: 0.574; --sp-s: 0.819; --th-c: 0; --th-s: 1;
+    --tcw: calc(var(--tbig) / 2 + max(var(--tr1), var(--tr2) * 0.574) + var(--tu) / 2 + 8px);
+    --tch: calc(var(--tbig) / 2 + var(--tr2) + var(--tu) / 2 + 8px); }
+  #joyHome { left: calc(var(--sa-l) + 20px); width: 100px; height: 100px; }
+  html.th-left #joyHome { right: calc(var(--sa-r) + 20px); }
+  html.touch-ui .subtitle-line, html.touch-ui.th-left .subtitle-line { left: calc(var(--sa-l) + 8px); right: calc(var(--sa-r) + 8px); bottom: calc(var(--sa-b) + var(--tch) + 40px); }
+  html.touch-ui #stamina { bottom: calc(var(--sa-b) + var(--tch) + 22px); }
+  html.touch-ui .hint { top: 30%; }
+}
+/* 左手模式：照片改回右邊（左下角是按鈕） */
+html.touch-ui.th-left #polaroid { left: auto; right: calc(var(--sa-r) + 16px); top: calc(var(--sa-t) + 128px); transform: translateX(140%) rotate(6deg); }
+html.touch-ui.th-left #polaroid.show { transform: translateX(0) rotate(-2deg); }
+@media (pointer: coarse) {
+  .seg.small button { min-height: 44px; }
+  .btn, .seg button, .spec-btn, .note-close { touch-action: manipulation; }
+}
 
 /* ---------- 疊加面板 ---------- */
 .panel { background: var(--panel); border: 1px solid var(--faint); padding: 26px 24px; width: min(360px, 100%); display: flex; flex-direction: column; gap: 12px; max-height: 100%; overflow-y: auto; }
