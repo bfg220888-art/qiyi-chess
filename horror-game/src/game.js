@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CELL, GHOST_R, DIFFICULTY, WALL_H } from './config.js';
 import { generateHospital, NOTES, E, MAX_FLOORS, KEY_COLORS, RELICS } from './level.js';
-import { Collision, NavGrid, validateLevel, sightClear, wallsBetween } from './nav.js';
+import { Collision, NavGrid, validateLevel, sightClear, wallsBetween, SHUTTER_PASS } from './nav.js';
 import { TextureFactory } from './textures.js';
 import { World } from './world.js';
 import { Player } from './player.js';
@@ -138,7 +138,7 @@ export class Game {
       const C = new Collision(F.lv);
       for (const d of F.lv.doors) C.dynamic.push(d);
       // 鐵捲門：拉到八成以上才過得去
-      for (const sh of F.lv.shutters || []) C.dynamic.push({ getBox: () => (sh.open < 0.8 ? sh.box : null) });
+      for (const sh of F.lv.shutters || []) C.dynamic.push({ getBox: () => (sh.open < SHUTTER_PASS ? sh.box : null) });
       if (F.lv.gate) C.dynamic.push(F.lv.gate);
       for (const f of W.dynamicProps) {
         C.removeStaticFurniture(f);
@@ -147,7 +147,8 @@ export class Game {
       W.propBlocked = (x, z) => C.overlapsStatic(x, z, 0.4) || C.dynamic.some((d) => { const b = d.getBox ? d.getBox() : null; return b && x > b.minX - 0.4 && x < b.maxX + 0.4 && z > b.minZ - 0.4 && z < b.maxZ + 0.4 && !W.dynamicProps.some((f) => f.box === b); });
       F.world = W;
       F.collision = C;
-      F.ghostNav = new NavGrid(F.lv, GHOST_R, { ghost: true });
+      // 她的尋路網格：還鎖著的門、關著的鐵捲門是牆（開鎖、開關時只更新那幾格，見 updateGhostBlockers）
+      F.ghostNav = new NavGrid(F.lv, GHOST_R, { ghost: true, dynamic: true });
     }
     progress(0.7, '她正在醒來……');
     await nextFrame();
@@ -262,6 +263,7 @@ export class Game {
   updateWorlds(dt, cam, flashOn) {
     this.world.update(dt, cam, flashOn);
     for (const F of this.floors) if (F !== this.F) F.world.updateMechanics(dt);
+    this.updateGhostBlockers();
   }
 
   resize() {
@@ -685,6 +687,8 @@ export class Game {
   applyUnlock(F, d, by) {
     if (!d || d.unlocked) return;
     F.world.unlockDoor(d);
+    // 開了鎖之後這扇門對她來說就是普通的門（她會自己推開）
+    if (F.ghostNav.setBlock('d' + d.id, null, false) && this.ghost && this.ghost.floor === F.index) this.ghost.navChanged();
     const P = this.player, mine = !this.mp || by === this.mp.mySlot;
     if (mine) { const k = P.keys.indexOf(d.lock); if (k >= 0) P.keys.splice(k, 1); }
     if (F === this.F) this.audio.play('cardBeep', { pos: d.readerPos ? { x: d.readerPos.x, y: 1.25, z: d.readerPos.z } : { x: d.cx, y: 1.2, z: d.cz } });
@@ -696,6 +700,15 @@ export class Game {
     if (mine) this.ui.hint(`${KEY_COLORS[d.lock].name}門禁卡刷過了，${name}的門開了。`, 3);
     else if (this.mp) this.ui.hint(`${this.mp.slotName(by)} 打開了${F.title && this.floorCount > 1 ? F.title + '的' : ''}${name}。`, 3);
     this.ui.updateHud();
+  }
+
+  // 鐵捲門拉到過得去 / 摔下來：只更新她尋路網格裡那幾格（每格只比較狀態，幾乎不花時間）
+  updateGhostBlockers() {
+    for (const F of this.floors) {
+      for (const sh of F.lv.shutters || []) {
+        if (F.ghostNav.setBlock('s' + sh.id, sh.box, !(sh.open >= SHUTTER_PASS)) && this.ghost && this.ghost.floor === F.index) this.ghost.navChanged();
+      }
+    }
   }
 
   // 她的憤怒：每插一個保險絲、每放回一件遺物都更快更敏銳；大門打開後至少 1.5

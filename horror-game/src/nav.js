@@ -89,7 +89,7 @@ export class Collision {
   }
 }
 
-function pushOut(pos, r, b) {
+export function pushOut(pos, r, b) {
   const cx = clamp(pos.x, b.minX, b.maxX), cz = clamp(pos.z, b.minZ, b.maxZ);
   const dx = pos.x - cx, dz = pos.z - cz;
   const d2 = dx * dx + dz * dz;
@@ -223,6 +223,15 @@ export function wallsBetween(lv, ax, az, bx, bz, max = 3) {
 }
 
 // ---------------------------------------------------------------------------
+// 鐵捲門拉到這個高度以上才過得去（玩家的碰撞與她的尋路一致）
+export const SHUTTER_PASS = 0.8;
+// 上鎖的門當成牆時用的盒子（整格寬、門板厚度）
+export function lockedDoorBox(d) {
+  const m = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2, plane = (d.o === 'h' ? d.y : d.x) * CELL;
+  return d.o === 'h' ? { minX: m - CELL / 2, maxX: m + CELL / 2, minZ: plane - 0.1, maxZ: plane + 0.1 } : { minX: plane - 0.1, maxX: plane + 0.1, minZ: m - CELL / 2, maxZ: m + CELL / 2 };
+}
+
+// ---------------------------------------------------------------------------
 // 尋路網格
 export class NavGrid {
   constructor(lv, radius, opts = {}) {
@@ -237,17 +246,8 @@ export class NavGrid {
       const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
       if (lv.cellAt(cx, cz) === VOID || lv.blockedCell[cz * lv.W + cx]) this.blocked[j * this.nw + i] = 1;
     }
-    const mark = (b, r) => {
-      const i0 = clamp(Math.floor((b.minX - r) / this.res), 0, this.nw - 1);
-      const i1 = clamp(Math.floor((b.maxX + r) / this.res), 0, this.nw - 1);
-      const j0 = clamp(Math.floor((b.minZ - r) / this.res), 0, this.nh - 1);
-      const j1 = clamp(Math.floor((b.maxZ + r) / this.res), 0, this.nh - 1);
-      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-        const x = (i + 0.5) * this.res, z = (j + 0.5) * this.res;
-        const qx = clamp(x, b.minX, b.maxX), qz = clamp(z, b.minZ, b.maxZ);
-        if ((x - qx) ** 2 + (z - qz) ** 2 < r * r) this.blocked[j * this.nw + i] = 1;
-      }
-    };
+    this.radius = radius;
+    const mark = (b, r) => { for (const k of this.cellsOf(b, r)) this.blocked[k] = 1; };
     for (const p of lv.wallPieces) if (p.minY < 2.0) mark(p, radius);
     if (!opts.ignoreFurniture) {
       for (const f of lv.furniture) {
@@ -258,12 +258,18 @@ export class NavGrid {
     }
     // opts.closed：把上鎖的門與（關著的）鐵捲門當成牆，用來驗證「不開任何鎖也拿得到」的東西
     if (opts.closed) {
-      for (const d of lv.doors) {
-        if (!(d.lock >= 0)) continue;
-        const m = (d.o === 'h' ? d.x : d.y) * CELL + CELL / 2, plane = (d.o === 'h' ? d.y : d.x) * CELL;
-        mark(d.o === 'h' ? { minX: m - CELL / 2, maxX: m + CELL / 2, minZ: plane - 0.1, maxZ: plane + 0.1 } : { minX: plane - 0.1, maxX: plane + 0.1, minZ: m - CELL / 2, maxZ: m + CELL / 2 }, radius);
-      }
+      for (const d of lv.doors) if (d.lock >= 0) mark(lockedDoorBox(d), radius);
       for (const s of lv.shutters || []) mark(s.box, radius);
+    }
+    // opts.dynamic（她的尋路網格）：還鎖著的門、沒拉起來的鐵捲門是會變的牆，開鎖 / 開關時只改那幾格
+    this.base = null;
+    this.comp = null;
+    if (opts.dynamic) {
+      this.base = this.blocked.slice();
+      this.dynCount = new Uint8Array(n);
+      this.dynBlocks = new Map();
+      for (const d of lv.doors) if (d.lock >= 0 && !d.unlocked) this.setBlock('d' + d.id, lockedDoorBox(d), true);
+      for (const s of lv.shutters || []) if (!(s.open >= SHUTTER_PASS)) this.setBlock('s' + s.id, s.box, true);
     }
     // 大門外面不能走
     this.g = new Float32Array(n);
@@ -273,6 +279,63 @@ export class NavGrid {
     this.closedStamp = new Uint32Array(n);
     this.cur = 1;
     this.heap = new Int32Array(n * 4);
+  }
+  // 盒子（加上半徑）蓋到的格子
+  cellsOf(b, r) {
+    const out = [];
+    const i0 = clamp(Math.floor((b.minX - r) / this.res), 0, this.nw - 1);
+    const i1 = clamp(Math.floor((b.maxX + r) / this.res), 0, this.nw - 1);
+    const j0 = clamp(Math.floor((b.minZ - r) / this.res), 0, this.nh - 1);
+    const j1 = clamp(Math.floor((b.maxZ + r) / this.res), 0, this.nh - 1);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const x = (i + 0.5) * this.res, z = (j + 0.5) * this.res;
+      const qx = clamp(x, b.minX, b.maxX), qz = clamp(z, b.minZ, b.maxZ);
+      if ((x - qx) ** 2 + (z - qz) ** 2 < r * r) out.push(j * this.nw + i);
+    }
+    return out;
+  }
+  // 動態的牆（只有 opts.dynamic 的網格）：key 是 'd門' / 's鐵捲門'，on = 擋住。回傳有沒有改變
+  setBlock(key, box, on) {
+    if (!this.base) return false;
+    const had = this.dynBlocks.get(key);
+    if (on === !!had) return false;
+    if (on) {
+      const cells = this.cellsOf(box, this.radius);
+      for (const k of cells) { this.dynCount[k]++; this.blocked[k] = 1; }
+      this.dynBlocks.set(key, cells);
+    } else {
+      for (const k of had) if (--this.dynCount[k] === 0 && !this.base[k]) this.blocked[k] = 0;
+      this.dynBlocks.delete(key);
+    }
+    this.comp = null; // 連通區塊要重算
+    this.version = (this.version || 0) + 1;
+    return true;
+  }
+  isDynBlocked(key) { return !!(this.dynBlocks && this.dynBlocks.has(key)); }
+  // 連通區塊（4 鄰 BFS；A* 不准斜切牆角，所以和 8 鄰一樣）：只在牆變了之後第一次用到時重算
+  compAt(x, z) {
+    const k = this.nearestFree(x, z);
+    if (k < 0) return -1;
+    if (!this.comp) {
+      const n = this.nw * this.nh, comp = new Int32Array(n).fill(-1), q = new Int32Array(n);
+      let id = 0;
+      for (let s = 0; s < n; s++) {
+        if (this.blocked[s] || comp[s] >= 0) continue;
+        let qn = 0;
+        q[qn++] = s;
+        comp[s] = id;
+        for (let qi = 0; qi < qn; qi++) {
+          const c = q[qi], i = c % this.nw;
+          if (i > 0 && !this.blocked[c - 1] && comp[c - 1] < 0) { comp[c - 1] = id; q[qn++] = c - 1; }
+          if (i < this.nw - 1 && !this.blocked[c + 1] && comp[c + 1] < 0) { comp[c + 1] = id; q[qn++] = c + 1; }
+          if (c >= this.nw && !this.blocked[c - this.nw] && comp[c - this.nw] < 0) { comp[c - this.nw] = id; q[qn++] = c - this.nw; }
+          if (c < n - this.nw && !this.blocked[c + this.nw] && comp[c + this.nw] < 0) { comp[c + this.nw] = id; q[qn++] = c + this.nw; }
+        }
+        id++;
+      }
+      this.comp = comp;
+    }
+    return this.comp[k];
   }
   idx(x, z) {
     const i = clamp(Math.floor(x / this.res), 0, this.nw - 1);
@@ -526,6 +589,22 @@ export function validateLevel(lv, playerRadius = 0.3) {
   for (const s of stairs) {
     const k = gnav.nearestFree(s.use.x, s.use.z, 2);
     if (k < 0 || !gseen[k]) return `stairs ${s.id} unreachable for ghost`;
+  }
+  // 最壞的情況：她不能穿過還鎖著的門、也過不了關著的鐵捲門。不開鎖、不拉鐵捲門玩家就走得到的房間，她也一定要走得到
+  // （不然那裡就成了她永遠進不去的安全區）；樓梯也是
+  if ((lv.shutters && lv.shutters.length) || lv.doors.some((d) => d.lock >= 0)) {
+    const wnav = new NavGrid(lv, GHOST_R, { ghost: true, closed: true });
+    const wseen = wnav.reachable(lv.spawn.x, lv.spawn.z);
+    for (const room of lv.rooms) {
+      if (room.id === 0 || room.locked !== undefined || room.gated) continue;
+      if (!nearS(room.cx, room.cz, CELL * 0.75 * Math.max(room.w, room.h))) continue;
+      const k = wnav.nearestFree(room.cx, room.cz);
+      if (k < 0 || !wseen[k]) return `room ${room.id} unreachable for ghost behind locks`;
+    }
+    for (const s of stairs) {
+      const k = wnav.nearestFree(s.use.x, s.use.z, 2);
+      if (k < 0 || !wseen[k]) return `stairs ${s.id} unreachable for ghost behind locks`;
+    }
   }
   return null;
 }

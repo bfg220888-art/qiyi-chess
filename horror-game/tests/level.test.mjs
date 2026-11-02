@@ -2,7 +2,7 @@
 // 也檢查格局的變化：每個主題都要生出好幾種不同的走廊拓樸（棋盤格、環狀、天井、H 形、魚骨形……）
 //   node tests/level.test.mjs [數量] [主題]
 import { generateLevel, generateHospital, E, VOID, FURN } from '../src/level.js';
-import { validateLevel, NavGrid, Collision, sightClear } from '../src/nav.js';
+import { validateLevel, NavGrid, Collision, sightClear, lockedDoorBox } from '../src/nav.js';
 import { DIFFICULTY, GHOST_R, CELL } from '../src/config.js';
 import { THEME_KEYS, THEMES, resolveTheme } from '../src/themes.js';
 
@@ -97,6 +97,22 @@ for (let s = 1; s <= N; s++) {
     if (room.id === 0) continue;
     const p = nav.findPath(lv.spawn.x, lv.spawn.z, room.cx, room.cz, 60000);
     assert(p && p.length, `ghost path to room ${room.id} ${room.type}`);
+  }
+  // 她的動態尋路網格：還鎖著的門是牆（進不了上鎖的房間），開鎖後只更新那幾格就走得進去
+  if (s % 5 === 0) {
+    const dnav = new NavGrid(lv, GHOST_R, { ghost: true, dynamic: true });
+    for (const room of lv.rooms.filter((r) => r.locked !== undefined)) {
+      const d = lv.doors[room.doors[0]];
+      assert(!dnav.findPath(lv.spawn.x, lv.spawn.z, room.cx, room.cz, 60000), `ghost walks into locked room ${room.id}`);
+      assert(dnav.compAt(room.cx, room.cz) !== dnav.compAt(lv.spawn.x, lv.spawn.z), 'locked room is its own nav component');
+      assert(dnav.setBlock('d' + d.id, lockedDoorBox(d), false), 'unlock changes the nav grid');
+      assert(dnav.findPath(lv.spawn.x, lv.spawn.z, room.cx, room.cz, 60000), `ghost cannot enter unlocked room ${room.id}`);
+      assert(dnav.compAt(room.cx, room.cz) === dnav.compAt(lv.spawn.x, lv.spawn.z), 'unlocked room joins the main component');
+      // 重新上鎖、再打開：計數正確，網格回到同一個狀態
+      const snap = dnav.blocked.slice();
+      dnav.setBlock('d' + d.id, lockedDoorBox(d), true); dnav.setBlock('d' + d.id, null, false);
+      assert(snap.every((v, k) => v === dnav.blocked[k]), 'incremental nav update is reversible');
+    }
   }
   // 內室（不貼走廊的房間）一定有門通到別的房間
   for (const room of lv.rooms) if (room.inner) assert(room.doors.length > 0, `inner room ${room.id} has no door`);
@@ -215,6 +231,17 @@ for (let s = 1; s <= MS; s++) {
       const ci = (it) => Math.floor(it.z / CELL) * l.W + Math.floor(it.x / CELL);
       for (const it of l.items) if (['fuse', 'keycard', 'relic'].includes(it.kind)) assert(!l.gatedCells.has(ci(it)), `${it.kind} behind a shutter`);
       for (const rm of [l.generatorRoom, l.stairRoom, l.room707, ...l.locked].filter(Boolean)) assert(!rm.gated, `${rm.type} behind a shutter`);
+      // 她的尋路網格：鐵捲門關著時過不去那一格（死路的話整塊走不到），拉起來之後走得過去
+      const dnav = new NavGrid(l, GHOST_R, { ghost: true, dynamic: true });
+      const a = sh.axis === 'x' ? { x: sh.cx - CELL * 0.45, z: sh.cz } : { x: sh.cx, z: sh.cz - CELL * 0.45 };
+      const b = sh.axis === 'x' ? { x: sh.cx + CELL * 0.45, z: sh.cz } : { x: sh.cx, z: sh.cz + CELL * 0.45 };
+      const lineThrough = (p) => !!p && p.length && (() => { let pr = a; for (const q of p) { const minX = Math.min(pr.x, q.x), maxX = Math.max(pr.x, q.x), minZ = Math.min(pr.z, q.z), maxZ = Math.max(pr.z, q.z); if (maxX >= sh.box.minX && minX <= sh.box.maxX && maxZ >= sh.box.minZ && minZ <= sh.box.maxZ) return true; pr = q; } return false; })();
+      assert(dnav.isDynBlocked('s' + sh.id) && !dnav.isFree(sh.cx, sh.cz), 'closed shutter blocks her nav');
+      const closedPath = dnav.findPath(a.x, a.z, b.x, b.z, 60000);
+      assert(!lineThrough(closedPath), 'ghost path goes through a closed shutter');
+      if (sh.gated) assert(!closedPath, 'gated dead end unreachable for her while closed');
+      dnav.setBlock('s' + sh.id, null, false);
+      assert(dnav.isFree(sh.cx, sh.cz) && dnav.findPath(a.x, a.z, b.x, b.z, 60000), 'open shutter lets her through');
     }
   }
   if (s % 3 === 0) {

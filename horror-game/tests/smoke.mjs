@@ -479,9 +479,15 @@ await run('floors', { viewport: { width: 960, height: 540 } }, { quality: 'low',
     log('arrived', JSON.stringify(st));
     assert(st.cur === to && st.pf === to && st.vis.filter(Boolean).length === 1 && st.vis[to] && !st.locked && !st.stair && st.inside, 'switched to floor ' + to);
     seen.add(to);
-    const w0 = await sim(page, 0.05);
-    const w1 = await sim(page, 1.5, { my: 1 });
-    assert(Math.hypot(w1.x - w0.x, w1.z - w0.z) > 1, 'can walk on the new floor');
+    // 樓梯間裡可能有兩座樓梯並排：抵達時正前方是另一座樓梯，就換個方向走
+    let walked = 0;
+    for (const dir of [{ my: 1 }, { mx: 1 }, { mx: -1 }, { my: -1 }]) {
+      const w0 = await sim(page, 0.05);
+      const w1 = await sim(page, 1.5, dir);
+      walked = Math.max(walked, Math.hypot(w1.x - w0.x, w1.z - w0.z));
+      if (walked > 1) break;
+    }
+    assert(walked > 1, 'can walk on the new floor');
     const r = await render(page);
     log(`render floor ${to}`, JSON.stringify(r));
     await shot(page, `f${hop}-floor${to}`);
