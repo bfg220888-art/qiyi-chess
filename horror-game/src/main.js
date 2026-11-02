@@ -98,12 +98,6 @@ class App {
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFShadowMap;
     r.setClearColor(0x000000, 1);
-    // 不透明物件的繪製順序：先依距離分成 8 公尺一段、由近到遠，同一段裡再依材質排（少切換著色器）。
-    // three.js 預設是「先依材質、再依距離」，同一種材質（例如所有的牆）裡由近到遠，但不同材質之間沒有，
-    // 遠處被牆擋住的地板、家具照樣先畫、算完整的光照才被蓋掉。先畫近的，後面被擋住的像素在深度測試就被丟掉
-    r.setOpaqueSort((a, b) => (a.groupOrder - b.groupOrder) || (a.renderOrder - b.renderOrder)
-      || (Math.floor(a.z / 8) - Math.floor(b.z / 8)) || (a.material.id - b.material.id)
-      || ((a.materialVariant || 0) - (b.materialVariant || 0)) || (a.z - b.z) || (a.id - b.id));
     this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.fatal('顯示卡資源不足，畫面中斷了。請重新整理頁面，或在設定裡把畫質調低。'); });
     this.input = new Input(this.canvas, $('touch'), this.settings);
     installTouchGuards();

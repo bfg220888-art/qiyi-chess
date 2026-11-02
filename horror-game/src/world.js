@@ -9,14 +9,11 @@ import { makeCorpse, placeCorpse } from './corpses.js';
 import { THEMES } from './themes.js';
 
 const HT = WALL_T / 2;
-// 靜態網格的分組（見 World.areaKey）：走廊每 AREA×AREA 格一組，房間每個房間一組（大房間再切成 ROOM_AREA 格見方）
-const AREA = 3;
-const ROOM_AREA = 4;
-// 家具、貼花等小東西：材質種類多，分太細繪製次數會暴增，維持 6×6 格一組
+// 靜態網格每 6×6 格（18 公尺）一組。試過牆、地板、天花板改成一個房間一組（走廊 3×3 格）：
+// 每個像素算光照的次數少了 0～17%（本來就只有 1.1～1.5 次），繪製次數卻多了 25～30%，整體不划算，所以維持大塊
 const CHUNK = 6;
 // 霧的距離剔除：FogExp2 的剩餘比例 exp(-(密度·深度)²)；(密度·深度)² > 6.9 時只剩 0.1%，跟霧的顏色分不出來
 const FOG_CULL = Math.sqrt(6.9);
-const _v = new THREE.Vector3();
 const _col = new THREE.Color();
 const AO_KNOTS = [[0, 0.42], [0.12, 0.62], [0.45, 0.9], [1.2, 1.0], [WALL_H - 0.35, 1.0], [WALL_H, 0.7]];
 function aoAt(y) {
@@ -83,7 +80,7 @@ export class World {
     this.opts = opts;
     this.root = new THREE.Group();
     scene.add(this.root);
-    this.static = new Map(); // materialKey -> Map(areaKey -> geos)
+    this.static = new Map(); // materialKey -> Map(chunkKey -> geos)
     this.cull = []; // 霧的距離剔除清單（見 updateCull）
     this.interactables = [];
     this.removed = [];
@@ -125,23 +122,12 @@ export class World {
   addStatic(geo, mat, cx, cz, opts = {}) {
     const key = mat.uuid + (opts.noShadow ? ':ns' : '') + (opts.noCast ? ':nc' : '');
     if (!this.static.has(key)) this.static.set(key, { mat, opts, chunks: new Map() });
-    const ck = opts.fine ? this.areaKey(cx, cz) : this.chunkKey(cx, cz);
+    const ck = this.chunkKey(cx, cz);
     const entry = this.static.get(key);
     if (!entry.chunks.has(ck)) entry.chunks.set(ck, []);
     entry.chunks.get(ck).push(geo);
   }
-  // 靜態網格合併的分組鍵。以前整層切成 18 公尺的大塊，幾乎每一塊都有一角在畫面裡，
-  // 視錐剔除剔不掉，排序也只能用大塊的中心（遠處被牆擋住的像素照樣算一次光照）。
-  // 牆、地板、天花板（畫面上面積最大、最花像素的部分）改成「一個房間一組、走廊 3×3 格一組」：
-  // 看不到的房間整組略過，由近到遠排序也比較準。家具與貼花材質種類多，維持大塊（chunkKey），繪製次數才不會暴增
   chunkKey(x, z) { return Math.floor(x / (CELL * CHUNK)) + ',' + Math.floor(z / (CELL * CHUNK)); }
-  areaKey(x, z) {
-    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
-    const id = this.lv.cellAt(cx, cz);
-    const room = id > 0 ? this.lv.rooms[id] : null;
-    if (room) return 'r' + id + ':' + Math.floor((cx - room.x0) / ROOM_AREA) + ',' + Math.floor((cz - room.y0) / ROOM_AREA);
-    return 'c' + Math.floor(cx / AREA) + ',' + Math.floor(cz / AREA);
-  }
   // 把一個 Group 的所有 mesh 烘進靜態合併表
   bakeGroup(group, opts = {}) {
     group.updateMatrixWorld(true);
@@ -252,9 +238,8 @@ export class World {
       const room = id > 0 ? lv.rooms[id] : null;
       return (room && look.wall[room.type]) || look.wall.default;
     };
-    // 牆面依「朝向哪一側」分組：朝房間內的那一面跟房間一組，朝走廊的那一面跟走廊一組
     const getWB = (cx, cz, kind) => {
-      const k = kind + '|' + this.areaKey(cx, cz);
+      const k = kind + '|' + this.chunkKey(cx, cz);
       if (!wallBuilders.has(k)) wallBuilders.set(k, { b: new GeoBuilder(true), x: cx, z: cz, kind });
       return wallBuilders.get(k).b;
     };
@@ -268,7 +253,7 @@ export class World {
     for (const p of lv.wallPieces) {
       const ys = cuts(p.minY, p.maxY);
       const cx = (p.minX + p.maxX) / 2, cz = (p.minZ + p.maxZ) / 2;
-      const B = (x, z) => getWB(x, z, wallKindAt(x, z));
+      const B = (x, z) => getWB(cx, cz, wallKindAt(x, z));
       const b = B(cx, cz);
       const U = (v) => v / CELL;
       for (let k = 0; k < ys.length - 1; k++) {
@@ -296,12 +281,12 @@ export class World {
     }
     for (const { b, x, z, kind } of wallBuilders.values()) {
       if (b.empty) continue;
-      this.addStatic(b.build(), M.walls[kind] || M.wall, x, z, { fine: true });
+      this.addStatic(b.build(), M.walls[kind] || M.wall, x, z);
     }
     // 地板與天花板
     const floorB = new Map();
     const fb = (mat, cx, cz) => {
-      const k = mat.uuid + '|' + this.areaKey(cx, cz);
+      const k = mat.uuid + '|' + this.chunkKey(cx, cz);
       if (!floorB.has(k)) floorB.set(k, { b: new GeoBuilder(false), mat, x: cx, z: cz });
       return floorB.get(k).b;
     };
@@ -336,7 +321,7 @@ export class World {
         fb(M.ceiling, cx, cz).quad([x0, WALL_H, z0], [x1, WALL_H, z0], [x1, WALL_H, z1], [x0, WALL_H, z1], [0, -1, 0], [[U(x0), U(z0)], [U(x1), U(z0)], [U(x1), U(z1)], [U(x0), U(z1)]]);
       }
     }
-    for (const { b, mat, x, z } of floorB.values()) this.addStatic(b.build(), mat, x, z, { noCast: true, fine: true });
+    for (const { b, mat, x, z } of floorB.values()) this.addStatic(b.build(), mat, x, z, { noCast: true });
   }
 
   // ---------------------------------------------------------------------
