@@ -36,7 +36,7 @@ export class Director {
     }
     // 鬼魂登場 / 回來（多人時只有房主決定）
     const authority = !g.mp || g.mp.isHost;
-    if (authority && gh.state === 'dormant') {
+    if (authority && gh.state === 'dormant' && !gh.banished) {
       const ready = gh.dormantUntil ? t > gh.dormantUntil : (t > g.diff.grace || g.fusesInserted > 0 || P.fuses > 0);
       if (ready && !g.dying) {
         // 在她要找的人那一層出現
@@ -50,11 +50,11 @@ export class Director {
       }
     }
     // 幻影
-    if (this.apparition.visible && !this.fakeRush) this.updateApparition(dt);
+    if (this.apparition.visible && !this.fakeRush && !g.ritual) this.updateApparition(dt);
     if (this.fakeRush) this.updateRush(dt);
 
     // 隨機事件
-    if (g.phase === 'escape' || g.mpStatus) return;
+    if (g.phase === 'escape' || g.mpStatus || g.ritual) return;
     this.next -= dt;
     if (this.next <= 0) {
       this.next = rnd(20, 42) * (1 - 0.12 * g.fusesInserted) * (P.sanity < 0.35 ? 0.65 : 1);
@@ -68,8 +68,8 @@ export class Director {
     const low = P.sanity < 0.4;
     const opts = [
       ['flicker', 3], ['distant', 3], ['doorSlam', 2.5], ['steps', 2], ['whisper', low ? 3 : 1.2],
-      ['musicBox', 1.2], ['wheelchair', 1.5], ['thunder', 2], ['peek', 1.5], ['writing', this.writings < 3 ? 1.2 : 0],
-      ['lightsOut', g.fusesInserted > 0 ? 1.5 : 0], ['breath', low ? 2 : 0.3], ['rush', P.sanity < 0.3 ? 2 : 0],
+      ['musicBox', 1.2], ['wheelchair', 1.5], ['thunder', 2], ['peek', g.ghost.banished ? 0 : 1.5], ['writing', this.writings < 3 ? 1.2 : 0],
+      ['lightsOut', g.fusesInserted > 0 ? 1.5 : 0], ['breath', low ? 2 : 0.3], ['rush', P.sanity < 0.3 && !g.ghost.banished ? 2 : 0],
       ['phone', g.lv.phone && !this.used.has('phone') && g.time > 60 ? 2.5 : 0],
       ['corpse', g.world.corpseMeshes && g.world.corpseMeshes.length && (this.corpseMoves || 0) < 2 && g.time > 75 ? 2 : 0],
     ];

@@ -1111,6 +1111,52 @@ export class PropBuilder {
     return g;
   }
 
+  // 放遺物的搖籃：矮木桌上一個舊木頭搖籃（裡面鋪著小被子），桌上兩根燒短的蠟燭、一張手寫小卡。
+  // 互動用（不合併進靜態網格）；userData.slots = 三件遺物放回去的位置、flames = 燭火
+  altar() {
+    const { M } = this, g = new THREE.Group(), r = this.rng;
+    // 桌子
+    this.box(g, M.wood, 1.02, 0.045, 0.6, 0, 0.5, 0);
+    for (const [x, z] of [[-0.47, -0.25], [0.47, -0.25], [-0.47, 0.25], [0.47, 0.25]]) this.box(g, M.wood, 0.045, 0.48, 0.045, x, 0.24, z);
+    this.box(g, M.wood, 0.94, 0.03, 0.5, 0, 0.12, 0);
+    this.box(g, M.fabric, 1.04, 0.012, 0.42, 0, 0.528, 0.04, { uvScale: 1.3 }); // 白色桌巾
+    this.box(g, M.fabric, 1.04, 0.16, 0.012, 0, 0.45, 0.25, { uvScale: 1.3 });
+    // 搖籃：兩片弧形底座、四面木板、欄杆
+    const y0 = 0.56, L = 0.62, W = 0.36;
+    for (const s of [-1, 1]) {
+      this.box(g, M.wood, 0.03, 0.05, W + 0.08, s * (L / 2 - 0.04), y0 + 0.02, 0);
+      this.box(g, M.wood, 0.025, 0.24, W, s * L / 2, y0 + 0.14, 0); // 床頭、床尾
+      this.box(g, M.wood, L, 0.022, 0.02, 0, y0 + 0.17, s * W / 2);
+      this.box(g, M.wood, L, 0.06, 0.016, 0, y0 + 0.06, s * W / 2);
+      for (let k = 1; k < 8; k++) this.box(g, M.wood, 0.012, 0.08, 0.012, -L / 2 + k * L / 8, y0 + 0.12, s * W / 2, { uv: false });
+    }
+    this.box(g, M.wood, L, 0.02, W, 0, y0 + 0.045, 0);
+    this.box(g, M.mattress, L - 0.04, 0.04, W - 0.03, 0, y0 + 0.075, 0);
+    const bl = this.box(g, M.fabric, 0.28, 0.02, W - 0.05, -0.14, y0 + 0.1, 0, { uvScale: 1.2 });
+    bl.rotation.y = r.range(-0.1, 0.1);
+    // 蠟燭（燭火另外處理：會閃）
+    const flames = [];
+    for (const [x, z, h] of [[-0.44, 0.16, 0.11], [0.44, 0.14, 0.08], [0.4, 0.2, 0.05]]) {
+      this.cyl(g, M.candle, 0.022, 0.024, h, x, 0.53 + h / 2, z, { seg: 10 });
+      const f = this.sphere(g, M.flame, 0.012, x, 0.53 + h + 0.018, z, 0.8, 1.8, 0.8, 6);
+      f.userData.keep = true;
+      flames.push(f);
+    }
+    // 手寫小卡
+    this.box(g, M.paperMat, 0.1, 0.07, 0.004, -0.3, 0.57, 0.18, { rx: -0.35 });
+    const slots = [];
+    for (const [x, ry] of [[-0.17, 0.4], [0.02, -0.2], [0.2, 0.25]]) {
+      const o = new THREE.Object3D();
+      o.position.set(x, y0 + 0.1, 0.01);
+      o.rotation.y = ry;
+      g.add(o);
+      slots.push(o);
+    }
+    g.userData.slots = slots;
+    g.userData.flames = flames;
+    return g;
+  }
+
   // ---- 撿拾道具（不合併，會發光）
   pickup(kind, it = {}) {
     const { M } = this, g = new THREE.Group();
@@ -1124,6 +1170,27 @@ export class PropBuilder {
         this.box(g, col, 0.014, 0.004, 0.16, 0.01, 0.002, -0.125, { uv: false, ry: 0.35 }); // 斷掉的識別證繩
         break;
       }
+      case 'relic':
+        if (it.relic === 0) {
+          // 毛線嬰兒鞋：鞋底、鞋身、鞋口一圈、蝴蝶結
+          this.sphere(g, M.knit, 0.04, 0, 0.014, 0, 0.75, 0.35, 1.25, 10);
+          this.sphere(g, M.knit, 0.034, 0, 0.034, -0.012, 0.8, 0.85, 1.0, 10);
+          this.cyl(g, M.knit, 0.026, 0.028, 0.03, 0, 0.06, -0.016, { seg: 10 });
+          this.sphere(g, M.photoBorder, 0.009, -0.012, 0.05, 0.022, 1.4, 0.7, 0.9, 6);
+          this.sphere(g, M.photoBorder, 0.009, 0.012, 0.05, 0.022, 1.4, 0.7, 0.9, 6);
+        } else if (it.relic === 1) {
+          // 出生手環：粉紅色塑膠環＋白色名牌
+          const ring = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.0055, 6, 20), M.bandPink);
+          ring.rotation.x = Math.PI / 2;
+          ring.position.y = 0.006;
+          g.add(ring);
+          this.box(g, M.photoBorder, 0.045, 0.006, 0.022, 0.032, 0.007, 0, { uv: false, ry: 0.2 });
+        } else {
+          // 舊照片：白邊拍立得
+          this.box(g, M.photoBorder, 0.09, 0.003, 0.108, 0, 0.0015, 0, { uv: false });
+          this.box(g, M.photo, 0.078, 0.0035, 0.078, 0, 0.002, -0.009, { uv: false });
+        }
+        break;
       case 'fuse':
         this.cyl(g, M.fuseGlass, 0.022, 0.022, 0.1, 0, 0.022, 0, { rz: Math.PI / 2, seg: 10, uv: false });
         this.cyl(g, M.brass, 0.025, 0.025, 0.025, -0.06, 0.022, 0, { rz: Math.PI / 2, seg: 10 });

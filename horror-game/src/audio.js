@@ -551,6 +551,44 @@ export class AudioEngine {
     this.thump(out, t + 0.42, 90, 45, 0.18, 0.55);
     this.burst(out, t + 0.42, { type: 'brown', ftype: 'lowpass', f: 700, a: 0.002, d: 0.12, peak: 0.4 });
   }
+  // 遺物放進搖籃：木頭輕輕一響、搖籃晃了一下、音樂盒自己響了一個音
+  s_relicPlace(o, t) {
+    const out = this.out(o, 4, 0.5);
+    this.thump(out, t, 180, 90, 0.08, 0.35);
+    this.burst(out, t, { f: 1200, q: 2, a: 0.001, d: 0.03, peak: 0.15 });
+    for (let k = 0; k < 3; k++) this.burst(out, t + 0.35 + k * 0.42, { type: 'brown', ftype: 'bandpass', f: rnd(380, 460), q: 3, a: 0.05, d: 0.25, peak: 0.12 - k * 0.03 });
+    const f = mtof(83 + pick([0, -3, -5]));
+    this.osc('sine', f, t + 0.6, 1.6).connect(this.env(t + 0.6, 0.002, 1.5, 0.08)).connect(out);
+    this.osc('sine', f * 3.01, t + 0.6, 0.5).connect(this.env(t + 0.6, 0.002, 0.45, 0.02)).connect(out);
+  }
+  // 鐵捲門的把手：棘輪喀一聲
+  s_crankTick(o, t) {
+    const out = this.out(o, 0.6, 0.25);
+    this.burst(out, t, { f: rnd(2200, 2800), q: 6, a: 0.0005, d: 0.02, peak: 0.22 });
+    this.ring(out, t, [[rnd(1150, 1300), 30, 0.4]], 0.12, 0.18);
+  }
+  // 鐵捲門被拉起來：鍊條與一片片鋼板嘩啦嘩啦往上捲
+  s_shutterUp(o, t) {
+    const out = this.out(o, 2.4, 0.5);
+    const n = this.noise('pink'), bp = this.filt('bandpass', 900, 0.8), g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    for (let k = 0; k < 24; k++) g.gain.setValueAtTime(rnd(0.05, 0.22), t + 0.05 + k * 0.075);
+    g.gain.linearRampToValueAtTime(0.0001, t + 2.0);
+    n.connect(bp).connect(g).connect(out);
+    this.startNoise(n, t, 2.05);
+    for (let k = 0; k < 10; k++) this.ring(out, t + 0.1 + k * 0.18 + rnd(0, 0.05), [[rnd(420, 520), 25, 0.5], [rnd(1300, 1500), 30, 0.25]], 0.25, 0.22);
+  }
+  // 放手：整片鐵捲門摔下來（很大聲）
+  s_shutterSlam(o, t) {
+    const out = this.out(o, 3, 0.8);
+    const n = this.noise('pink'), bp = this.filt('bandpass', 1100, 0.7);
+    n.connect(bp).connect(this.env(t, 0.02, 0.28, 0.35)).connect(out);
+    this.startNoise(n, t, 0.3);
+    this.thump(out, t + 0.28, 70, 32, 0.6, 1.0);
+    this.burst(out, t + 0.28, { type: 'brown', ftype: 'lowpass', f: 900, a: 0.002, d: 0.4, peak: 0.9 });
+    this.ring(out, t + 0.28, [[310, 30, 0.7], [760, 40, 0.5], [1510, 45, 0.35], [2620, 60, 0.2]], 2.2, 1.0);
+    this.ring(out, t + 0.4, [[330, 25, 0.4], [905, 35, 0.3]], 1.0, 0.4);
+  }
   // 讀卡機：嗶一聲轉綠、電子鎖「喀」地彈開
   s_cardBeep(o, t) {
     const out = this.out(o, 1.2, 0.2);

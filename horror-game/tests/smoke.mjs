@@ -354,7 +354,7 @@ await run('ghost', { viewport: { width: 960, height: 540 } }, { quality: 'low', 
   // 她去查看聲音時也可能順便看到玩家而直接追過來，只要不是繼續閒晃就算有反應
   assert(['investigate', 'search', 'chase'].includes(after.state), 'ghost should react to the noise, got ' + after.state);
   // 6. 門
-  const di = await page.evaluate(() => window.__SW.game.lv.doors.findIndex((d) => d.angle < 0.05));
+  const di = await page.evaluate(() => window.__SW.game.lv.doors.findIndex((d) => d.angle < 0.05 && !(d.lock >= 0)));
   const dt = await faceThing(page, 'door', di);
   log('door target', di, dt);
   assert(dt && dt.startsWith('door'), 'door target ' + dt);
@@ -575,6 +575,84 @@ await run('ritual', { viewport: { width: 960, height: 540 } }, { quality: 'low',
   await page.evaluate((i) => { const g = window.__SW.game, d = g.lv.doors[i]; d.angle = d.target = 0; d.dirty = true; g.world.updateDoorMatrices(true); }, info.door);
   t = await faceThing(page, 'door', info.door);
   assert(t && t.startsWith('door:開門'), 'unlocked door is a normal door now ' + t);
+
+  // 遺物：撿起來會看到文字，HUD 顯示 遺物 n/3
+  const relicIdx = await page.evaluate(() => window.__SW.game.lv.items.map((it, i) => (it.kind === 'relic' ? i : -1)).filter((i) => i >= 0));
+  assert(relicIdx.length === 3, 'three relics on a single floor');
+  const pickRelic = async (i) => {
+    const tt = await faceThing(page, 'itemAt', i);
+    assert(tt && tt.startsWith('item:撿起'), 'relic target ' + tt);
+    await sim(page, 0.05, { actions: ['interact'] });
+    const note = await page.evaluate(() => ({ open: !document.getElementById('note').hidden, title: document.getElementById('noteTitle').textContent }));
+    assert(note.open && note.title.length > 0, 'relic inspect text');
+    return note.title;
+  };
+  log('relic', await pickRelic(relicIdx[0]));
+  await shot(page, 'r5-relic-note');
+  await sim(page, 0.05, { actions: ['interact'] });
+  log('relic', await pickRelic(relicIdx[1]));
+  await sim(page, 0.05, { actions: ['interact'] });
+  const rh = await page.evaluate(() => ({ text: document.getElementById('relicCount').textContent, shown: !document.getElementById('relicStat').hidden, obj: document.getElementById('objective').textContent }));
+  log('relic hud', JSON.stringify(rh));
+  assert(rh.shown && rh.text === '0/3 +2' && rh.obj.includes('搖籃'), 'relic HUD');
+  // 放回搖籃（劇情房間）：她更生氣
+  t = await faceThing(page, 'altar');
+  log('altar', t);
+  assert(t && t.startsWith('altar:把遺物放進搖籃'), 'altar target ' + t);
+  const ag0 = await page.evaluate(() => window.__SW.game.ghost.aggression);
+  await sim(page, 0.05, { actions: ['interact'] });
+  const ag1 = await page.evaluate(() => ({ a: window.__SW.game.ghost.aggression, n: window.__SW.game.relicsPlaced.size, slots: window.__SW.game.world.altar.userData.slots.map((s) => s.children.length) }));
+  log('placed', JSON.stringify(ag1));
+  assert(ag1.n === 2 && ag1.a > ag0 && ag1.slots.filter(Boolean).length === 2, 'two relics placed, ghost angrier');
+  await sim(page, 1.5);
+  // 截圖：退一步看搖籃
+  await page.evaluate(() => {
+    const g = window.__SW.game, P = g.player, a = g.lv.altar;
+    const x = a.x + Math.sin(a.rot) * 1.3, z = a.z + Math.cos(a.rot) * 1.3;
+    P.pos.x = x; P.pos.z = z; P.yaw = Math.atan2(-(a.x - x), -(a.z - z)); P.pitch = -0.58; P.flashOn = true; P.battery = 1; P.applyCamera(0.016, 0);
+  });
+  await sim(page, 0.05);
+  await page.evaluate(() => document.getElementById('prompt').classList.remove('show'));
+  await page.waitForTimeout(250);
+  await render(page);
+  await shot(page, 'r6-altar-relics');
+  // 第三件 → 儀式：音樂盒、她出現在搖籃旁、柔光，然後她就不見了
+  log('relic', await pickRelic(relicIdx[2]));
+  await sim(page, 0.05, { actions: ['interact'] });
+  await faceThing(page, 'altar');
+  await sim(page, 0.05, { actions: ['interact'] });
+  await page.evaluate(() => {
+    const g = window.__SW.game, P = g.player, a = g.lv.altar;
+    const x = a.x + Math.sin(a.rot) * 2.1 + Math.cos(a.rot) * 0.6, z = a.z + Math.cos(a.rot) * 2.1 - Math.sin(a.rot) * 0.6;
+    if (!g.collision.overlapsAny(x, z, 0.3)) { P.pos.x = x; P.pos.z = z; }
+    P.yaw = Math.atan2(-(a.x - P.pos.x), -(a.z - P.pos.z)); P.pitch = -0.1; P.applyCamera(0.016, 0);
+  });
+  assert(await page.evaluate(() => !!window.__SW.game.ritual && window.__SW.game.ghost.banished), 'ritual started, ghost banished');
+  await sim(page, 3.2);
+  const rv = await page.evaluate(() => ({ app: window.__SW.game.director.apparition.visible, glow: window.__SW.game.world.altarGlow.material.opacity }));
+  log('ritual', JSON.stringify(rv));
+  assert(rv.app && rv.glow > 0.3, 'apparition at the crib with a soft glow');
+  await render(page);
+  await shot(page, 'r7-ritual');
+  await sim(page, 8);
+  const done = await page.evaluate(() => { const g = window.__SW.game; return { done: g.ritualDone, ritual: !!g.ritual, ghost: g.ghost.state, app: g.director.apparition.visible }; });
+  log('after ritual', JSON.stringify(done));
+  assert(done.done && !done.ritual && done.ghost === 'dormant' && !done.app, 'ritual finished, ghost gone');
+  // 她不會再回來：時間過很久、插上保險絲也一樣
+  await sim(page, 30);
+  assert(await page.evaluate(() => window.__SW.game.ghost.state === 'dormant'), 'ghost stays gone');
+  // 安息結局：還是要通電開門才出得去
+  await page.evaluate(() => { const g = window.__SW.game; for (let i = 0; i < 3; i++) g.applyFuse(g.fusesInserted++); });
+  await page.waitForTimeout(2200);
+  await sim(page, 1.5);
+  assert(await page.evaluate(() => window.__SW.game.lv.gate.open && window.__SW.game.ghost.state === 'dormant'), 'gate open, still no ghost');
+  await page.evaluate(() => { const g = window.__SW.game, P = g.player; P.pos.x = g.lv.gate.x; P.pos.z = g.lv.gate.z - 1.2; P.yaw = Math.PI; P.pitch = 0; });
+  await sim(page, 3, { my: 1 });
+  await page.waitForFunction(() => !document.getElementById('end').hidden, null, { timeout: 10000 });
+  const end = await page.evaluate(() => ({ title: document.getElementById('endTitle').textContent, text: document.getElementById('endText').textContent, stats: document.getElementById('endStats').textContent }));
+  log('end', JSON.stringify(end).slice(0, 200));
+  assert(end.title === '安息' && end.stats.includes('結局') && end.stats.includes('3/3'), 'rest-in-peace ending');
+  await shot(page, 'r8-ending');
 });
 
 await run('portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }, { quality: 'low' }, async (page) => {

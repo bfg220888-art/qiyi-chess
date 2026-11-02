@@ -114,10 +114,11 @@ export class Player {
     let speed = 0;
     if (!this.hiding && !this.locked) {
       if (inp.crouchToggle) this.crouching = !this.crouching;
-      const crouch = this.crouching || inp.crouchHold;
+      // 倒地（多人）：只能在地上很慢地爬
+      const crouch = this.downed || this.crouching || inp.crouchHold;
       let mx = inp.mx, my = inp.my;
       const moving = Math.hypot(mx, my) > 0.05;
-      let sprint = inp.sprint && moving && my > 0.1 && !crouch && !this.exhausted;
+      let sprint = inp.sprint && moving && my > 0.1 && !crouch && !this.exhausted && !this.downed;
       if (sprint) {
         this.stamina -= dt / (6.5 * (g.diff.label === '簡單' ? 1.3 : 1));
         if (this.stamina <= 0) { this.stamina = 0; this.exhausted = true; sprint = false; g.ui.hint('你喘不過氣了……', 2); }
@@ -127,8 +128,8 @@ export class Player {
         if (this.staminaRest <= 0) this.stamina = Math.min(1, this.stamina + dt / (moving ? 11 : 7));
         if (this.exhausted && this.stamina > 0.35) this.exhausted = false;
       }
-      const target = crouch ? 1.25 : sprint ? 4.6 : 2.55;
-      this.eye += ((crouch ? CROUCH_H : EYE_H) - this.eye) * Math.min(1, dt * 8);
+      const target = this.downed ? 0.32 : crouch ? 1.25 : sprint ? 4.6 : 2.55;
+      this.eye += ((this.downed ? 0.42 : crouch ? CROUCH_H : EYE_H) - this.eye) * Math.min(1, dt * (this.downed ? 3 : 8));
       this.crouchNow = crouch;
       this.sprinting = sprint;
       const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
@@ -156,8 +157,10 @@ export class Player {
         this.stepAcc = 0;
         const room = g.lv.roomAtWorld(this.pos.x, this.pos.z);
         const surface = room && room.id > 0 && !['office', 'nurse', 'lobby'].includes(room.type) ? 'tile' : 'vinyl';
-        g.audio.play('footstep', { run: sprint, crouch, surface });
-        g.makeNoise(this.pos.x, this.pos.z, sprint ? 15 : crouch ? 2 : 6.5, 'step');
+        if (!this.downed) {
+          g.audio.play('footstep', { run: sprint, crouch, surface });
+          g.makeNoise(this.pos.x, this.pos.z, sprint ? 15 : crouch ? 2 : 6.5, 'step');
+        }
       }
     } else {
       this.vel.set(0, 0);

@@ -287,3 +287,15 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 .hud-pause span { font-size: 11px; color: var(--dim); border: 1px solid var(--faint); padding: 0 4px; border-radius: 2px; }
 .hud-pause:hover, .hud-pause:focus-visible { border-color: var(--ink); outline: none; }
 .hud-pause[hidden] { display: none; }
+
+/* 按住互動的進度環（扶起倒地的隊友）：圍著準心一圈 */
+#holdRing { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(var(--ink) calc(var(--p, 0) * 1turn), rgba(255, 255, 255, 0.12) 0);
+  -webkit-mask: radial-gradient(circle, transparent 17px, #000 18px); mask: radial-gradient(circle, transparent 17px, #000 18px);
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.8)); }
+/* 倒地：畫面中間偏上的倒數 */
+#downed { position: absolute; left: 50%; top: calc(50% + 26px); transform: translateX(-50%); text-align: center; pointer-events: none; text-shadow: 0 1px 3px #000; }
+#downed .down-title { margin: 0; font-family: var(--display); font-size: 30px; letter-spacing: 0.2em; color: #e8b8b0; }
+#downed .down-text { margin: 6px 0 10px; font-size: 15px; color: var(--ink); }
+#downed .down-bar { width: 220px; height: 4px; margin: 0 auto; background: rgba(255, 255, 255, 0.15); }
+#downed .down-bar span { display: block; height: 100%; width: 100%; background: #c8302a; }

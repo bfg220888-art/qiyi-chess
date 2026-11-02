@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CELL, GHOST_R, DIFFICULTY, WALL_H } from './config.js';
-import { generateHospital, NOTES, E, MAX_FLOORS, KEY_COLORS } from './level.js';
+import { generateHospital, NOTES, E, MAX_FLOORS, KEY_COLORS, RELICS } from './level.js';
 import { Collision, NavGrid, validateLevel, sightClear, wallsBetween } from './nav.js';
 import { TextureFactory } from './textures.js';
 import { World } from './world.js';
@@ -37,6 +37,8 @@ export class Game {
     this.floorTitle = themeTitle(this.theme);
     // 樓層數：單人預設 1 層（網址 ?floors=N 可以測試多層）；多人依難度 1～3 層
     this.floorCount = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(opts.floors)) || 1));
+    // 多人開局時的人數（2 人以上才有雙人鐵捲門）：每個人都用房主開始時給的數字生成
+    this.startPlayers = opts.mp ? Math.max(1, Math.min(4, Math.floor(Number(opts.players)) || 1)) : 1;
     this.floorIdx = 0;
     this.floors = [];
     this.stairT = null;
@@ -52,6 +54,10 @@ export class Game {
     this.staticBoost = 0;
     this.damage = 0;
     this.notesRead = new Set();
+    // 遺物與儀式：放回搖籃的遺物、儀式進行中（演出）、儀式完成（她安息了，不會再出現）
+    this.relicsPlaced = new Set();
+    this.ritual = null;
+    this.ritualDone = false;
     this.stats = { stuns: 0, hides: 0, caught: 0, photos: 0 };
     this.raycaster = new THREE.Raycaster();
     this.raycaster.far = 2.4;
@@ -64,13 +70,21 @@ export class Game {
     this.mp = opts.mp || null;
     this.remotes = new Map(); // slot → 其他玩家
     this.mpStatus = 0; // 0 還在裡面、1 被抓走、2 逃出去了
+    // 多人合作：倒地（{ t: 剩下幾秒 }）、這一局被扶起來過了沒、正在扶誰、正在轉哪一道鐵捲門的把手
+    this.downed = null;
+    this.reviveUsed = false;
+    this.reviving = null;
+    this.cranking = null;
+    this.mpRevives = new Map(); // 房主：誰正在被誰扶（{ by, start, last }）
+    this.mpRevived = new Set(); // 房主：這一局已經被扶起來過的人
+    this.shutT = 0;
   }
 
   async build(progress) {
     progress(0.05, '正在畫出樓層平面圖……');
     await nextFrame();
     // 每一層：關卡、世界（three.js 群組）、碰撞、她的尋路網格、地圖探索紀錄
-    const lvs = generateHospital(this.seed, this.diff, (l) => validateLevel(l), this.theme, this.floorCount);
+    const lvs = generateHospital(this.seed, this.diff, (l) => validateLevel(l), this.theme, this.floorCount, { players: this.startPlayers });
     this.floors = lvs.map((lv, i) => ({
       index: i, lv, theme: lv.theme, info: THEMES[lv.theme], title: themeTitle(lv.theme), ord: lv.plan.ord,
       explored: new Uint8Array(lv.W * lv.H), world: null, collision: null, ghostNav: null,
@@ -79,6 +93,7 @@ export class Game {
     for (const F of this.floors) for (const it of F.lv.items) it.floor = F.index;
     this.ground = this.floors[0];
     this.genFloor = this.floors.find((F) => F.lv.generatorRoom) || this.ground;
+    this.altarFloor = this.floors.find((F) => F.lv.altar) || null;
     this.setFloor(0);
     progress(0.15, '正在弄髒牆壁……');
     await nextFrame();
@@ -122,6 +137,8 @@ export class Game {
       W.build();
       const C = new Collision(F.lv);
       for (const d of F.lv.doors) C.dynamic.push(d);
+      // 鐵捲門：拉到八成以上才過得去
+      for (const sh of F.lv.shutters || []) C.dynamic.push({ getBox: () => (sh.open < 0.8 ? sh.box : null) });
       if (F.lv.gate) C.dynamic.push(F.lv.gate);
       for (const f of W.dynamicProps) {
         C.removeStaticFurniture(f);
@@ -260,6 +277,8 @@ export class Game {
   }
 
   start() {
+    this.ui.showDowned(false);
+    this.ui.setHold(0);
     this.audio.startAmbience();
     this.audio.setRain(0.1);
     this.audio.setMusic('explore');
@@ -322,10 +341,10 @@ export class Game {
         continue;
       }
       switch (a) {
-        case 'interact': case 'tap': if (!this.stairT) this.interact(); break;
+        case 'interact': case 'tap': if (!this.stairT && !this.downed) this.interact(); break;
         case 'flashlight': P.toggleFlash(); break;
-        case 'camera': P.takePhoto(); break;
-        case 'throw': this.throwBottle(); break;
+        case 'camera': if (!this.downed) P.takePhoto(); break;
+        case 'throw': if (!this.downed) this.throwBottle(); break;
         case 'crouch': inp.crouchToggle = true; break;
         case 'map':
           if (this.diff.noMap) { this.ui.hint('惡夢模式沒有地圖。', 1.5); break; }
@@ -336,6 +355,10 @@ export class Game {
       }
     }
     if (this.ui.noteOpen) P.locked = true;
+    // 多人合作：倒地倒數、按住互動（轉鐵捲門的把手、扶起隊友）；轉把手的時候站著不動
+    if (this.downed) this.updateDowned(dt);
+    if (this.mp) this.updateHolds(dt, inp);
+    if (this.cranking) { inp.mx = 0; inp.my = 0; inp.sprint = false; }
 
     P.update(dt, inp);
     if (this.stairT) this.updateStairs(dt);
@@ -358,7 +381,7 @@ export class Game {
     }
     this.audio.setBuzz(this.buzzFix, this.buzzFix ? this.buzzFix.level : 0);
     this.updateInteraction();
-    if (this.mp) { this.mpUpdateRemotes(dt); this.mp.tick(dt); }
+    if (this.mp) { this.mpUpdateRemotes(dt); if (this.mp.isHost) this.mpHostCoop(dt); this.mp.tick(dt); }
     this.markExplored(false);
     if (this.mapOpen && Math.floor(this.time * 4) !== Math.floor((this.time - dt) * 4)) this.ui.drawMap();
 
@@ -396,6 +419,7 @@ export class Game {
       }
     }
     this.updateMood(dt);
+    if (this.ritual) this.updateRitual(dt);
     this.ui.updateTimecode(this.time);
     if (P.hiding) this.ui.updateBreath(P.breath, P.holdingBreath);
     else this.ui.updateStamina(P.stamina, P.exhausted);
@@ -409,7 +433,7 @@ export class Game {
     const P = this.player, gh = this.ghost, A = this.audio, u = this.post.u;
     const chase = gh.state === 'chase' && gh.floor === this.floorIdx ? 1 : 0;
     const near = gh.state === 'dormant' ? 0 : Math.max(0, 1 - this.ghostDist / 14);
-    const fear = Math.max(chase, near * 0.9, (1 - P.sanity) * 0.55, P.hiding && near > 0.2 ? 0.8 : 0);
+    const fear = Math.max(chase, near * 0.9, (1 - P.sanity) * 0.55, P.hiding && near > 0.2 ? 0.8 : 0, this.downed ? 0.95 : 0);
     this.fear = (this.fear || 0) + (fear - (this.fear || 0)) * Math.min(1, dt * 2);
     A.setHeartbeat(62 + this.fear * 85, Math.max(0, this.fear - 0.2) * 0.7);
     A.setChase(chase);
@@ -428,8 +452,9 @@ export class Game {
     u.uDistort.value = Math.max(0, 0.55 - P.sanity) * 1.8;
     u.uStatic.value = Math.min(1, st * 0.45 + this.staticBoost * 0.8);
     u.uDesat.value = 0.12 + insane * 0.4;
-    u.uRed.value = this.damage;
-    u.uVignette.value = 0.72 + (P.hiding ? 0.2 : 0) + chase * 0.1;
+    u.uRed.value = this.downed ? Math.max(this.damage, 0.62 + 0.08 * Math.sin(this.time * 2.4)) : this.damage;
+    u.uVignette.value = 0.72 + (P.hiding ? 0.2 : 0) + chase * 0.1 + (this.downed ? 0.35 : 0);
+    if (this.downed) u.uDesat.value = Math.max(u.uDesat.value, 0.55);
     const hbPhase = (this.time * (62 + this.fear * 85) / 60) % 1;
     u.uPulse.value = Math.max(0, this.fear - 0.3) * Math.exp(-hbPhase * 6);
     u.uFlash.value = Math.max(0, u.uFlash.value - dt * 2.2);
@@ -452,7 +477,20 @@ export class Game {
       this.ui.prompt('離開鐵櫃');
       return;
     }
-    if (P.hideAnim || this.stairT) { this.target = null; this.ui.prompt(''); return; }
+    if (P.hideAnim || this.stairT || this.downed) { this.target = null; this.ui.prompt(''); return; }
+    // 正在轉把手：提示不跟著視線跑
+    if (this.cranking) {
+      this.target = { kind: 'crank', shutter: this.cranking.s, label: '轉動把手中……一放手鐵捲門就會摔下來' };
+      this.ui.prompt(this.target.label);
+      return;
+    }
+    // 倒地的隊友（多人）：站在旁邊就能扶
+    const down = this.mp ? this.mpDownedNear() : null;
+    if (down) {
+      this.target = { kind: 'revive', slot: down.slot, label: `按住扶起 ${this.mp.slotName(down.slot)}` };
+      this.ui.prompt(this.target.label);
+      return;
+    }
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), P.camera);
     const hits = this.raycaster.intersectObjects(this.world.interactables, true);
     let target = null;
@@ -476,8 +514,14 @@ export class Game {
       } else if (kind === 'item') {
         const it = o.userData.item;
         const names = { fuse: '撿起保險絲', battery: '撿起電池', film: '撿起底片', pills: '撿起鎮定劑', note: '閱讀紙條', bottle: '撿起玻璃瓶' };
-        const label = it.kind === 'keycard' ? `撿起${KEY_COLORS[it.color].name}門禁卡` : names[it.kind];
+        const label = it.kind === 'keycard' ? `撿起${KEY_COLORS[it.color].name}門禁卡` : it.kind === 'relic' ? `撿起${RELICS[it.relic].name}` : names[it.kind];
         target = { kind, item: it, label };
+      } else if (kind === 'crank') {
+        const sh = o.userData.shutter;
+        if (sh) target = { kind, shutter: sh, label: sh.jammed ? '鐵捲門的鍊條卡住了（一直開著）' : '按住轉動把手，拉起鐵捲門' };
+      } else if (kind === 'altar') {
+        const n = this.relicsPlaced.size;
+        target = { kind, label: P.relics.length ? `把遺物放進搖籃（${n}/3）` : n >= 3 ? '搖籃' : `搖籃（遺物 ${n}/3）` };
       } else if (kind === 'fusebox') {
         target = { kind, label: P.fuses > 0 ? '插上保險絲' : `配電箱（${this.fusesInserted}/3）` };
       } else if (kind === 'gate') {
@@ -549,6 +593,16 @@ export class Game {
       case 'stairs':
         this.useStairs(t.stair);
         break;
+      case 'altar':
+        this.useAltar();
+        break;
+      case 'crank':
+        // 按住才有用（updateHolds）；只按一下的話提醒一下
+        if (t.shutter.jammed) this.ui.hint('鍊條卡死了，鐵捲門停在打開的位置。', 2.5);
+        else if (!this.cranking) this.ui.hint('要一直按住才拉得起來。一放手，鐵捲門就會整片摔下來——需要有人幫你顧著。', 4);
+        break;
+      case 'revive':
+        break;
     }
   }
 
@@ -572,6 +626,18 @@ export class Game {
         P.film += n;
         A.play('pickup');
         this.ui.hint(`拿到底片 ×${n}（Q / 「閃」可以用閃光定住她）`, 3);
+        break;
+      }
+      case 'relic': {
+        if (!P.relics.includes(it.relic)) P.relics.push(it.relic);
+        A.play('paper');
+        const R = RELICS[it.relic], AF = this.altarFloor, room = AF && AF.lv.room707;
+        const where = room ? `${this.floorCount > 1 ? AF.title + '的' : ''}${room.label}` : '劇情房間';
+        this.ui.showNote({ title: R.title, body: `${R.body}
+
+（搖籃在${where}。）` });
+        this.input.exitLock();
+        P.locked = true;
         break;
       }
       case 'keycard': {
@@ -630,6 +696,108 @@ export class Game {
     if (mine) this.ui.hint(`${KEY_COLORS[d.lock].name}門禁卡刷過了，${name}的門開了。`, 3);
     else if (this.mp) this.ui.hint(`${this.mp.slotName(by)} 打開了${F.title && this.floorCount > 1 ? F.title + '的' : ''}${name}。`, 3);
     this.ui.updateHud();
+  }
+
+  // 她的憤怒：每插一個保險絲、每放回一件遺物都更快更敏銳；大門打開後至少 1.5
+  updateAggression() {
+    const a = 1 + 0.15 * this.fusesInserted + 0.12 * this.relicsPlaced.size;
+    this.ghost.aggression = this.phase === 'escape' ? Math.max(1.5, a) : a;
+  }
+
+  // 對著搖籃：把身上的遺物全部放回去
+  useAltar() {
+    const P = this.player;
+    if (!P.relics.length) {
+      this.ui.hint(this.relicsPlaced.size >= 3 ? '搖籃裡放著三件遺物。' : '搖籃是空的。桌上的小卡片寫著「給我的寶寶」……好像少了什麼。', 3);
+      return;
+    }
+    for (const r of P.relics.slice()) {
+      if (this.mp && !this.mp.isHost) this.mp.send({ t: 'relic', r });
+      else if (this.mp) this.mpHostRelic(r, this.mp.mySlot);
+      else this.applyRelic(r, -1);
+    }
+  }
+  // 一件遺物放回搖籃（多人時房主確認後大家一起套用）：她更生氣——尖叫、燈閃、更快
+  applyRelic(r, by) {
+    if (!Number.isInteger(r) || r < 0 || r > 2 || this.relicsPlaced.has(r)) return;
+    const AF = this.altarFloor;
+    if (!AF) return;
+    this.relicsPlaced.add(r);
+    const P = this.player, A = this.audio, mine = !this.mp || by === this.mp.mySlot;
+    if (mine) { const k = P.relics.indexOf(r); if (k >= 0) P.relics.splice(k, 1); }
+    AF.world.placeRelic(r);
+    const a = AF.lv.altar, here = this.F === AF;
+    if (here) A.play('relicPlace', { pos: { x: a.x, y: 0.7, z: a.z } });
+    this.updateAggression();
+    const gh = this.ghost, n = this.relicsPlaced.size;
+    if (n < 3) {
+      AF.world.flickerArea(a.x, a.z, 40, 2.2);
+      if (!here) this.world.flickerArea(P.pos.x, P.pos.z, 30, 2.2);
+      this.later(() => {
+        const far = { x: P.pos.x + 10, y: 1.6, z: P.pos.z - 6 };
+        A.play('ghostScream', { pos: gh.state !== 'dormant' && gh.floor === this.floorIdx ? gh.pos : far });
+      }, 700);
+      // 她聽得到：醒著的話會往搖籃那邊找過來（多人時由房主決定）
+      if ((!this.mp || this.mp.isHost) && !gh.banished && gh.state !== 'dormant') gh.hearNoise(a.x, a.z, 60, 'relic', AF.index);
+      const who = this.mp && !mine ? `${this.mp.slotName(by)} 把${RELICS[r].name}放回了搖籃。` : '';
+      this.ui.subtitle(who + (n === 1 ? '燈閃了一下。遠處傳來一聲尖叫——她知道了。' : '她的尖叫越來越近。只差最後一件。'), 4);
+    }
+    this.ui.updateHud();
+    if (n >= 3) this.startRitual();
+  }
+  // 三件遺物都回到搖籃：音樂盒、低語、她出現在搖籃旁、柔光……然後她就不見了（這一局不會再出現）
+  startRitual() {
+    if (this.ritual || this.ritualDone) return;
+    const AF = this.altarFloor, a = AF.lv.altar, gh = this.ghost, A = this.audio;
+    this.ritual = { t: 0, step: 0 };
+    gh.banish();
+    A.setChase(0);
+    const here = this.F === AF;
+    A.play('musicBox', here ? { pos: { x: a.x, y: 0.8, z: a.z }, dur: 9 } : { dur: 9 });
+    this.ui.subtitle(here ? '三件遺物都回到了搖籃裡。音樂盒自己轉了起來……' : `三件遺物都回到了${AF.title}的搖籃裡。遠處傳來音樂盒的聲音……`, 5);
+    for (const F of this.floors) F.world.flickerArea(this.player.pos.x, this.player.pos.z, 60, 1.5);
+  }
+  updateRitual(dt) {
+    const R = this.ritual, AF = this.altarFloor, a = AF.lv.altar, W = AF.world, D = this.director, am = D.appModel;
+    R.t += dt;
+    const here = this.F === AF;
+    // 柔光：慢慢亮起、最後慢慢熄滅
+    const glow = R.t < 2 ? R.t / 2 : R.t < 8.5 ? 1 : Math.max(0, 1 - (R.t - 8.5) / 2);
+    W.setAltarGlow(glow * (0.55 + 0.08 * Math.sin(R.t * 3)));
+    const fx = Math.sin(a.rot), fz = Math.cos(a.rot);
+    if (R.step === 0 && R.t > 1.6) {
+      R.step = 1;
+      // 她出現在搖籃前，低頭看著搖籃
+      if (here && am) {
+        const x = a.x + fx * 0.72, z = a.z + fz * 0.72;
+        D.vanishApparition(false);
+        am.root.position.set(x, 0, z);
+        am.root.rotation.set(0, Math.atan2(a.x - x, a.z - z), 0);
+        am.root.visible = true;
+        if (am.play) am.play('look', 0);
+        am.revealFace(0.15);
+      }
+      this.audio.play('whisper', here ? { pos: { x: a.x, y: 1.4, z: a.z } } : {});
+    }
+    if (R.step === 1 && here && am && am.root.visible) {
+      if (am.setLookTarget) am.setLookTarget(this.ritualLook || (this.ritualLook = new THREE.Vector3(a.x, 0.7, a.z)), 1);
+      am.pose('idle', this.time, 0, 0);
+    }
+    if (R.step === 1 && R.t > 4.5) {
+      R.step = 2;
+      this.ui.subtitle(here ? '她低頭看著搖籃，很輕很輕地，跟著音樂盒哼了最後一次。' : '那首搖籃曲很輕地響了最後一次。', 5);
+    }
+    if (R.step === 2 && R.t > 8.5) {
+      R.step = 3;
+      if (am && am.root.visible) { am.root.visible = false; am.revealFace(0); this.staticBoost = 0.6; this.audio.play('static', { dur: 0.6 }); }
+    }
+    if (R.t > 10.5) {
+      W.setAltarGlow(0);
+      this.ritual = null;
+      this.ritualDone = true;
+      this.ui.subtitle(this.phase === 'escape' ? '她不見了。大門開著——走出去吧。' : '她不見了。歌聲再也沒有響起。插上保險絲，打開大門離開這裡吧。', 6);
+      this.ui.updateHud();
+    }
   }
 
   // 丟玻璃瓶
@@ -715,7 +883,7 @@ export class Game {
     lamp.material.color.set(0x003300);
     lamp.material.emissive.set(0x30ff60);
     lamp.material.emissiveIntensity = 1.2;
-    this.ghost.aggression = 1 + 0.15 * this.fusesInserted;
+    this.updateAggression();
     this.later(() => {
       if (this.over) return;
       A.play('powerUp');
@@ -750,14 +918,15 @@ export class Game {
       if (this.floorIdx === 0) A.play('gateOpen', { pos: { x: gate.x, y: 1.2, z: gate.z } });
       G.world.openGate();
       G.collision.allowOutside = true;
-      this.ghost.enraged = true;
-      this.ghost.aggression = 1.5;
+      this.ghost.enraged = !this.ghost.banished;
+      this.updateAggression();
       this.later(() => {
         if (this.over) return;
         const gh = this.ghost;
+        if (gh.banished) { this.ui.hint(this.floorIdx === 0 ? '大門開了。這一次，沒有人追你。' : `大門開了。回到 ${G.title}，走出去吧。`, 4); return; }
         A.play('ghostScream', { pos: gh.state === 'dormant' || gh.floor !== this.floorIdx ? { x: this.player.pos.x + 12, y: 1.6, z: this.player.pos.z } : gh.pos });
         this.ui.hint(this.floorIdx === 0 ? '往大門跑，不要回頭！' : `回到 ${G.title}，往大門跑，不要回頭！`, 4);
-        if (this.ghost.state === 'dormant') this.ghost.dormantUntil = this.time + 2;
+        if (this.ghost.state === 'dormant' && !this.ghost.banished) this.ghost.dormantUntil = this.time + 2;
       }, 2500);
       this.ui.updateHud();
     }, 1800);
@@ -801,7 +970,221 @@ export class Game {
       void fromLocker;
       return;
     }
+    // 多人：還有站著的隊友、這一局還沒被扶過 → 先倒地 30 秒，等人來扶
+    if (this.mp && !this.reviveUsed && this.mpTeammateUp()) { this.startDowned(); return; }
     this.startDying(fromLocker);
+  }
+
+  // =====================================================================
+  // 多人合作：倒地與扶起
+  mpTeammateUp() { return [...this.remotes.values()].some((r) => r.a === 0 && r.got && !r.downed && !r.dying); }
+  startDowned() {
+    const P = this.player;
+    this.downed = { t: 30 };
+    P.downed = true;
+    P.crouching = false;
+    this.cranking = null;
+    this.reviving = null;
+    if (P.hiding) {
+      const l = P.hiding;
+      l.hideDoor = false; l.target = 1.2; l.dirty = true;
+      P.hiding = null;
+      P.pos.x = l.exitX; P.pos.z = l.exitZ;
+      this.ui.setHiding(false);
+      this.later(() => { l.target = 0; }, 900);
+    }
+    this.audio.play('jumpscare');
+    this.vibrate([300, 80, 300]);
+    this.damage = 1.2;
+    P.shake = 1.6;
+    this.post.u.uFlash.value = 0.3;
+    this.ui.showDowned(true, 30);
+    this.ui.hint(this.input.touchMode ? '你倒下了……等隊友站到你旁邊按住「互動」扶你起來。' : '你倒下了……等隊友站到你旁邊按住 E 扶你起來。', 5);
+    if (this.mp.isHost) this.mpGhostRetreat(0.4);
+    this.mp.sendT = 0;
+  }
+  updateDowned(dt) {
+    const D = this.downed;
+    D.t -= dt;
+    this.ui.showDowned(true, D.t);
+    if (D.t <= 0) this.mpTakeDowned();
+  }
+  // 倒地的人被帶走（30 秒沒人扶、或所有人都倒了）：照原本被抓的流程播完再觀戰
+  mpTakeDowned() {
+    if (!this.downed) return;
+    this.downed = null;
+    this.player.downed = false;
+    this.ui.showDowned(false);
+    this.startDying(true);
+  }
+  mpApplyRevived(s, by) {
+    if (!Number.isInteger(s) || !Number.isInteger(by)) return;
+    if (this.mp.isHost) this.mpRevived.add(s);
+    const P = this.player;
+    if (s === this.mp.mySlot) {
+      if (!this.downed) return;
+      this.downed = null;
+      this.reviveUsed = true;
+      P.downed = false;
+      P.sanity = Math.min(P.sanity, 0.25);
+      this.damage = 0;
+      this.ui.showDowned(false);
+      this.audio.play('gasp');
+      this.ui.hint(`${this.mp.slotName(by)} 把你扶了起來。下一次就沒有人救得了你了。`, 4);
+      this.mp.sendT = 0;
+      return;
+    }
+    const r = this.remotes.get(s);
+    if (r) { r.downed = false; r.revivedAt = this.time; }
+    if (by === this.mp.mySlot) { this.reviving = null; this.ui.setHold(0); this.ui.hint(`你把 ${this.mp.slotName(s)} 扶起來了。`, 3); }
+    else this.ui.subtitle(`${this.mp.slotName(by)} 把 ${this.mp.slotName(s)} 扶起來了。`, 3);
+  }
+  // 身邊倒地的隊友（同一層、1.45 公尺內，房主那邊用 1.6 公尺核對）
+  mpDownedNear() {
+    const P = this.player;
+    let best = null, bd = 1.45;
+    for (const r of this.remotes.values()) {
+      if (!r.downed || r.a !== 0 || r.floor !== this.floorIdx) continue;
+      const d = Math.hypot(r.pos.x - P.pos.x, r.pos.z - P.pos.z);
+      if (d < bd) { bd = d; best = r; }
+    }
+    return best;
+  }
+  // 按住互動：轉把手（鐵捲門）、扶人（每 0.2 秒告訴房主一次「我還在扶」）
+  updateHolds(dt, inp) {
+    const P = this.player, hold = !!inp.interactHold && this.mpStatus === 0 && !this.dying && !this.downed;
+    if (this.cranking) {
+      const c = this.cranking.s.crank;
+      if (!hold || P.hiding || this.cranking.f !== this.floorIdx || this.cranking.s.jammed || Math.hypot(P.pos.x - c.useX, P.pos.z - c.useZ) > 1.6) this.cranking = null;
+    } else if (hold && this.target && this.target.kind === 'crank' && !this.target.shutter.jammed) {
+      this.cranking = { s: this.target.shutter, f: this.floorIdx };
+      this.mp.sendT = 0;
+    }
+    if (this.cranking) {
+      this.crankT = (this.crankT || 0) - dt;
+      if (this.crankT <= 0) { this.crankT = 0.17; const c = this.cranking.s.crank; this.audio.play('crankTick', { pos: { x: c.x, y: 1.1, z: c.z } }); }
+    }
+    // 扶人用真實時間計時（網路上的訊息與房主的核對也是真實時間；多人時遊戲不會暫停）
+    if (hold && this.target && this.target.kind === 'revive') {
+      const now = performance.now();
+      if (!this.reviving || this.reviving.slot !== this.target.slot) this.reviving = { slot: this.target.slot, start: now, next: 0 };
+      const rv = this.reviving;
+      rv.t = (now - rv.start) / 1000;
+      if (now >= rv.next) {
+        rv.next = now + 200;
+        if (this.mp.isHost) this.mpHostRevive(rv.slot, this.mp.mySlot);
+        else this.mp.send({ t: 'rv', s: rv.slot });
+      }
+      this.ui.setHold(Math.min(1, rv.t / 3));
+    } else if (this.reviving) { this.reviving = null; this.ui.setHold(0); }
+  }
+  // 房主：有人說「我在扶某某」→ 核對兩個人都在、同一層、距離 1.6 公尺內，連續扶滿 3 秒才算數
+  mpHostRevive(target, by) {
+    if (!Number.isInteger(target) || target === by || this.mpRevived.has(target)) return;
+    const helper = this.mpActor(by);
+    if (!helper) return;
+    let tx, tz, tf;
+    if (target === this.mp.mySlot) {
+      if (this.mpStatus !== 0 || !this.downed) return;
+      tx = this.player.pos.x; tz = this.player.pos.z; tf = this.floorIdx;
+    } else {
+      const r = this.remotes.get(target);
+      if (!r || r.a !== 0 || !r.downed) return;
+      tx = r.tx; tz = r.tz; tf = r.floor;
+    }
+    if (tf !== helper.floor || Math.hypot(tx - helper.x, tz - helper.z) > 1.6) return;
+    const now = performance.now() / 1000;
+    let rec = this.mpRevives.get(target);
+    if (!rec || rec.by !== by || now - rec.last > 0.6) rec = { by, start: now, last: now };
+    rec.last = now;
+    this.mpRevives.set(target, rec);
+    if (now - rec.start >= 3) {
+      this.mpRevives.delete(target);
+      this.mp.send({ t: 'revived', s: target, by });
+      this.mpApplyRevived(target, by);
+    }
+  }
+  // 房主每格：倒地超過 30 秒的人帶走、全部的人都倒了就一起帶走；決定每一道鐵捲門開或關
+  mpHostCoop(dt) {
+    const me = this.mp.mySlot, alive = [];
+    if (this.mpStatus === 0) alive.push({ slot: me, down: !!this.downed || !!this.dying });
+    for (const r of this.remotes.values()) {
+      if (r.a !== 0) continue;
+      alive.push({ slot: r.slot, down: !!r.downed || !!r.dying, r });
+      if (!r.downed) { r.downSince = null; r.takenAt = null; continue; }
+      if (r.downSince == null) r.downSince = this.time;
+      // 已經被扶過一次的人又倒地：直接帶走（每人每局只能被扶一次）
+      if (this.time - r.downSince > 31.5 || this.mpRevived.has(r.slot)) this.mpTake(r);
+    }
+    if (alive.length && alive.every((p) => p.down)) {
+      if (this.downed) this.mpTakeDowned();
+      for (const p of alive) if (p.r && p.r.downed) this.mpTake(p.r);
+    }
+    this.mpHostShutters(dt, alive.length);
+  }
+  mpTake(r) {
+    if (r.takenAt != null && this.time - r.takenAt < 2) return;
+    r.takenAt = this.time;
+    this.mp.send({ t: 'taken', s: r.slot });
+  }
+  // 鐵捲門：有人（站著、同一層、在把手前面）按住把手就開，沒有就關；只剩一個人還在裡面時卡在打開的位置
+  mpHostShutters(dt, aliveN) {
+    const me = this.mp.mySlot, jam = aliveN <= 1;
+    let changed = false;
+    for (const F of this.floors) {
+      for (const sh of F.lv.shutters || []) {
+        const c = sh.crank;
+        let want = 0;
+        const j = sh.jammed || jam;
+        if (j) want = 1;
+        else {
+          if (this.cranking && this.cranking.s === sh && this.cranking.f === F.index && this.mpActor(me) && Math.hypot(this.player.pos.x - c.useX, this.player.pos.z - c.useZ) < 1.8) want = 1;
+          for (const r of this.remotes.values()) {
+            if (r.a !== 0 || r.downed || r.dying || r.ck !== sh.id || r.floor !== F.index) continue;
+            if (Math.hypot(r.tx - c.useX, r.tz - c.useZ) < 1.8) want = 1;
+          }
+        }
+        if (want !== sh.target || j !== sh.jammed) {
+          this.mp.send({ t: 'shut', f: F.index, i: sh.id, o: want, j: j ? 1 : 0 });
+          this.applyShutter(F, sh, want, j);
+          changed = true;
+        }
+      }
+    }
+    // 每兩秒把全部鐵捲門的狀態再送一次（漏掉訊息也會對齊）
+    this.shutT -= dt;
+    if (this.shutT <= 0 || changed) {
+      this.shutT = 2;
+      const l = [];
+      for (const F of this.floors) for (const sh of F.lv.shutters || []) l.push([F.index, sh.id, sh.target > 0.5 ? 1 : 0, sh.jammed ? 1 : 0]);
+      if (l.length) this.mp.send({ t: 'shuts', l });
+    }
+  }
+  applyShutter(F, sh, o, j) {
+    const was = sh.target, wasJ = sh.jammed;
+    sh.target = o ? 1 : 0;
+    sh.jammed = !!j;
+    if (F === this.F) {
+      const pos = { x: sh.cx, y: 2.2, z: sh.cz };
+      if (sh.target > was) this.audio.play('shutterUp', { pos });
+      else if (sh.target < was) {
+        this.audio.play('shutterSlam', { pos });
+        const d = Math.hypot(this.player.pos.x - sh.cx, this.player.pos.z - sh.cz);
+        if (d < 7) this.player.shake = Math.max(this.player.shake, 1 - d / 7);
+        if (this.mp.isHost) this.makeNoise(sh.cx, sh.cz, 14, 'slam', F.index); // 她聽得到（只由房主通知她一次）
+      }
+    }
+    if (sh.jammed && !wasJ && !this.jamNoticed) {
+      this.jamNoticed = true;
+      this.ui.subtitle('只剩一個人還在裡面了。鐵捲門的鍊條卡住，停在打開的位置。', 5);
+    }
+  }
+  // 收到房主的鐵捲門狀態（不可信任的輸入：樓層、索引都要核對）
+  mpApplyShutter(f, i, o, j) {
+    const F = this.mpFloor(f);
+    const sh = F && Number.isInteger(i) && F.lv.shutters ? F.lv.shutters[i] : null;
+    if (!sh) return;
+    this.applyShutter(F, sh, o === 1 ? 1 : 0, j === 1);
   }
 
   startDying(fromLocker) {
@@ -888,7 +1271,9 @@ export class Game {
     this.ui.prompt('');
     this.ui.fade(1, 1.6);
     const allNotes = this.notesRead.size === NOTES.length;
-    const text = allNotes
+    const text = this.ritualDone
+      ? '三件遺物回到了搖籃裡。你走出大門的時候，身後的燈一盞一盞熄滅，最後一盞底下，一個穿護理服的女人抱著孩子，輕輕哼著那首搖籃曲。她終於找到了，也終於可以休息了。'
+      : allNotes
       ? '你讀完了所有的紀錄。走出大門時，你聽見身後傳來孩子的笑聲，和一聲很輕的「謝謝」。她終於找到了。'
       : '你逃出了醫院。回家重看錄影時，最後一格畫面裡，她就站在你身後。';
     const best = this.app.recordBest(this.diffKey, this.time);
@@ -896,7 +1281,7 @@ export class Game {
     const id = setTimeout(() => {
       this.timers.delete(id);
       if (this.disposed || this.app.game !== this) return;
-      this.ui.showEnd(true, rows, text);
+      this.ui.showEnd(true, rows, text, this.ritualDone ? '安息' : '');
       this.ui.fade(0, 0.8);
       this.app.onGameOver(true);
     }, 1700);
@@ -979,6 +1364,8 @@ export class Game {
       ['時間', fmtTime(this.time)],
       ['保險絲', `${this.fusesInserted}/3`],
       ['讀過的紀錄', `${this.notesRead.size}/${NOTES.length}`],
+      ['放回的遺物', `${this.relicsPlaced.size}/3`],
+      ...(this.ritualDone ? [['結局', '安息']] : []),
       ['用閃光定住她', `${this.stats.stuns} 次`],
       ['拍到她的臉', `${this.stats.photos} 張`],
       ['躲進鐵櫃', `${this.stats.hides} 次`],
@@ -1078,7 +1465,7 @@ export class Game {
     // 觀戰中：只送自己倒下（或逃出）時的位置，不跟著被觀戰的人，也不帶任何動作
     if (this.mpStatus !== 0 && this.specHome) {
       const H = this.specHome;
-      return { x: H.x, z: H.z, y: H.y, p: 0, fl: H.fl, f: 0, h: -1, c: 0, v: 0, a: this.mpStatus, hb: 0, sa: 1, b: 0 };
+      return { x: H.x, z: H.z, y: H.y, p: 0, fl: H.fl, f: 0, h: -1, c: 0, v: 0, a: this.mpStatus, hb: 0, sa: 1, b: 0, dn: 0, ck: -1 };
     }
     const h = P.hiding || (P.hideAnim && P.hideAnim.entering ? P.hideAnim.locker : null);
     return {
@@ -1086,6 +1473,7 @@ export class Game {
       fl: this.floorIdx, f: P.flashOn && P.battery > 0 ? 1 : 0, h: h ? this.lv.lockers.indexOf(h) : -1,
       c: P.crouchNow || P.crouching ? 1 : 0, v: +(P.speed || 0).toFixed(1), a: this.mpStatus,
       hb: P.holdingBreath ? 1 : 0, sa: +P.sanity.toFixed(2), b: this.dying ? 1 : 0,
+      dn: this.downed ? 1 : 0, ck: this.cranking && this.cranking.f === this.floorIdx ? this.cranking.s.id : -1,
     };
   }
 
@@ -1115,6 +1503,12 @@ export class Game {
     }
     r.hiding = h >= 0 ? lockers[h] || null : null;
     r.dying = !!s.b;
+    r.ck = s.ck;
+    // 倒地：告訴大家去扶他
+    // 剛被扶起來的那一下，路上還有幾個舊的「倒地」狀態：忽略
+    const down = !!s.dn && s.a === 0 && !(r.revivedAt != null && this.time - r.revivedAt < 1.5);
+    if (down && !r.downed) this.ui.subtitle(`${this.mp.slotName(slot)} 倒下了！快去扶他起來（站到旁邊${this.input.touchMode ? '按住「互動」' : '按住 E'}）`, 4);
+    r.downed = down;
     if (s.a !== r.a && r.a === 0) {
       const name = this.mp.slotName(slot);
       if (s.a === 1) this.ui.subtitle(`${name} 被她帶走了。`, 4);
@@ -1151,7 +1545,7 @@ export class Game {
       this.mpSetBody(r, present && this.spectate !== r.slot);
       root.position.set(r.pos.x, 0, r.pos.z);
       root.rotation.y = r.yaw + Math.PI;
-      if (present) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: false, pitch: r.pitch });
+      if (present) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: !!r.downed, pitch: r.pitch });
       // 手電筒
       const on = r.flashOn && present;
       r.light.intensity = on ? 22 : 0;
@@ -1172,8 +1566,8 @@ export class Game {
   // 房主：女鬼要追誰——追逐中盯住同一個人，否則找最近的（同一層的人優先）
   mpGhostTarget(gh) {
     const list = [];
-    if (this.mpStatus === 0 && !this.dying) list.push(this.player);
-    for (const r of this.remotes.values()) if (r.a === 0 && r.got && !r.dying) list.push(r);
+    if (this.mpStatus === 0 && !this.dying && !this.downed) list.push(this.player);
+    for (const r of this.remotes.values()) if (r.a === 0 && r.got && !r.dying && !r.downed) list.push(r);
     if (!list.length) { gh.targetSlot = -1; return gh.target && gh.target !== this.player ? gh.target : this.player; }
     const cur = gh.target && list.includes(gh.target) ? gh.target : null;
     let pick = cur;
@@ -1257,6 +1651,7 @@ export class Game {
     F.world.removeItem(it);
     if (it.kind === 'fuse') this.ui.hint(`${this.mp.slotName(by)} 撿到了一個保險絲。`, 2.5);
     else if (it.kind === 'keycard') this.ui.hint(`${this.mp.slotName(by)} 撿到了${KEY_COLORS[it.color].name}門禁卡。`, 2.5);
+    else if (it.kind === 'relic') this.ui.hint(`${this.mp.slotName(by)} 撿到了${RELICS[it.relic].name}。`, 2.5);
   }
 
   // 帶著保險絲的人被抓走或離開：保險絲回到原本的位置（原本那一層）
@@ -1310,6 +1705,20 @@ export class Game {
     this.mp.send({ t: 'unlocked', f: F.index, i, by: slot });
     this.applyUnlock(F, d, slot);
   }
+  // 房主：放遺物。人要在搖籃旁邊、身上真的帶著那一件
+  mpHostRelic(r, slot) {
+    const AF = this.altarFloor;
+    if (!AF || !Number.isInteger(r) || r < 0 || r > 2 || this.relicsPlaced.has(r)) return;
+    const a = this.mpActor(slot), al = AF.lv.altar;
+    if (!a || a.floor !== AF.index || Math.hypot(a.x - al.x, a.z - al.z) > 3) return;
+    if (!this.mp.useCarried(slot, (e) => e.k === 'relic' && e.r === r)) return;
+    this.mp.send({ t: 'relics', r, by: slot });
+    this.applyRelic(r, slot);
+  }
+  mpApplyRelic(r, by) {
+    if (!Number.isInteger(r) || !Number.isInteger(by)) return;
+    this.applyRelic(r, by);
+  }
   mpApplyUnlock(f, i, by) {
     const F = this.mpFloor(f);
     const d = F && Number.isInteger(i) ? F.lv.doors[i] : null;
@@ -1361,6 +1770,12 @@ export class Game {
     P.fuses = 0;
     P.keys = [];
     P.relics = [];
+    P.downed = false;
+    this.downed = null;
+    this.cranking = null;
+    this.reviving = null;
+    this.ui.showDowned(false);
+    this.ui.setHold(0);
     this.post.u.uFade.value = 0;
     this.post.u.uRed.value = 0;
     this.post.u.uDistort.value = 0;
@@ -1404,7 +1819,7 @@ export class Game {
     if (!r) key = 'none';
     else {
       const F = this.floors && this.floors.length > 1 ? this.floors[r.floor] : null;
-      const doing = r.dying ? '被她抓住了！' : r.hiding ? '躲在鐵櫃裡' : r.speed > 4 ? '正在奔跑' : '';
+      const doing = r.dying ? '被她抓住了！' : r.downed ? '倒在地上，等人來扶' : r.hiding ? '躲在鐵櫃裡' : r.ck >= 0 ? '轉著鐵捲門的把手' : r.speed > 4 ? '正在奔跑' : '';
       key = [r.slot, F ? F.title : '', doing, n].join('|');
     }
     if (!force && key === this.specLast) return;
@@ -1450,7 +1865,9 @@ export class Game {
     if (this.mp.isHost) this.director.update(dt);
     this.updateWorlds(dt, P.camera, false);
     this.mpUpdateRemotes(dt);
+    if (this.mp.isHost) this.mpHostCoop(dt);
     this.mp.tick(dt);
+    if (this.ritual) this.updateRitual(dt);
     this.ghostDist = r && this.ghost.state !== 'dormant' && this.ghost.floor === this.floorIdx ? Math.hypot(this.ghost.pos.x - r.pos.x, this.ghost.pos.z - r.pos.z) : 99;
     this.updateMood(dt);
     this.audio.setListener(P.camera);
@@ -1468,10 +1885,12 @@ export class Game {
     document.getElementById('specBar').hidden = true;
     const rows = res.map((p) => [(p.n || this.mp.slotName(p.s)) + (p.s === this.mp.mySlot ? '（你）' : ''), p.a === 2 ? '逃出去了' : '被帶走了']);
     rows.push(...this.statRows());
-    const text = anyOut
+    const text = anyOut && this.ritualDone
+      ? '三件遺物回到了搖籃裡，她終於找到了她的孩子。走出大門時，身後的燈一盞一盞熄滅——這一次，醫院裡再也沒有人哼歌了。'
+      : anyOut
       ? (res.every((p) => p.a === 2) ? '所有人都活著走出了大門。身後的燈一盞一盞熄滅。' : '有人逃了出來。被留下的人，再也沒有出來過。')
       : '沒有人走出那扇門。隔天早上，警衛只找到幾台還在錄影的攝影機。';
-    this.ui.showEnd(this.mpStatus === 2, rows, text);
+    this.ui.showEnd(this.mpStatus === 2, rows, text, anyOut && this.ritualDone ? '安息' : '');
     this.app.onGameOver(this.mpStatus === 2);
   }
 

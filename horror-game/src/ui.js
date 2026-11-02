@@ -60,6 +60,30 @@ export class UI {
       this.el.tInteract.classList.remove('ready');
     }
   }
+  // 按住互動的進度（0 = 隱藏）
+  setHold(v) {
+    const el = $('holdRing');
+    if (!el) return;
+    const k = v > 0 ? v.toFixed(2) : '';
+    if (k === this.lastHold) return;
+    this.lastHold = k;
+    el.hidden = !k;
+    if (k) el.style.setProperty('--p', k);
+  }
+  // 倒地：剩下幾秒（30 秒的倒數條）
+  showDowned(on, t = 0) {
+    const el = $('downed');
+    if (!el) return;
+    if (!on) { el.hidden = true; this.lastDown = ''; return; }
+    el.hidden = false;
+    const sec = Math.max(0, Math.ceil(t));
+    const key = String(sec);
+    if (key === this.lastDown) return;
+    this.lastDown = key;
+    const touch = this.game && this.game.input.touchMode;
+    $('downText').textContent = `${sec} 秒內要有隊友站到你旁邊${touch ? '按住「互動」' : '按住 E'}扶你起來`;
+    $('downBar').style.width = `${Math.min(100, (t / 30) * 100).toFixed(1)}%`;
+  }
   setHiding(on) {
     this.el.hide.hidden = !on;
     this.el.touch.classList.toggle('hiding', on);
@@ -112,11 +136,16 @@ export class UI {
       }
       $('keyStat').hidden = !P.keys.length;
     }
+    // 遺物：放回搖籃的數量＋身上帶著的
+    const placed = g.relicsPlaced ? g.relicsPlaced.size : 0;
+    $('relicCount').textContent = `${placed}/3${P.relics.length ? ` +${P.relics.length}` : ''}`;
+    $('relicStat').hidden = !placed && !P.relics.length;
     let obj;
-    if (g.phase === 'escape') obj = '大門開了。快逃！';
+    if (g.phase === 'escape') obj = g.ghost && g.ghost.banished ? '大門開了。走出去吧。' : '大門開了。快逃！';
     else if (P.fuses > 0) obj = `把保險絲插回發電機房的配電箱（已插 ${g.fusesInserted}/3）`;
     else obj = `找到保險絲（已插 ${g.fusesInserted}/3）`;
     if (g.phase !== 'escape' && !g.seenGenerator && g.fusesInserted === 0 && P.fuses === 0) obj += '\n發電機房的位置在大廳的平面圖上';
+    if (P.relics.length && g.altarFloor && g.altarFloor.lv.room707) obj += `\n把遺物放回${g.floors.length > 1 ? g.altarFloor.title + '的' : ''}${g.altarFloor.lv.room707.label}的搖籃（${placed}/3）`;
     this.el.objective.textContent = obj;
     this.el.objective.style.whiteSpace = 'pre-line';
   }
@@ -321,8 +350,8 @@ export class UI {
     }, 300);
   }
 
-  showEnd(win, stats, text) {
-    $('endTitle').textContent = win ? '你逃出來了' : '她找到你了';
+  showEnd(win, stats, text, title = '') {
+    $('endTitle').textContent = title || (win ? '你逃出來了' : '她找到你了');
     $('endTitle').style.color = win ? 'var(--ink)' : 'var(--rec)';
     $('endText').textContent = text;
     const dl = $('endStats');

@@ -313,6 +313,18 @@ export class Ghost {
     }
   }
 
+  // 儀式完成：她安息了，這一局不會再出現（多人時房主的狀態會同步成一直消失）
+  banish() {
+    this.banished = true;
+    this.enraged = false;
+    this.setState('dormant');
+    this.dormantUntil = Infinity;
+    this.knowsLocker = null;
+    this.path = null;
+    this.model.root.visible = false;
+    this.stopHum();
+  }
+
   setState(s) {
     if (this.state === s) return;
     const prev = this.state;
@@ -348,6 +360,7 @@ export class Ghost {
   }
 
   spawnAt(x, z, state = 'wander', floor = this.floor) {
+    if (this.banished) return;
     this.setFloor(floor);
     const k = this.nav.nearestFree(x, z);
     const c = k >= 0 ? this.nav.center(k) : { x, z };
@@ -446,6 +459,7 @@ export class Ghost {
     const g = this.game, lv = this.lv;
     // 多人連線：只有房主跑 AI，其他人照房主送來的狀態播放
     if (g.mp && !g.mp.isHost) { this.netUpdate(dt); return; }
+    if (this.banished) { this.state = 'dormant'; this.model.root.visible = false; return; }
     const P = g.mp ? g.mpGhostTarget(this) : g.player;
     this.target = P;
     this.stateT += dt;

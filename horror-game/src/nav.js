@@ -139,6 +139,11 @@ export function sightClear(lv, ax, az, bx, bz) {
       tMaxZ += tDeltaZ;
     }
     if (lv.cellAt(cx, cz) === VOID) return false;
+    // 關著的鐵捲門擋住視線
+    if (lv.shutterCells && lv.shutterCells.size && lv.shutterCells.has(cz * lv.W + cx)) {
+      const sh = lv.shutters.find((q) => q.x === cx && q.y === cz);
+      if (sh && sh.open < 0.5) return false;
+    }
   }
   return true;
 }
@@ -479,10 +484,17 @@ export function validateLevel(lv, playerRadius = 0.3) {
     return false;
   };
   const lockedAt = (x, z) => { const rm = lv.roomAtWorld(x, z); return !!rm && rm.locked !== undefined; };
+  // 鐵捲門後面的死路：只能放額外的東西（保險絲、門禁卡、遺物一定不在裡面）
+  const gatedAt = (x, z) => !!lv.gatedCells && lv.gatedCells.has(Math.floor(z / CELL) * lv.W + Math.floor(x / CELL));
   for (const it of lv.items) {
-    const inLocked = lockedAt(it.x, it.z);
+    const inLocked = lockedAt(it.x, it.z), gated = gatedAt(it.x, it.z);
     if (it.kind === 'keycard' && inLocked) return `keycard ${it.color} behind a lock`;
-    if (!inLocked && !nearS(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2)) return `item ${it.kind} needs a key`;
+    if (gated && (it.kind === 'fuse' || it.kind === 'keycard' || it.kind === 'relic')) return `${it.kind} behind a shutter`;
+    if (!inLocked && !gated && !nearS(it.x, it.z, it.y > 0.3 ? 1.55 : 1.2)) return `item ${it.kind} needs a key`;
+  }
+  for (const s of lv.shutters || []) {
+    // 把手要走得到（不開鎖、鐵捲門關著的情況下）
+    if (!nearS(s.crank.useX, s.crank.useZ, 0.6)) return `shutter ${s.id} crank unreachable`;
   }
   for (const d of lv.doors) {
     if (!(d.lock >= 0)) continue;

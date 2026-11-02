@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CELL, WALL_H, WALL_T, DOOR_W, DOOR_H, GATE_W, GATE_H } from './config.js';
 import { VOID, FURN, WALL_WRITINGS } from './level.js';
-import { PropBuilder, mergeLocal } from './props.js';
+import { PropBuilder, mergeLocal, projectUV } from './props.js';
 import { createMaterials, drawFloorPlan } from './materials.js';
 import { makeCorpse, placeCorpse } from './corpses.js';
 import { THEMES } from './themes.js';
@@ -103,6 +103,7 @@ export class World {
       this.root.add(this.streetLight);
     }
     this.buildLobbyExtras();
+    this.buildShutters();
     this.flushStatic();
     this.buildItems();
     this.buildDust();
@@ -590,6 +591,7 @@ export class World {
       }
       g.position.set(f.x, 0, f.z);
       g.rotation.y = f.rot;
+      if (f.kind === 'altar') { this.buildAltar(g); continue; }
       if (f.kind === 'fusebox') {
         // 配電箱貼在牆上（家具中心離牆 d/2，往牆面推回去）
         const back = FURN.fusebox.d / 2 - 0.08;
@@ -644,6 +646,144 @@ export class World {
       this.bakeGroup(g);
     }
   }
+  // 放遺物的搖籃：合併成幾個網格，留下燭火與三個放遺物的位置；儀式時亮起的柔光是一張加色混合的貼圖（不加任何燈）
+  buildAltar(g) {
+    const slots = g.userData.slots;
+    for (const s of slots) g.remove(s);
+    const out = mergeLocal(g, mergeGeometries);
+    for (const s of slots) out.add(s);
+    out.traverse((o) => { if (o.isMesh) { o.castShadow = o.material !== this.M.flame; o.receiveShadow = true; } });
+    out.userData.kind = 'altar';
+    out.userData.slots = slots;
+    this.root.add(out);
+    this.interactables.push(out);
+    this.altar = out;
+    const dot = this.tf.dust().map;
+    this.flameGlowMat = new THREE.SpriteMaterial({ map: dot, color: 0xffb060, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.55 });
+    this.flames = [];
+    for (const o of [...out.children]) {
+      if (o.material !== this.M.flame) continue;
+      const s = new THREE.Sprite(this.flameGlowMat);
+      s.scale.setScalar(0.22);
+      s.position.copy(o.position);
+      out.add(s);
+      this.flames.push({ mesh: o, sy: o.scale.y, phase: Math.random() * 10 });
+    }
+    this.altarGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: dot, color: 0xffe2b8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
+    this.altarGlow.position.set(0, 0.85, 0.05);
+    this.altarGlow.scale.setScalar(2.4);
+    this.altarGlow.visible = false;
+    out.add(this.altarGlow);
+  }
+  // 雙人鐵捲門：天花板下的捲軸箱與兩側導軌合併成靜態網格；門板（一片片波浪鋼板＋黃黑警示條）上下移動；
+  // 把手在幾公尺外的牆上（轉盤會轉、上面的小燈：紅 = 關著、綠 = 開著、黃 = 卡住）
+  buildShutters() {
+    const list = this.lv.shutters || [];
+    if (!list.length) return;
+    const M = this.M, P = this.props, frame = new THREE.Group();
+    const span = CELL - WALL_T, PH = 2.62;
+    // 門板：波浪狀的鋼板條（一個幾何體所有鐵捲門共用）
+    const slats = [];
+    for (let k = 0; k < Math.round(PH / 0.1); k++) {
+      const g = new THREE.BoxGeometry(span - 0.12, 0.096, k % 2 ? 0.05 : 0.034);
+      g.translate(0, 0.12 + k * 0.1, 0);
+      slats.push(g);
+    }
+    const slatGeo = mergeGeometries(slats, false);
+    projectUV(slatGeo, 1.2);
+    const barGeo = new THREE.BoxGeometry(span - 0.1, 0.12, 0.07);
+    barGeo.translate(0, 0.06, 0);
+    projectUV(barGeo, 0.5);
+    if (!this.hitMat) this.hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    for (const s of list) {
+      const rot = s.axis === 'x' ? Math.PI / 2 : 0;
+      const g = new THREE.Group();
+      g.position.set(s.cx, 0, s.cz);
+      g.rotation.y = rot;
+      P.box(g, M.paint, span, 0.46, 0.46, 0, WALL_H - 0.23, 0);           // 捲軸箱
+      P.box(g, M.hazard, span, 0.06, 0.47, 0, WALL_H - 0.49, 0, { uvScale: 0.5 });
+      for (const sx of [-1, 1]) P.box(g, M.steel, 0.07, WALL_H - 0.46, 0.12, sx * (span / 2 - 0.035), (WALL_H - 0.46) / 2, 0); // 導軌
+      frame.add(g);
+      const panel = new THREE.Group();
+      const slab = new THREE.Mesh(slatGeo, M.steel);
+      const bar = new THREE.Mesh(barGeo, M.hazard);
+      panel.add(slab, bar);
+      panel.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      panel.position.set(s.cx, 0, s.cz);
+      panel.rotation.y = rot;
+      this.root.add(panel);
+      // 把手
+      const c = s.crank, k = new THREE.Group();
+      k.position.set(c.x, 0, c.z);
+      k.rotation.y = c.rot;
+      P.box(k, M.paint, 0.34, 0.5, 0.06, 0, 1.15, 0.03);
+      P.box(k, M.hazard, 0.34, 0.07, 0.065, 0, 1.43, 0.03, { uvScale: 0.5 });
+      P.box(k, M.dark, 0.035, WALL_H - 1.4, 0.035, 0.12, 1.4 + (WALL_H - 1.4) / 2, 0.03); // 鍊條管
+      P.cyl(k, M.steel, 0.03, 0.03, 0.08, 0, 1.12, 0.08, { rx: Math.PI / 2, seg: 10 });
+      frame.add(k);
+      const wheel = new THREE.Group();
+      wheel.position.set(c.x + Math.sin(c.rot) * 0.13, 1.12, c.z + Math.cos(c.rot) * 0.13);
+      wheel.rotation.y = c.rot;
+      const spin = new THREE.Group();
+      wheel.add(spin);
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.014, 6, 20), M.steel);
+      spin.add(rim);
+      for (let a = 0; a < 3; a++) {
+        const sp = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.018, 0.018), M.steel);
+        sp.rotation.z = a * Math.PI / 3;
+        spin.add(sp);
+      }
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.1, 8), M.dark);
+      handle.rotation.x = Math.PI / 2;
+      handle.position.set(0.15, 0, 0.05);
+      spin.add(handle);
+      wheel.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      this.root.add(wheel);
+      const led = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff2a18 }));
+      led.position.set(c.x + Math.sin(c.rot) * 0.07 - Math.cos(c.rot) * 0.11, 1.33, c.z + Math.cos(c.rot) * 0.07 + Math.sin(c.rot) * 0.11);
+      this.root.add(led);
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.4), this.hitMat);
+      hit.position.set(c.x + Math.sin(c.rot) * 0.15, 1.15, c.z + Math.cos(c.rot) * 0.15);
+      hit.rotation.y = c.rot;
+      hit.userData.kind = 'crank';
+      hit.userData.shutter = s;
+      this.root.add(hit);
+      this.interactables.push(hit);
+      s.mesh = { panel, spin, led, ledState: -1 };
+    }
+    this.bakeGroup(frame);
+  }
+  // 鐵捲門動畫：拉起來很慢（要一直轉把手），放開就整片摔下來
+  updateShutters(dt) {
+    for (const s of this.lv.shutters || []) {
+      const was = s.open;
+      if (s.open !== s.target) {
+        const sp = s.target > s.open ? 0.8 : 5.0;
+        s.open += Math.sign(s.target - s.open) * Math.min(Math.abs(s.target - s.open), sp * dt);
+      }
+      if (!s.mesh) continue;
+      s.mesh.panel.position.y = s.open * 2.45;
+      if (s.open > was) s.mesh.spin.rotation.z -= dt * 7;
+      const st = s.jammed ? 2 : s.target > 0.5 ? 1 : 0;
+      if (st !== s.mesh.ledState) { s.mesh.ledState = st; s.mesh.led.material.color.set([0xff2a18, 0x30ff60, 0xffb020][st]); }
+    }
+  }
+
+  // 遺物放回搖籃裡
+  placeRelic(r) {
+    if (!this.altar) return;
+    const slot = this.altar.userData.slots[r];
+    if (!slot || slot.children.length) return;
+    const m = this.makePickupMesh('relic', { relic: r });
+    m.scale.setScalar(1.5);
+    slot.add(m);
+  }
+  setAltarGlow(v) {
+    if (!this.altarGlow) return;
+    this.altarGlow.visible = v > 0.001;
+    this.altarGlow.material.opacity = v;
+  }
+
   // 樓梯（局部座標：正面 +z 是樓梯口，寬 w、長 d）。上樓：一階一階往天花板的洞爬上去；
   // 下樓：地板上的洞，三面圍著欄杆，階梯往下沒入黑暗。另外放一個看不見的方塊當互動目標
   buildStairs(f) {
@@ -1226,8 +1366,8 @@ export class World {
       this.interactables.push(g);
     }
   }
-  makePickupMesh(kind) {
-    const g = mergeLocal(this.props.pickup(kind), mergeGeometries);
+  makePickupMesh(kind, it = {}) {
+    const g = mergeLocal(this.props.pickup(kind, it), mergeGeometries);
     g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
     return g;
   }
@@ -1322,6 +1462,7 @@ export class World {
       }
     }
     this.updateLockerMatrices();
+    this.updateShutters(dt);
     // 大門
     if (lv.gate && lv.gate.open && lv.gate.angle < lv.gate.target) {
       lv.gate.angle = Math.min(lv.gate.target, lv.gate.angle + dt * 0.9);
@@ -1429,6 +1570,8 @@ export class World {
       this.dustUniforms.uCenter.value.copy(cp);
       this.dustUniforms.uFlash.value += ((flashOn ? 1 : 0) - this.dustUniforms.uFlash.value) * Math.min(1, dt * 8);
     }
+    // 搖籃旁的燭火
+    if (this.flames) for (const f of this.flames) f.mesh.scale.y = f.sy * (0.85 + 0.25 * Math.sin(t * 9 + f.phase) * Math.sin(t * 5.3 + f.phase * 2));
     // 自己在搖的搖搖馬
     if (this.rocker) this.rocker.mesh.rotation.x = Math.sin(t * 1.55) * 0.13 * (0.6 + 0.4 * Math.sin(t * 0.21));
     // 可推動的輪椅

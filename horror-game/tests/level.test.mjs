@@ -11,6 +11,19 @@ const N = Number(process.argv[2] || 300);
 // 門禁卡與上鎖的房間（整棟醫院一起看）：
 // 每一扇上鎖的門剛好有一張同色的卡；卡不在任何上鎖的房間裡（=不用開任何鎖就拿得到，所以不可能有「鑰匙在自己的門後」或循環依賴）；
 // 上鎖的房間只有一扇門；每層最多一個保險絲鎖在裡面；鎖起來之後其他地方都還走得到（validateLevel 的嚴格模式另外檢查）
+// 遺物與搖籃：三件遺物各一件、不在劇情房間；整棟醫院剛好一個搖籃，放在劇情房間裡、走得到（validateLevel 也檢查）
+function checkRelics(fl, assert, altarThemes) {
+  const relics = fl.flatMap((l) => l.items.filter((i) => i.kind === 'relic').map((it) => ({ l, it })));
+  assert(relics.map((x) => x.it.relic).sort().join() === '0,1,2', 'three relics 0,1,2');
+  const altars = fl.filter((l) => l.altar);
+  assert(altars.length === 1, `exactly one altar (${altars.length})`);
+  for (const l of altars) {
+    assert(l.room707 && l.altar.room === l.room707.id && l.altar.kind === 'altar', `altar sits in the story room ${l.room707 && l.room707.label}`);
+    if (altarThemes) altarThemes.add(l.theme);
+  }
+  for (const { l, it } of relics) assert(l.roomAtWorld(it.x, it.z) !== l.room707, 'relic not already in the story room');
+  if (fl.length > 1) assert(new Set(relics.map((x) => x.l.floorIndex)).size === Math.min(3, fl.length), 'relics spread across floors');
+}
 function checkLocks(fl, assert) {
   const doors = fl.flatMap((l) => l.doors.filter((d) => d.lock >= 0).map((d) => ({ l, d })));
   const cards = fl.flatMap((l) => l.items.filter((i) => i.kind === 'keycard').map((it) => ({ l, it })));
@@ -34,6 +47,7 @@ function checkLocks(fl, assert) {
 }
 const onlyTheme = process.argv[3];
 let fails = 0, retries = 0;
+const altarThemes = new Set();
 const t0 = Date.now();
 const stats = {};
 for (const k of THEME_KEYS) stats[k] = { n: 0, rooms: 0, items: 0, lockers: 0, doors: 0, cells: 0, corpses: 0, shapes: {}, types: {}, inner: 0 };
@@ -65,6 +79,8 @@ for (let s = 1; s <= N; s++) {
   assert(notes.length === 7, 'note count');
   assert(lv.items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'battery count');
   checkLocks([lv], assert);
+  checkRelics([lv], assert, altarThemes);
+  assert(lv.shutters.length === 0, 'single player has no shutters');
   assert(lv.fusebox, 'fusebox');
   assert(lv.generatorRoom && lv.generatorRoom.type === 'generator', 'generator room');
   assert(lv.lobby && lv.lobby.type === 'lobby', 'lobby');
@@ -135,6 +151,7 @@ for (let s = 1; s <= MF; s++) {
   assert(notes.join() === '0,1,2,3,4,5,6', 'notes 0..6 once each, got ' + notes.join());
   if (count === 1) assert(fl[0].items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'single floor batteries');
   checkLocks(fl, assert);
+  checkRelics(fl, assert);
   for (const [i, l] of fl.entries()) {
     assert(l.floorIndex === i, 'floor index');
     assert(!validateLevel(l), 'floor valid: ' + validateLevel(l));
@@ -165,6 +182,51 @@ for (let s = 1; s <= MF; s++) {
   }
 }
 console.log(`hospitals: ${MF} (1-3 floors, ${mfLevels} floors), ${((Date.now() - mt0) / Math.max(1, mfLevels)).toFixed(1)} ms/floor`);
+// ---------------------------------------------------------------------------
+// 雙人鐵捲門（多人、開局 2 人以上）：整棟 1～2 道；關著的時候也不會擋住任何必要的東西（捷徑，或後面只有額外好東西的死路）；
+// 把手不用開鎖、不用拉起鐵捲門就走得到；同一組種子＋人數生成同一棟醫院；開局 1 人（或單人）沒有鐵捲門
+const MS = Math.max(6, Math.round(N / 6));
+let shTotal = 0, shGated = 0;
+for (let s = 1; s <= MS; s++) {
+  const count = 1 + (s % 3);
+  const diff = DIFFICULTY[['easy', 'normal', 'nightmare'][count - 1]];
+  const theme = THEME_KEYS[s % THEME_KEYS.length];
+  const seed = (s * 3266489917) >>> 0;
+  const assert = (c, m) => { if (!c) { fails++; console.error('shutters', s, count, theme, m); } };
+  let fl;
+  try { fl = generateHospital(seed, diff, (l) => validateLevel(l), theme, count, { players: 2 + (s % 3) }); } catch (e) { fails++; console.error('shutters', s, 'FAILED:', e.message); continue; }
+  const n = fl.reduce((a, l) => a + l.shutters.length, 0);
+  shTotal += n;
+  assert(n >= 1 && n <= 2, `1-2 shutters per hospital (${n})`);
+  checkLocks(fl, assert);
+  checkRelics(fl, assert);
+  for (const l of fl) {
+    assert(!validateLevel(l), 'floor valid with shutters: ' + validateLevel(l));
+    const col = new Collision(l);
+    for (const sh of l.shutters) {
+      shGated += sh.gated ? 1 : 0;
+      assert(l.cellAt(sh.x, sh.y) === 0 && !l.blockedCell[sh.y * l.W + sh.x], 'shutter sits in a corridor');
+      assert(!col.overlapsAny(sh.crank.useX, sh.crank.useZ, 0.3), 'crank front is free');
+      // 擋住鐵捲門那一格：沒被隔開的地方都走得到；隔開的死路裡沒有必要的東西
+      l.blockedCell[sh.y * l.W + sh.x] = 1;
+      const d = l.bfs(l.lobbyX, l.lobbyTop);
+      l.blockedCell[sh.y * l.W + sh.x] = 0;
+      for (let i = 0; i < l.W * l.H; i++) if (l.cells[i] >= 0 && !l.blockedCell[i] && d[i] < 0 && i !== sh.y * l.W + sh.x) assert(l.gatedCells.has(i), `cell ${i} cut off by a shutter`);
+      const ci = (it) => Math.floor(it.z / CELL) * l.W + Math.floor(it.x / CELL);
+      for (const it of l.items) if (['fuse', 'keycard', 'relic'].includes(it.kind)) assert(!l.gatedCells.has(ci(it)), `${it.kind} behind a shutter`);
+      for (const rm of [l.generatorRoom, l.stairRoom, l.room707, ...l.locked].filter(Boolean)) assert(!rm.gated, `${rm.type} behind a shutter`);
+    }
+  }
+  if (s % 3 === 0) {
+    const again = generateHospital(seed, diff, (l) => validateLevel(l), theme, count, { players: 2 + (s % 3) });
+    assert(again.every((l, i) => l.ascii() === fl[i].ascii() && l.shutters.length === fl[i].shutters.length && l.shutters.every((sh, k) => sh.x === fl[i].shutters[k].x && sh.y === fl[i].shutters[k].y)), 'shutters not deterministic');
+    const solo = generateHospital(seed, diff, (l) => validateLevel(l), theme, count, { players: 1 });
+    assert(solo.every((l) => l.shutters.length === 0), 'no shutters with one player');
+  }
+}
+console.log(`shutter hospitals: ${MS}, shutters ${shTotal} (${shGated} gating a dead end)`);
+// 每一種樓層的劇情房間（707 病房、0713 冷藏室、嬰兒室、0713 隔離室、第 7 手術室、313 病房）都放得下搖籃
+if (!onlyTheme && N >= 6) for (const k of THEME_KEYS) if (!altarThemes.has(k)) { fails++; console.error(`no altar generated for theme ${k}`); }
 const dt = Date.now() - t0;
 console.log(`levels: ${N}, failures: ${fails}, regenerated: ${retries}, avg ${(dt / N).toFixed(1)} ms/level`);
 for (const [k, st] of Object.entries(stats)) {

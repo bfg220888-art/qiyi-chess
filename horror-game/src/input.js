@@ -34,7 +34,7 @@ export class Input {
       if (e.code === 'Space' || e.code === 'Enter') this.push('confirm');
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
-    addEventListener('blur', () => { this.keys.clear(); this.sprintTouch = false; this.breathTouch = false; });
+    addEventListener('blur', () => { this.keys.clear(); this.sprintTouch = false; this.breathTouch = false; this.mouseHeld = false; this.interactTouch = false; });
 
     // 滑鼠
     this.canvas.addEventListener('mousedown', (e) => {
@@ -44,11 +44,11 @@ export class Input {
         this.dragLook = true;
         return;
       }
-      if (e.button === 0) this.push('interact');
+      if (e.button === 0) { this.push('interact'); this.mouseHeld = true; }
       if (e.button === 2) this.push('camera');
       if (e.button === 1) { e.preventDefault(); this.push('throw'); }
     });
-    addEventListener('mouseup', () => { this.dragLook = false; });
+    addEventListener('mouseup', (e) => { this.dragLook = false; if (e.button === 0) this.mouseHeld = false; });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousemove', (e) => {
       if (!this.enabled || this.touchMode) return;
@@ -120,6 +120,7 @@ export class Input {
         e.stopPropagation();
         if (act === 'sprint') { this.sprintTouch = true; btn.classList.add('on'); return; }
         if (act === 'breath') { this.breathTouch = true; btn.classList.add('on'); return; }
+        if (act === 'interact') this.interactTouch = true; // 按住「互動」：救人、轉鐵捲門的把手
         this.push(act);
         btn.classList.add('press');
         setTimeout(() => btn.classList.remove('press'), 140);
@@ -127,6 +128,7 @@ export class Input {
       const up = (e) => {
         if (act === 'sprint') { this.sprintTouch = false; btn.classList.remove('on'); }
         if (act === 'breath') { this.breathTouch = false; btn.classList.remove('on'); }
+        if (act === 'interact') this.interactTouch = false;
         e.stopPropagation();
       };
       btn.addEventListener('pointerup', up);
@@ -194,6 +196,8 @@ export class Input {
     let sprint = k.has('ShiftLeft') || k.has('ShiftRight') || this.sprintTouch || this.joySprint;
     let crouchHold = k.has('ControlLeft') || k.has('ControlRight');
     let holdBreath = k.has('Space') || !!this.breathTouch;
+    // 按住互動鍵（E、滑鼠左鍵、觸控「互動」、手把 A）：扶起倒地的隊友、轉鐵捲門的把手
+    let interactHold = k.has('KeyE') || !!this.mouseHeld || !!this.interactTouch;
     if (this.joy) { mx = this.move.x; my = this.move.y; }
     // 遊戲手把
     // 在沒有手把權限的 iframe 裡 getGamepads() 會丟例外
@@ -216,6 +220,7 @@ export class Input {
       edge(8, 'map'); edge(9, 'pause'); edge(12, 'interact');
       if (b(6) || b(10)) sprint = true;
       if (b(4)) holdBreath = true;
+      if (b(0)) interactHold = true;
       this.padPrev = pad.buttons.map((x) => x.pressed);
       break;
     }
@@ -225,7 +230,7 @@ export class Input {
     this.look.x = this.look.y = 0;
     const actions = this.actions;
     this.actions = [];
-    return { mx, my, sprint, crouchHold, holdBreath, look, actions };
+    return { mx, my, sprint, crouchHold, holdBreath, interactHold, look, actions };
   }
 
   clear() {
@@ -236,6 +241,8 @@ export class Input {
     this.lookTouch = null;
     this.sprintTouch = false;
     this.breathTouch = false;
+    this.interactTouch = false;
+    this.mouseHeld = false;
     this.joySprint = false;
     this.move.x = this.move.y = 0;
     this.showJoy(false);

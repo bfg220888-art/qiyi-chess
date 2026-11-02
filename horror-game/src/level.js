@@ -61,6 +61,8 @@ export const FURN = {
   autoclave:  { w: 1.1,  d: 0.85, h: 1.7, tall: true },  // 高壓蒸氣滅菌鍋
   // 燒毀的舊院區
   rubble:     { w: 1.5,  d: 1.3,  h: 0.8 },              // 塌下來的天花板、水泥塊與燒焦的木樑
+  // 遺物：劇情房間裡放遺物的舊木頭搖籃（矮桌上，兩旁點著蠟燭）
+  altar:      { w: 1.05, d: 0.62, h: 0.95 },
   beam:       { w: 2.3,  d: 0.55, h: 1.5 },              // 斜靠在牆上的斷樑
 };
 
@@ -212,7 +214,7 @@ export function generateLevel(seed, diff, validator, theme, plan = null) {
   let lastErr = null;
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
-      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey, plan);
+      const lv = buildLevel((seed + attempt * 7919) >>> 0, diff, themeKey, plan, attempt);
       if (validator) {
         const problem = validator(lv);
         if (problem) { lastErr = new Error(problem); continue; }
@@ -305,9 +307,37 @@ function planExtras(floors, seed, opts = {}) {
       kf.keys.push(c);
     }
   }
-  void opts;
+  // 遺物（嬰兒鞋、出生手環、舊照片）：多層樓時分散到不同樓層；有時候一個鎖在上鎖的房間裡
+  const order = rng.shuffle([0, 1, 2]);
+  for (const f of floors) { f.relics = []; f.altar = false; }
+  order.forEach((r, k) => floors[k % floors.length].relics.push(r));
+  for (const f of floors) { f.relics.sort((a, b) => a - b); f.relicLocked = f.relics.length > 0 && rng.chance(0.35); }
+  // 放遺物的嬰兒床（祭壇）：在某一層的劇情房間裡（有兒童病房就放在嬰兒室）
+  (floors.find((f) => f.theme === 'pediatric') || rng.pick(floors)).altar = true;
+  // 雙人鐵捲門：多人連線開局 2 人以上才有，整棟醫院 1～2 道（放在哪一層也由 seed 決定）
+  for (const f of floors) f.shutters = 0;
+  if (Number(opts.players) >= 2) {
+    const n = rng.int(1, 2);
+    for (let k = 0; k < n; k++) floors[floors.length > 1 ? rng.int(0, floors.length - 1) : 0].shutters++;
+  }
   return floors;
 }
+
+// 她失去的孩子留下的三件遺物：撿起來時看得到的文字
+export const RELICS = [
+  {
+    name: '嬰兒鞋', title: '一隻嬰兒鞋',
+    body: '一隻毛線織的小鞋子，粉紅色，鞋帶打成蝴蝶結。另一隻不知道去哪裡了。\n\n鞋底用原子筆寫著很小的字：「蓮的寶寶」。\n\n——把它放回她孩子的床上。',
+  },
+  {
+    name: '出生手環', title: '新生兒出生手環',
+    body: '醫院的塑膠手環，小得只套得進兩根手指。\n\n「林○蓮之女　1999.08.13　03:12　2950g」\n\n跟病歷上她入院的日期是同一天。\n\n——把它放回她孩子的床上。',
+  },
+  {
+    name: '舊照片', title: '一張舊照片',
+    body: '泛黃的拍立得。七樓護理站前，一個穿護理服的年輕女人抱著剛出生的嬰兒，笑得很開心。\n\n背面寫著：「等妳出院，我們就回家。」\n\n——把它放回她孩子的床上。',
+  },
+];
 
 // 每一層各自生成（各自重試直到通過驗證）；回傳樓層陣列，index 0 是有大門的那一層
 export function floorSeed(seed, i) { return i ? (seed ^ Math.imul(i, 0x85ebca6b)) >>> 0 : seed >>> 0; }
@@ -483,7 +513,7 @@ function fillRooms(lv, rng, LY, eligible, addRoom) {
   }
 }
 
-function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
+function buildLevel(seed, diff, themeKey = 'ward', plan = null, attempt = 0) {
   const T = THEMES[themeKey], LY = T.layout;
   // 單層樓：大廳、大門、發電機房、三個保險絲、七張紙條都在這一層
   const P0 = plan || planHospital(seed, themeKey, 1)[0];
@@ -950,7 +980,116 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null) {
     }
   }
 
-  // --- 家具
+  // --- 雙人鐵捲門（多人、開局 2 人以上）：擋在一段一格寬的直走廊上，把手在同一側幾公尺外的牆上。
+  // 只挑「擋住之後其他地方都還走得到、而且繞路要多走很遠」的位置：它只是捷徑，永遠不會擋住必經的路
+  lv.shutters = [];
+  lv.shutterCells = new Set();
+  lv.gatedCells = new Set(); // 被鐵捲門隔開的死路（裡面只放額外的好東西）
+  if (P0.shutters > 0) {
+    const srng = new RNG((seed ^ 0x51ed270b) >>> 0);
+    const ok = (x, y) => isCorr(x, y) && !lv.blockedCell[idx(x, y)];
+    const solid = (t) => t === E.WALL || t === E.WINDOW;
+    const cands = [];
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      if (!ok(x, y)) continue;
+      // 一格寬的直走廊：沿走廊方向兩邊都是走廊，另外兩邊是牆
+      const alongX = ok(x - 1, y) && ok(x + 1, y) && solid(lv.edgeBetween(x, y, 0, -1)) && solid(lv.edgeBetween(x, y, 0, 1));
+      const alongZ = ok(x, y - 1) && ok(x, y + 1) && solid(lv.edgeBetween(x, y, -1, 0)) && solid(lv.edgeBetween(x, y, 1, 0));
+      if (alongX === alongZ) continue;
+      if (Math.abs(x - lobbyX) <= 1 && y >= rEnd - 1) continue;
+      cands.push({ x, y, ax: alongX ? 1 : 0, ay: alongX ? 0 : 1 });
+    }
+    // 把手：同一段走廊往一邊 2（或 1）格的側牆上（sides = 可以放把手的那幾側）
+    const findCrank = ({ x, y, ax, ay }, sides) => {
+      for (const sgn of srng.shuffle(sides.slice())) {
+        for (const k of [2, 1, 3]) {
+          const kx = x + sgn * k * ax, ky = y + sgn * k * ay;
+          let straight = true;
+          for (let j = 1; j <= k; j++) if (!ok(x + sgn * j * ax, y + sgn * j * ay)) straight = false;
+          if (!straight) continue;
+          const walls = ax ? [[0, -1], [0, 1]] : [[-1, 0], [1, 0]];
+          for (const [dx, dy] of srng.shuffle(walls)) {
+            // 實心的牆才裝得了把手（觀察窗、鐵籠護理站的鐵條不行）
+            const key = dx ? `v${dx > 0 ? kx + 1 : kx},${ky}` : `h${kx},${dy > 0 ? ky + 1 : ky}`;
+            if (lv.edgeBetween(kx, ky, dx, dy) === E.WALL && !lv.obs.has(key)) return { kx, ky, dx, dy, side: sgn };
+          }
+        }
+      }
+      return null;
+    };
+    // 擋住這一格會怎樣：shortcut = 其他地方都還走得到（detour = 繞過去要走幾格）；gate = 後面隔出一塊死路
+    const evaluate = (c) => {
+      const { x, y, ax, ay } = c;
+      lv.blockedCell[idx(x, y)] = 1;
+      const all = lv.bfs(lobbyX, lobbyTop);
+      const cut = [];
+      for (let i = 0; i < W * H; i++) if (lv.cells[i] !== VOID && !lv.blockedCell[i] && all[i] < 0) cut.push(i);
+      const detour = cut.length ? -1 : lv.bfs(x - ax, y - ay)[idx(x + ax, y + ay)];
+      lv.blockedCell[idx(x, y)] = 0;
+      return { cut, detour, sideOk: (sgn) => all[idx(x + sgn * ax, y + sgn * ay)] >= 0 };
+    };
+    const spaced = ({ x, y }) => !lv.barricades.some((b) => Math.abs(b.x - x) + Math.abs(b.y - y) <= 2) && !lv.shutters.some((s) => Math.abs(s.x - x) + Math.abs(s.y - y) <= 4);
+    const add = (c, crank, gated) => {
+      const { x, y, ax } = c;
+      const cx = (x + 0.5) * CELL, cz = (y + 0.5) * CELL, T2 = 0.07;
+      const box = ax ? { minX: cx - T2, maxX: cx + T2, minZ: y * CELL, maxZ: (y + 1) * CELL } : { minX: x * CELL, maxX: (x + 1) * CELL, minZ: cz - T2, maxZ: cz + T2 };
+      // 把手貼在牆上：rot = 正面朝向走廊
+      const { kx, ky, dx, dy } = crank;
+      const kcx = (kx + 0.5) * CELL, kcz = (ky + 0.5) * CELL;
+      const wx = dx ? (dx > 0 ? (kx + 1) * CELL - HT : kx * CELL + HT) : kcx;
+      const wz = dy ? (dy > 0 ? (ky + 1) * CELL - HT : ky * CELL + HT) : kcz;
+      const cr = { x: wx, z: wz, rot: Math.atan2(-dx, -dy), useX: wx - dx * 0.75, useZ: wz - dy * 0.75 };
+      lv.shutters.push({ id: lv.shutters.length, x, y, axis: ax ? 'x' : 'z', cx, cz, box, crank: cr, gated: !!gated, open: 0, target: 0, jammed: false });
+      lv.shutterCells.add(idx(x, y));
+      // 家具與道具不要擋在鐵捲門底下或把手前面
+      lv.blockers.push({ ...cellBounds(x, y), clearance: true });
+      // （只在走廊這一側：不要伸進牆後面的房間）
+      const ex = dx ? 0 : 0.55, ez = dy ? 0 : 0.55;
+      lv.blockers.push({ minX: Math.min(wx, cr.useX) - ex, maxX: Math.max(wx, cr.useX) + ex, minZ: Math.min(wz, cr.useZ) - ez, maxZ: Math.max(wz, cr.useZ) + ez, clearance: true });
+    };
+    const order = srng.shuffle(cands);
+    // 第一輪：捷徑（擋住了還繞得過去，但要多走至少 6 格）
+    for (const c of order) {
+      if (lv.shutters.length >= P0.shutters) break;
+      if (!spaced(c)) continue;
+      const ev = evaluate(c);
+      if (ev.cut.length || ev.detour < 6) continue;
+      const crank = findCrank(c, [-1, 1]);
+      if (crank) add(c, crank, null);
+    }
+    // 第二輪（沒有環路的格局）：擋住一段死路，後面是一間放著好東西的房間。
+    // 隔出來的那一塊不能有任何必要的東西（大廳、樓梯、發電機房、劇情房間、保險絲房間、上鎖的房間）
+    const must = new Set([lobby.id, ...(gen ? [gen.id] : []), ...(lv.stairRoom ? [lv.stairRoom.id] : []), ...(lv.room707 ? [lv.room707.id] : []), ...lv.fuseRooms.map((r) => r.id), ...lv.locked.map((r) => r.id)]);
+    for (const c of order) {
+      if (lv.shutters.length >= P0.shutters) break;
+      if (!spaced(c) || lv.shutterCells.has(idx(c.x, c.y))) continue;
+      const ev = evaluate(c);
+      if (!ev.cut.length || ev.cut.some((i) => lv.gatedCells.has(i))) continue;
+      const rooms = new Set(ev.cut.map((i) => lv.cells[i]).filter((id) => id > 0));
+      if (!rooms.size || [...rooms].some((id) => must.has(id))) continue;
+      // 上鎖的門的外側也不能在裡面
+      if (lv.locked.some((rm) => { const d = lv.doors[rm.doors[0]]; return d.rooms.some((id) => rooms.has(id)); })) continue;
+      const crank = findCrank(c, [-1, 1].filter((sgn) => ev.sideOk(sgn)));
+      if (!crank) continue;
+      for (const i of ev.cut) lv.gatedCells.add(i);
+      for (const id of rooms) lv.rooms[id].gated = true;
+      add(c, crank, ev.cut);
+    }
+    // 第三輪：繞路比較短的捷徑也可以
+    for (const c of order) {
+      if (lv.shutters.length >= P0.shutters) break;
+      if (!spaced(c) || lv.shutterCells.has(idx(c.x, c.y))) continue;
+      const ev = evaluate(c);
+      if (ev.cut.length || ev.detour < 3) continue;
+      const crank = findCrank(c, [-1, 1]);
+      if (crank) add(c, crank, null);
+    }
+    // 還是放不下：先換幾張平面圖再試（不行就接受少一道）
+    if (lv.shutters.length < P0.shutters && attempt < 8) throw new Error('no spot for a shutter');
+  }
+
+  // --- 家具（放遺物的搖籃最先放，保證劇情房間裡有位置）
+  lv.planAltar = !!P0.altar;
   furnish(lv, rng, T);
 
   // --- 道具
@@ -1179,6 +1318,13 @@ const CORRIDOR_PROPS = {
 function furnish(lv, rng, T) {
   const P = new Placer(lv, rng);
   doorClearance(lv);
+  lv.altar = null;
+  if (lv.planAltar) {
+    if (!lv.room707) throw new Error('no story room for the altar');
+    const a = P.againstWall('altar', lv.room707, { clearance: 1.0, noWindow: true });
+    if (!a) throw new Error('no altar spot');
+    lv.altar = a;
+  }
   const lockerCount = { n: 0 };
   const addLocker = (room, opts = {}) => {
     const it = P.againstWall('locker', room, { clearance: 1.0, ...opts });
@@ -1288,17 +1434,21 @@ function furnish(lv, rng, T) {
       const bounds = roomBounds(room);
       let ok = false;
       for (const slot of rng.shuffle(wallSlots(lv, room).filter((sl) => !sl.window))) {
-        const along = (slot.a0 + slot.a1) / 2;
-        const pose = slotPose(slot, along, f, 0.03);
-        const box = footprint(pose.x, pose.z, pose.rot, f.w, f.d);
-        if (!inside(box, bounds) || !P.free(box)) continue;
-        const [fx, fz] = frontVec(pose.rot);
-        const clear = footprint(pose.x + fx * (f.d / 2 + 0.7), pose.z + fz * (f.d / 2 + 0.7), pose.rot, f.w + 0.3, 1.4);
-        if (!inside(clear, bounds) || !P.free(clear)) continue;
-        if (!roomStaysConnected(lv, room, box)) continue;
-        stairsAt(room, pose, st, clear);
-        ok = true;
-        break;
+        // 先試牆段正中央，放不下再往兩邊挪一點
+        for (const off of [0, -0.45, 0.45]) {
+          const along = (slot.a0 + slot.a1) / 2 + off;
+          const pose = slotPose(slot, along, f, 0.03);
+          const box = footprint(pose.x, pose.z, pose.rot, f.w, f.d);
+          if (!inside(box, bounds) || !P.free(box)) continue;
+          const [fx, fz] = frontVec(pose.rot);
+          const clear = footprint(pose.x + fx * (f.d / 2 + 0.7), pose.z + fz * (f.d / 2 + 0.7), pose.rot, f.w + 0.3, 1.4);
+          if (!inside(clear, bounds) || !P.free(clear)) continue;
+          if (!roomStaysConnected(lv, room, box)) continue;
+          stairsAt(room, pose, st, clear);
+          ok = true;
+          break;
+        }
+        if (ok) break;
       }
       if (!ok) throw new Error('no stair slot');
     }
@@ -1721,7 +1871,7 @@ function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6], P0 = {}) {
   const spotInCorridor = () => {
     for (let t = 0; t < 40; t++) {
       const x = rng.int(0, lv.W - 1), y = rng.int(0, lv.H - 1);
-      if (lv.cellAt(x, y) !== CORRIDOR || lv.blockedCell[y * lv.W + x]) continue;
+      if (lv.cellAt(x, y) !== CORRIDOR || lv.blockedCell[y * lv.W + x] || (lv.shutterCells && lv.shutterCells.has(y * lv.W + x))) continue;
       const p = floorPoint(lv, rng, cellBounds(x, y), 0.35);
       if (p) return p;
     }
@@ -1771,11 +1921,22 @@ function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6], P0 = {}) {
 
   // 門禁卡：放在不用開任何鎖就走得到的房間（不在上鎖的房間、不在大廳）
   const xr = new RNG((lv.seed ^ 0x1b873593) >>> 0);
-  const open = others.filter((rm) => rm.locked === undefined && rm.type !== 'landing');
+  const open = others.filter((rm) => rm.locked === undefined && rm.type !== 'landing' && !rm.gated);
   for (const c of P0.keys || []) {
     const pool = open.filter((rm) => rm.dist >= 3);
     const room = xr.pick(pool.length ? pool : open);
     add('keycard', () => spotInRoom(room), { color: c, room: room.id });
+  }
+  // 遺物：不在劇情房間（放回去的地方）、不在發電機房；第一個有時候鎖在上鎖的房間裡
+  const relicPool = xr.shuffle(open.filter((rm) => rm !== lv.room707 && rm.type !== 'generator' && rm.dist >= 2));
+  for (const [k, r] of (P0.relics || []).entries()) {
+    const room = k === 0 && P0.relicLocked && lv.locked.length ? xr.pick(lv.locked) : relicPool.shift() || xr.pick(open);
+    add('relic', () => spotInRoom(room), { relic: r, room: room.id });
+  }
+  // 鐵捲門後面的死路房間：放一份額外的好東西（不放任何必要的東西）
+  for (const room of others.filter((rm) => rm.gated)) {
+    add('film', () => spotInRoom(room), { loot: true, n: 3 });
+    add('battery', () => spotInRoom(room), { loot: true });
   }
   // 上鎖房間裡的好東西：保險絲那間另外放鎮定劑；其他的放三捲底片、鎮定劑、電池
   for (const room of lv.locked) {
@@ -1817,6 +1978,9 @@ function placeLights(lv, rng, T) {
     if (!place) continue;
     let fx = (x + 0.5) * CELL, fz = (y + 0.5) * CELL;
     if (id !== CORRIDOR && room.area <= 2) { fx = room.cx; fz = room.cz; }
+    // 鐵捲門的捲軸箱在格子正中央的天花板：燈管往旁邊挪
+    const sh = lv.shutters && lv.shutters.find((q) => q.x === x && q.y === y);
+    if (sh) { if (sh.axis === 'x') fx += 0.85; else fz += 0.85; }
     let stage = stageOf();
     if (room.type === 'generator') stage = 1;
     if (room.type === 'lobby') stage = 3;
@@ -1834,7 +1998,7 @@ function placeLights(lv, rng, T) {
   // 路口太少的格局（環狀、魚骨形）：其他走廊格子補上
   if (inter.length < L.emergencyN) {
     const more = [];
-    for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) if (isCorr(x, y) && !lv.blockedCell[y * lv.W + x] && !inter.some(([a, b]) => Math.abs(a - x) + Math.abs(b - y) < 3)) more.push([x, y]);
+    for (let y = 0; y < lv.H; y++) for (let x = 0; x < lv.W; x++) if (isCorr(x, y) && !lv.blockedCell[y * lv.W + x] && !lv.shutterCells.has(y * lv.W + x) && !inter.some(([a, b]) => Math.abs(a - x) + Math.abs(b - y) < 3)) more.push([x, y]);
     for (const p of rng.shuffle(more)) {
       if (inter.length >= L.emergencyN) break;
       if (!inter.some(([a, b]) => Math.abs(a - p[0]) + Math.abs(b - p[1]) < 3)) inter.push(p);
@@ -2049,6 +2213,8 @@ function wallDecalFree(lv, s, along, width) {
   const p = wallDecalPose(s, along, 1.2);
   const box = { minX: p.x - width / 2 - 0.3, maxX: p.x + width / 2 + 0.3, minZ: p.z - width / 2 - 0.3, maxZ: p.z + width / 2 + 0.3 };
   for (const f of lv.furniture) if (FURN[f.kind].tall && overlaps(box, f.box)) return false;
+  // 鐵捲門的把手旁邊不貼東西
+  for (const sh of lv.shutters || []) if (Math.abs(sh.crank.x - p.x) < 0.5 + width / 2 && Math.abs(sh.crank.z - p.z) < 0.5 + width / 2) return false;
   return true;
 }
 

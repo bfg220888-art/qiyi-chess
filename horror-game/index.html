@@ -118,6 +118,10 @@
       <svg viewBox="0 0 12 24" class="ico"><path d="M4.5 1h3v5l2.5 3.5V23H2V9.5L4.5 6z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
       <span id="bottleCount">0</span>
     </div>
+    <div class="stat" title="遺物（放回搖籃 / 身上帶著）" id="relicStat" hidden>
+      <svg viewBox="0 0 22 16" class="ico"><path d="M3 9.5c0-3 1.6-6.5 4.6-6.5 2.2 0 3 1.6 3 3.4 0 1.2 1.2 1.8 3 2.2 3.6.7 5.4 2 5.4 3.9 0 1.6-1.4 2.5-3.6 2.5H6.2C4.2 15 3 13 3 9.5z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      <span id="relicCount">0/3</span>
+    </div>
     <div class="stat" title="門禁卡" id="keyStat" hidden><span id="keyCards" class="key-cards"></span></div>
     <div class="stat" title="保險絲">
       <svg viewBox="0 0 24 14" class="ico"><rect x="5" y="3" width="14" height="8" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1" y="4" width="4" height="6" fill="currentColor"/><rect x="19" y="4" width="4" height="6" fill="currentColor"/></svg>
@@ -125,6 +129,14 @@
     </div>
   </div>
   <div id="crosshair"></div>
+  <!-- 按住互動的進度（扶起隊友） -->
+  <div id="holdRing" hidden></div>
+  <!-- 倒地（多人） -->
+  <div id="downed" hidden>
+    <p class="down-title">你倒下了</p>
+    <p id="downText" class="down-text"></p>
+    <div class="down-bar"><span id="downBar"></span></div>
+  </div>
   <div id="stamina"><span></span></div>
   <div id="subtitle" class="subtitle-line"></div>
   <div id="prompt" class="prompt"></div>
@@ -241,6 +253,7 @@
           <dt>Q / 右鍵</dt><dd>相機閃光（能定住她幾秒）</dd>
           <dt>G / 中鍵</dt><dd>丟玻璃瓶（摔破的聲音能引開她）</dd>
           <dt>按住空白鍵</dt><dd>躲在櫃子裡時屏住呼吸</dd>
+          <dt>按住 E / 左鍵</dt><dd>多人：扶起倒地的隊友、轉鐵捲門的把手</dd>
           <dt>M / Tab</dt><dd>地圖</dd>
           <dt>P／右上角 ❚❚</dt><dd>暫停（再按一次 P 繼續）</dd>
         </dl>
@@ -250,7 +263,7 @@
         <dl>
           <dt>左半邊</dt><dd>拖曳搖桿移動，推到底就是奔跑</dd>
           <dt>右半邊</dt><dd>滑動看四周，輕點 = 互動</dd>
-          <dt>按鈕</dt><dd>燈 = 手電筒、閃 = 相機、蹲 = 蹲下、跑 = 按住奔跑、丟 = 丟玻璃瓶、屏息 = 躲藏時按住</dd>
+          <dt>按鈕</dt><dd>燈 = 手電筒、閃 = 相機、蹲 = 蹲下、跑 = 按住奔跑、丟 = 丟玻璃瓶、屏息 = 躲藏時按住、按住「互動」= 扶起隊友 / 轉鐵捲門的把手（多人）</dd>
         </dl>
         <h3>求生守則</h3>
         <ul>
@@ -259,6 +272,9 @@
           <li>把玻璃瓶丟到遠處，摔破的聲音會把她引過去。</li>
           <li>手電筒會讓你更顯眼；待在黑暗太久，理智會崩潰。</li>
           <li>有燈的地方能讓你冷靜下來。鎮定劑也可以。</li>
+          <li>上鎖的門要找同顏色的門禁卡。鎖著的房間裡常有好東西。</li>
+          <li>把三件遺物放回她孩子的搖籃，也許能讓她安息——但每放一件，她都會更生氣。</li>
+          <li>多人：隊友倒下時，站到他旁邊按住互動鍵把他扶起來。鐵捲門要有人一直轉著把手才拉得起來。</li>
         </ul>
       </div>
     </div>

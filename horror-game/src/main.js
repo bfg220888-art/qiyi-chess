@@ -34,6 +34,9 @@ const TIPS = [
   '有燈的地方能讓你冷靜下來；在黑暗中待太久，你會開始看到不存在的東西。',
   '關上門可以擋住她的視線，但她會打開門。',
   '每插上一個保險絲，就會有更多燈亮起——她也會更生氣。',
+  '上鎖的門要找同顏色的門禁卡。她不用鑰匙，她會直接穿過去。',
+  '嬰兒鞋、出生手環、舊照片……把它們放回她孩子的搖籃。',
+  '多人時倒下了別慌：隊友站到你旁邊按住互動鍵，就能把你扶起來。',
 ];
 
 class App {
@@ -335,7 +338,8 @@ class App {
     $('loadCancel').addEventListener('click', () => { mp.leave(); this.busy = false; this.state = 'menu'; this.toMenu(); this.renderLobby(); });
     $('btnMpStart').addEventListener('click', () => {
       if (!mp.isHost || this.busy) return;
-      mp.start({ difficulty: this.settings.difficulty, seed: (Math.random() * 2 ** 31) | 0, theme: this.settings.theme || null });
+      // np：開局時的人數（2 人以上才有雙人鐵捲門；每個人都用這個數字生成同一棟醫院）
+      mp.start({ difficulty: this.settings.difficulty, seed: (Math.random() * 2 ** 31) | 0, theme: this.settings.theme || null, np: mp.players.length });
     });
     mp.onChange(() => this.renderLobby());
   }
@@ -376,8 +380,9 @@ class App {
     const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
     if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
     this.mpGo = false;
-    // 樓層數由難度決定（每個人自己算，不相信訊息裡的數字）
-    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff, floors: MP_FLOORS[diff] });
+    // 樓層數由難度決定（每個人自己算，不相信訊息裡的數字）；開局人數只接受 1～4 的整數
+    const np = Number.isInteger(opts.np) && opts.np >= 1 && opts.np <= MAX_PLAYERS ? opts.np : 1;
+    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff, floors: MP_FLOORS[diff], players: np });
   }
   mpBegin() {
     this.mpGo = true;
@@ -444,6 +449,7 @@ class App {
     const game = new Game(this, {
       difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
       seed, theme, floors,
+      players: mpOpts ? mpOpts.players : 1,
       mp: mpOpts ? this.mp : null,
     });
     try {

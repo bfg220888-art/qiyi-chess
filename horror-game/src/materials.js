@@ -108,6 +108,13 @@ export function createMaterials(tf, theme = 'ward') {
   M.paintMint = std({ ...paint, color: 0xa3cdb5, roughness: 1, metalness: 0.1 });
   M.paintCream = std({ ...paint, color: 0xe0d6bc, roughness: 1, metalness: 0.1 });
   M.paintBlue = std({ ...paint, color: 0x9db6d6, roughness: 1, metalness: 0.1 });
+  // 遺物與放遺物的搖籃
+  M.knit = std({ map: fabric.map, normalMap: fabric.normalMap, color: 0xe6a9b8, emissive: 0x2a1418, emissiveIntensity: 1, roughness: 1, metalness: 0 });
+  M.bandPink = std({ color: 0xf0b8c8, emissive: 0x301820, emissiveIntensity: 1, roughness: 0.35, metalness: 0 });
+  M.photo = std({ color: 0x9a8262, emissive: 0x1a140c, emissiveIntensity: 1, roughness: 0.4, metalness: 0 });
+  M.photoBorder = std({ color: 0xe8e0cc, emissive: 0x2a2620, emissiveIntensity: 1, roughness: 0.8, metalness: 0 });
+  M.candle = std({ color: 0xe6dcc0, emissive: 0x3a2a10, emissiveIntensity: 1, roughness: 0.7, metalness: 0 });
+  M.flame = new THREE.MeshBasicMaterial({ color: 0xffc46a });
   M.toyRed = std({ map: grime.map, color: 0xa3261c, roughness: 0.45, metalness: 0 });
   M.toyYellow = std({ map: grime.map, color: 0xd6b12a, roughness: 0.45, metalness: 0 });
   M.toyBlue = std({ map: grime.map, color: 0x2f5fa0, roughness: 0.45, metalness: 0 });

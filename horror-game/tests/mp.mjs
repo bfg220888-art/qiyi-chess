@@ -22,6 +22,14 @@ let failed = false;
 const log = (...a) => console.log('   ', ...a);
 const check = (ok, msg) => { if (!ok) { failed = true; console.log('  ✗', msg); } else console.log('  ✓', msg); };
 const until = async (page, fn, arg, ms = 20000) => page.waitForFunction(fn, arg, { timeout: ms, polling: 100 });
+// 截圖：暫時把視窗放大（平常用很小的視窗省效能）
+const bigShot = async (page, name, prep) => {
+  await page.setViewportSize({ width: 960, height: 540 });
+  if (prep) await page.evaluate(prep);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: path.join(root, 'tests/output', name + '.png') }).catch(() => {});
+  await page.setViewportSize({ width: 400, height: 240 });
+};
 
 const pages = [];
 for (let i = 0; i < N; i++) {
@@ -78,7 +86,7 @@ try {
   check(rc.every((n) => n === N - 1), `remotes ${rc}`);
 
   // 門：玩家 2 打開 3 號門
-  const doorI = await clients[0].evaluate(() => { const g = window.__SW.game, lv = g.lv; const i = lv.doors.findIndex((d) => d.target < 0.3); g.world.setDoor(lv.doors[i], 1.5, 2.6); return i; });
+  const doorI = await clients[0].evaluate(() => { const g = window.__SW.game, lv = g.lv; const i = lv.doors.findIndex((d) => d.target < 0.3 && !(d.lock >= 0)); g.world.setDoor(lv.doors[i], 1.5, 2.6); return i; });
   for (const p of [host, ...clients.slice(1)]) await until(p, (i) => window.__SW.game.lv.doors[i].target === 1.5, doorI);
   check(true, `door ${doorI} sync`);
 
@@ -98,7 +106,7 @@ try {
   await until(clients[0], () => { const r = window.__SW.game.remotes.get(0); return r && r.floor === 0 && r.bodyShown === false; });
   check(true, 'players on different floors do not see each other');
   // 另一層的門：帶樓層索引同步，不會動到第 0 層同一個索引的門
-  const door2 = await clients[0].evaluate(() => { const g = window.__SW.game, lv = g.lv; const i = lv.doors.findIndex((d) => d.target < 0.3); g.world.setDoor(lv.doors[i], 1.5, 2.6); return i; });
+  const door2 = await clients[0].evaluate(() => { const g = window.__SW.game, lv = g.lv; const i = lv.doors.findIndex((d) => d.target < 0.3 && !(d.lock >= 0)); g.world.setDoor(lv.doors[i], 1.5, 2.6); return i; });
   const before0 = await host.evaluate((i) => window.__SW.game.floors[0].lv.doors[i] && window.__SW.game.floors[0].lv.doors[i].target, door2);
   await until(host, ([f, i]) => window.__SW.game.floors[f].lv.doors[i].target === 1.5, [upTo.to, door2]);
   const after0 = await host.evaluate((i) => window.__SW.game.floors[0].lv.doors[i] && window.__SW.game.floors[0].lv.doors[i].target, door2);
@@ -109,7 +117,7 @@ try {
   check(await host.evaluate(() => !window.__SW.game.over), 'bad floor indices ignored');
   // 女鬼換樓層：房主讓她出現在第二層，玩家 2（在那一層）看得到她，房主（在第 0 層）看不到
   await host.evaluate((f) => { const g = window.__SW.game, gh = g.ghost, L = g.floors[f].lv; const far = L.rooms.slice(1).reduce((a, b) => (Math.hypot(b.cx - L.spawn.x, b.cz - L.spawn.z) > Math.hypot(a.cx - L.spawn.x, a.cz - L.spawn.z) ? b : a)); gh.spawnAt(far.cx, far.cz, 'wander', f); gh.dormantUntil = 0; gh.path = null; gh.idleT = 30; }, upTo.to);
-  await until(clients[0], (f) => { const gh = window.__SW.game.ghost; return gh.floor === f && gh.state !== 'dormant' && gh.model.root.visible; }, upTo.to);
+  await until(clients[0], (f) => { const gh = window.__SW.game.ghost; return gh.floor === f && gh.state !== 'dormant' && gh.model.root.visible; }, upTo.to, 150000); // 第一次在這個分頁畫她：軟體繪圖要先編譯著色器，比較久
   check(await host.evaluate(() => !window.__SW.game.ghost.model.root.visible), 'ghost floor syncs (visible only on her floor)');
   // 回到第 0 層繼續後面的測試
   await clients[0].evaluate(() => {
@@ -174,6 +182,124 @@ try {
   for (const p of pages) await until(p, (i) => window.__SW.game.floors[0].lv.doors[i].unlocked, lk.i);
   check(await clients[0].evaluate((c) => !window.__SW.game.player.keys.includes(c), lk.color), 'keycard unlock syncs to everyone, card consumed');
 
+  // 遺物：撿一件、走到搖籃那一層放回去 → 每個人的搖籃裡都有；沒帶在身上的那件放不進去
+  const rel = await host.evaluate(() => {
+    const g = window.__SW.game, out = [];
+    for (const F of g.floors) F.lv.items.forEach((it, i) => { if (it.kind === 'relic') out.push([F.index, i, it.relic]); });
+    return { list: out, altar: g.altarFloor.index };
+  });
+  const [rf, ri, rr] = rel.list[0];
+  await clients[0].evaluate(([f, i]) => { const g = window.__SW.game; g.mpRequestPick(g.floors[f].lv.items[i]); }, [rf, ri]);
+  await until(clients[0], (r) => window.__SW.game.player.relics.includes(r), rr);
+  await clients[0].evaluate(() => { const A = window.__SW, g = A.game; if (g.ui.noteOpen) { g.ui.closeNote(); g.player.locked = false; } });
+  // 走樓梯到搖籃那一層，站到搖籃前
+  await clients[0].evaluate((f) => {
+    const A = window.__SW, g = A.game;
+    if (g.floorIdx !== f) { g.useStairs(g.lv.stairs.find((s) => s.to === f)); for (let k = 0; k < 20; k++) g.update(0.05, A.emptyInput()); }
+    const a = g.lv.altar, P = g.player;
+    P.pos.x = a.x + Math.sin(a.rot) * 0.9; P.pos.z = a.z + Math.cos(a.rot) * 0.9;
+    g.mp.sendT = 0;
+  }, rel.altar);
+  await until(host, ([s, f]) => window.__SW.game.remotes.get(s).floor === f, [slots[1], rel.altar]);
+  await host.waitForTimeout(400);
+  const other = [0, 1, 2].find((r) => r !== rr);
+  await clients[0].evaluate((r) => window.__SW.game.mp.send({ t: 'relic', r }), other);
+  await clients[0].evaluate(() => { const n = window.__SW.mp.net; n.broadcast({ t: 'relic', r: 7 }); n.broadcast({ t: 'relic', r: 'x' }); });
+  await host.waitForTimeout(700);
+  check(await host.evaluate(() => window.__SW.game.relicsPlaced.size === 0), 'fake relic placement refused');
+  await clients[0].evaluate(() => window.__SW.game.useAltar());
+  for (const p of pages) await until(p, (r) => window.__SW.game.relicsPlaced.has(r) && window.__SW.game.altarFloor.world.altar.userData.slots[r].children.length === 1, rr);
+  check(await clients[0].evaluate(() => window.__SW.game.player.relics.length === 0 && document.getElementById('relicCount').textContent === '1/3'), 'relic placement syncs to everyone');
+  // 回到第 0 層
+  await clients[0].evaluate(() => {
+    const A = window.__SW, g = A.game;
+    if (g.floorIdx !== 0) { g.useStairs(g.lv.stairs.find((s) => s.to === 0)); for (let k = 0; k < 20; k++) g.update(0.05, A.emptyInput()); }
+  });
+  await until(host, (s) => window.__SW.game.remotes.get(s).floor === 0, slots[1]);
+
+  // ---------------------------------------------------------------------
+  // 雙人鐵捲門：開局 2 人以上才有；按住把手才開、放手就關；離把手很遠的「我在轉」不算數
+  const sh = await host.evaluate(() => {
+    const g = window.__SW.game;
+    for (const F of g.floors) if (F.lv.shutters.length) { const q = F.lv.shutters[0]; return { f: F.index, i: q.id, n: g.floors.reduce((a, G) => a + G.lv.shutters.length, 0), np: g.startPlayers }; }
+    return { n: 0, np: g.startPlayers };
+  });
+  check(sh.np === N && sh.n >= 1 && sh.n <= 2, `${sh.n} shutter(s) for ${sh.np} players`);
+  const shut = (p) => p.evaluate(([f, i]) => { const q = window.__SW.game.floors[f].lv.shutters[i]; return { t: q.target, o: q.open, j: q.jammed }; }, [sh.f, sh.i]);
+  check((await Promise.all(pages.map(shut))).every((q) => q.t === 0 && !q.j), 'shutter starts closed');
+  // 玩家 2 走到那一層、站到把手前面看著它
+  await clients[0].evaluate(([f, i]) => {
+    const A = window.__SW, g = A.game;
+    if (g.floorIdx !== f) { g.useStairs(g.lv.stairs.find((x) => x.to === f)); for (let k = 0; k < 20; k++) g.update(0.05, A.emptyInput()); }
+    const c = g.lv.shutters[i].crank, P = g.player;
+    P.pos.x = c.useX; P.pos.z = c.useZ;
+    P.yaw = Math.atan2(-(c.x - c.useX), -(c.z - c.useZ)); P.pitch = -0.5;
+    g.mp.sendT = 0;
+  }, [sh.f, sh.i]);
+  await until(host, ([s, f]) => window.__SW.game.remotes.get(s).floor === f, [slots[1], sh.f]);
+  await host.waitForTimeout(500);
+  // 遠處送來的「我在轉把手」：房主不理
+  await clients[0].evaluate(([i]) => { const g = window.__SW.game, st = g.mpLocalState(); g.mp.net.broadcast({ t: 'st', ...st, x: st.x + 6, z: st.z + 6, ck: i }); g.mp.net.broadcast({ t: 'st', ...st, ck: 999 }); }, [sh.i]);
+  await host.waitForTimeout(300);
+  check((await shut(host)).t === 0, 'far-away crank holder ignored');
+  const tgt = await clients[0].evaluate(() => { const g = window.__SW.game; g.updateInteraction(); return g.target && g.target.kind + ':' + g.target.label; });
+  log('crank target', tgt);
+  await bigShot(clients[0], 'mp-crank');
+  // 從把手前面看鐵捲門（關著）
+  const lookShutter = `(() => { const g = window.__SW.game, q = g.lv.shutters[${sh.i}], P = g.player; P.yaw = Math.atan2(-(q.cx - P.pos.x), -(q.cz - P.pos.z)); P.pitch = 0.05; })()`;
+  await bigShot(clients[0], 'mp-shutter-closed', lookShutter);
+  await clients[0].evaluate(([i]) => { const g = window.__SW.game, c = g.lv.shutters[i].crank, P = g.player; P.yaw = Math.atan2(-(c.x - c.useX), -(c.z - c.useZ)); P.pitch = -0.5; }, [sh.i]);
+  await clients[0].evaluate(() => window.__SW.input.keys.add('KeyE'));
+  for (const p of pages) await until(p, ([f, i]) => window.__SW.game.floors[f].lv.shutters[i].target === 1, [sh.f, sh.i]);
+  await until(host, ([f, i]) => window.__SW.game.floors[f].lv.shutters[i].open > 0.95, [sh.f, sh.i]);
+  check(true, 'shutter opens while the crank is held (synced)');
+  await until(clients[0], ([f, i]) => window.__SW.game.floors[f].lv.shutters[i].open > 0.95, [sh.f, sh.i]);
+  await bigShot(clients[0], 'mp-shutter-open', lookShutter);
+  await clients[0].evaluate(() => window.__SW.input.keys.delete('KeyE'));
+  for (const p of pages) await until(p, ([f, i]) => window.__SW.game.floors[f].lv.shutters[i].target === 0, [sh.f, sh.i]);
+  check(true, 'shutter drops when the crank is released');
+  await clients[0].evaluate(() => {
+    const A = window.__SW, g = A.game;
+    if (g.floorIdx !== 0) { g.useStairs(g.lv.stairs.find((x) => x.to === 0)); for (let k = 0; k < 20; k++) g.update(0.05, A.emptyInput()); }
+  });
+  await until(host, (s) => window.__SW.game.remotes.get(s).floor === 0, slots[1]);
+
+  // ---------------------------------------------------------------------
+  // 倒地與扶起：房主被抓 → 倒地（不會馬上被帶走）；隊友在遠處說「我在扶」不算；站到旁邊按住 E 三秒 → 站起來
+  await host.evaluate(() => { const g = window.__SW.game; g.onCaught(false, g.player); });
+  check(await host.evaluate(() => !!window.__SW.game.downed && !window.__SW.game.dying && window.__SW.game.mpStatus === 0), 'host is down, not taken');
+  await until(clients[0], () => { const r = window.__SW.game.remotes.get(0); return r && r.downed; });
+  check(true, 'downed state syncs');
+  await bigShot(host, 'mp-downed');
+  // 玩家 2 站在 4 公尺外，一直送「我在扶」
+  const hp = await host.evaluate(() => { const P = window.__SW.game.player; return { x: P.pos.x, z: P.pos.z }; });
+  await clients[0].evaluate((h) => {
+    const g = window.__SW.game, P = g.player;
+    for (const [dx, dz] of [[4, 0], [-4, 0], [0, 4], [0, -4], [3, 3], [-3, -3]]) if (!g.collision.overlapsAny(h.x + dx, h.z + dz, 0.3)) { P.pos.x = h.x + dx; P.pos.z = h.z + dz; break; }
+    g.mp.sendT = 0;
+  }, hp);
+  await host.waitForTimeout(500);
+  await clients[0].evaluate(() => new Promise((res) => { const g = window.__SW.game; let n = 0; const id = setInterval(() => { g.mp.send({ t: 'rv', s: 0 }); if (++n >= 19) { clearInterval(id); res(); } }, 200); }));
+  await host.waitForTimeout(300);
+  check(await host.evaluate(() => !!window.__SW.game.downed), 'far-away revive refused');
+  // 站到旁邊、看著他、按住 E
+  await clients[0].evaluate((h) => {
+    const g = window.__SW.game, P = g.player;
+    for (const [dx, dz] of [[0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8]]) if (!g.collision.overlapsAny(h.x + dx, h.z + dz, 0.3)) { P.pos.x = h.x + dx; P.pos.z = h.z + dz; break; }
+    P.yaw = Math.atan2(-(h.x - P.pos.x), -(h.z - P.pos.z)); P.pitch = -0.6;
+    g.mp.sendT = 0;
+    window.__SW.input.keys.add('KeyE');
+  }, hp);
+  await clients[0].waitForTimeout(300);
+  await bigShot(clients[0], 'mp-revive');
+  const ring = await clients[0].evaluate(() => ({ t: window.__SW.game.target && window.__SW.game.target.label, ring: !document.getElementById('holdRing').hidden }));
+  log('revive prompt', JSON.stringify(ring));
+  await until(host, () => !window.__SW.game.downed && window.__SW.game.reviveUsed && window.__SW.game.mpStatus === 0, null, 15000);
+  await clients[0].evaluate(() => window.__SW.input.keys.delete('KeyE'));
+  await until(clients[0], () => !window.__SW.game.remotes.get(0).downed);
+  check(ring.ring && /扶起/.test(ring.t || ''), 'teammate revive works (hold E, progress ring)');
+  check(await host.evaluate(() => window.__SW.game.player.sanity <= 0.26), 'revived with low sanity');
+
   // 女鬼：房主讓她在玩家 2 附近出現並追逐
   const target = await clients[0].evaluate(() => { const P = window.__SW.game.player; return { x: P.pos.x, z: P.pos.z }; });
   await host.evaluate((t) => { const g = window.__SW.game, gh = g.ghost; const s = gh.findSpot(4, 12) || { x: t.x + 3, z: t.z }; gh.spawnAt(s.x, s.z, 'chase'); gh.dormantUntil = 0; }, target);
@@ -192,14 +318,23 @@ try {
   await host.waitForTimeout(500);
   check(await host.evaluate(() => { const g = window.__SW.game; return [...g.remotes.values()].every((r) => Number.isFinite(r.yaw) && Number.isFinite(r.pos.x)); }), 'bad state is sanitized');
 
-  // 被抓：房主的女鬼抓到玩家 2 → 玩家 2 看到跳嚇然後觀戰
+  // 被抓：房主的女鬼抓到玩家 2 → 倒地；30 秒沒人扶 → 被帶走（看到跳嚇然後觀戰）
   const s1 = slots[1];
   await host.evaluate((s) => { const g = window.__SW.game; g.onCaught(false, g.remotes.get(s)); }, s1);
-  await until(clients[0], () => !!window.__SW.game.dying || window.__SW.game.mpStatus === 1);
-  // 軟體繪圖很慢：直接推進模擬把跳嚇播完
-  await clients[0].evaluate(() => { const A = window.__SW, g = A.game; for (let i = 0; i < 60 && g.mpStatus === 0; i++) g.update(0.05, A.emptyInput()); });
+  await until(clients[0], () => !!window.__SW.game.downed);
+  await until(host, (s) => window.__SW.game.remotes.get(s).downed, s1);
+  // 倒數快轉到最後一秒
+  await clients[0].evaluate(() => { window.__SW.game.downed.t = 0.6; });
+  await clients[0].evaluate(() => { const A = window.__SW, g = A.game; for (let i = 0; i < 80 && g.mpStatus === 0; i++) g.update(0.05, A.emptyInput()); });
   await until(clients[0], () => window.__SW.game.mpStatus === 1, null, 15000);
   await until(host, (s) => window.__SW.game.remotes.get(s).a === 1, s1);
+  check(true, 'downed timeout → taken → spectating');
+  if (N === 2) {
+    // 只剩一個人在裡面：鐵捲門卡在打開的位置
+    for (const p of pages) await until(p, ([f, i]) => { const q = window.__SW.game.floors[f].lv.shutters[i]; return q.jammed && q.target === 1; }, [sh.f, sh.i]);
+    check(true, 'shutters jam open when one player remains');
+  }
+  await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.setState('dormant'); gh.dormantUntil = 1e9; });
   check(true, 'catch → dead → spectating');
   for (const p of pages) await until(p, ([f, i]) => !window.__SW.game.floors[f].lv.items[i].taken, fuseI);
   check(true, 'dropped fuse respawned for everyone');
@@ -223,7 +358,7 @@ try {
   // 觀戰的人不會干擾別人：別人收到的位置停在他倒下的地方，看不到他的人、手電筒
   const home = await clients[0].evaluate(() => window.__SW.game.specHome);
   await host.waitForTimeout(800);
-  const seen = await host.evaluate((s) => { const r = window.__SW.game.remotes.get(s); return { x: r.tx, z: r.tz, light: r.light.intensity, body: r.bodyShown }; }, slots[1]);
+  const seen = await host.evaluate((s) => { const g = window.__SW.game, r = g.remotes.get(s); return { x: r.tx, z: r.tz, light: r.light.intensity, body: r.bodyShown, a: r.a, t: g.time, dying: !!g.dying, over: g.over, st: g.mpStatus, fl: r.floor, me: g.floorIdx }; }, slots[1]);
   check(Math.abs(seen.x - home.x) < 0.05 && Math.abs(seen.z - home.z) < 0.05 && seen.light === 0 && !seen.body, `spectator stays put and hidden for others ${JSON.stringify(seen)}`);
   // 觀戰的人按互動、拍照、丟瓶子都不會影響遊戲
   const before = await host.evaluate(() => { const g = window.__SW.game; return [g.ghost.state, g.fusesInserted, g.lv.doors.map((d) => d.target).join()]; });
@@ -233,6 +368,12 @@ try {
   check(before[1] === after[1] && before[2] === after[2], 'spectator actions do not change the game');
 
   // 其他人逃出 → 結算
+  if (N > 2) {
+    // 房主先逃出去：裡面只剩一個人 → 鐵捲門卡在打開的位置
+    await host.evaluate(() => window.__SW.game.mpEscaped());
+    for (const p of pages) await until(p, ([f, i]) => { const q = window.__SW.game.floors[f].lv.shutters[i]; return q.jammed && q.target === 1; }, [sh.f, sh.i]);
+    check(true, 'shutters jam open when one player remains');
+  }
   for (const p of [host, ...clients.slice(1)]) await p.evaluate(() => window.__SW.game.mpEscaped());
   for (const p of pages) await until(p, () => window.__SW.game.over && !document.getElementById('end').hidden, null, 15000);
   const rows = await clients[0].evaluate(() => document.getElementById('endStats').textContent);
@@ -255,7 +396,7 @@ try {
   failed = true;
   console.log('  ✗', e.message.split('\n')[0]);
   for (const [i, p] of pages.entries()) {
-    try { log(`p${i}`, JSON.stringify(await p.evaluate(() => ({ state: window.__SW.state, status: window.__SW.mp.status, players: window.__SW.mp.players, over: window.__SW.game && window.__SW.game.over, cur: window.__SW.game && window.__SW.game.floorIdx, gh: window.__SW.game && [window.__SW.game.ghost.floor, window.__SW.game.ghost.state, window.__SW.game.ghost.model.root.visible, window.__SW.game.ghost.net && window.__SW.game.ghost.net.fl, window.__SW.game.ghost.net && window.__SW.game.ghost.net.s] })))); } catch (x) { /* 已關閉 */ }
+    try { log(`p${i}`, JSON.stringify(await p.evaluate(() => ({ state: window.__SW.state, status: window.__SW.mp.status, players: window.__SW.mp.players, over: window.__SW.game && window.__SW.game.over, cur: window.__SW.game && window.__SW.game.floorIdx, gh: window.__SW.game && [window.__SW.game.ghost.floor, window.__SW.game.ghost.state, window.__SW.game.ghost.model.root.visible, window.__SW.game.ghost.net && window.__SW.game.ghost.net.fl, window.__SW.game.ghost.net && window.__SW.game.ghost.net.s], dbg: window.__SW.game && (() => { const g = window.__SW.game; const t0 = g.time; return { t: g.time, locked: g.player.locked, stairT: !!g.stairT, dying: !!g.dying, st: g.mpStatus, paused: window.__SW.paused, note: g.ui.noteOpen, hidden: document.hidden, banished: !!g.ghost.banished, ritual: !!g.ritual, downed: !!g.downed }; })() })))); } catch (x) { /* 已關閉 */ }
   }
 }
 for (const e of errors) console.log('  !', e);

@@ -22,9 +22,11 @@ function cleanState(m) {
     c: m.c ? 1 : 0, v: num(m.v, 0, 12), a: m.a === 1 || m.a === 2 ? m.a : 0,
     b: m.b ? 1 : 0, sa: num(m.sa, 0, 1, 1), hb: m.hb ? 1 : 0,
     fl: Number.isInteger(m.fl) && m.fl >= 0 && m.fl < 8 ? m.fl : 0, // 樓層（遊戲裡再對照實際層數）
+    dn: m.dn ? 1 : 0, // 倒地
+    ck: Number.isInteger(m.ck) && m.ck >= 0 && m.ck < 16 ? m.ck : -1, // 正在轉哪一道鐵捲門的把手（那一層的索引）
   };
 }
-const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock']);
+const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock', 'relic', 'rv']);
 
 export class MP {
   constructor(app) {
@@ -389,6 +391,30 @@ export class MP {
         break;
       case 'unlocked':
         g.mpApplyUnlock(m.f, m.i, m.by);
+        break;
+      // 遺物：玩家請求放回搖籃 → 房主核對 → 大家一起套用（第三件放回去時每個人都會看到儀式）
+      case 'relic':
+        if (this.isHost) g.mpHostRelic(m.r, slot);
+        break;
+      case 'relics':
+        g.mpApplyRelic(m.r, m.by);
+        break;
+      // 倒地與扶起：玩家每 0.2 秒說一次「我在扶某某」→ 房主核對距離、同一層、連續 3 秒 → 大家一起套用
+      case 'rv':
+        if (this.isHost) g.mpHostRevive(m.s, slot);
+        break;
+      case 'revived':
+        g.mpApplyRevived(m.s, m.by);
+        break;
+      case 'taken':
+        if (m.s === this.mySlot && g.downed) g.mpTakeDowned();
+        break;
+      // 雙人鐵捲門：只有房主決定開或關
+      case 'shut':
+        g.mpApplyShutter(m.f, m.i, m.o, m.j);
+        break;
+      case 'shuts':
+        if (Array.isArray(m.l)) for (const e of m.l.slice(0, 16)) if (Array.isArray(e)) g.mpApplyShutter(e[0], e[1], e[2], e[3]);
         break;
       // 聲音吸引她、閃光定住她
       case 'noise':
