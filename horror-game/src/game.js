@@ -174,10 +174,25 @@ export class Game {
     this.ghost.model.root.visible = true;
     this.director.apparition.visible = true;
     this.player.flash.intensity = 1;
-    try {
-      if (this.renderer.compileAsync) await this.renderer.compileAsync(this.scene, this.player.camera);
-      else this.renderer.compile(this.scene, this.player.camera);
-    } catch (e) { /* 舊瀏覽器 */ }
+    // 多層樓：每一層的燈數不一樣（著色器也不一樣），所以每一層都要在「只有那一層看得到」的狀態下各編譯一次，
+    // 第一次走樓梯才不會卡住好幾秒（軟體繪圖的電腦上會卡將近十秒）。順便各畫一張，把貼圖與幾何先傳上顯示卡
+    const visited = new Set(this.visited);
+    for (const F of [...this.floors.slice(1), this.floors[0]]) {
+      if (this.floorCount > 1) progress(0.85 + 0.13 * (F.index === 0 ? 1 : F.index / this.floorCount), `正在編譯光影……（${F.title}）`);
+      this.setFloor(F.index);
+      const P = this.player, sp = F.lv.spawn;
+      P.camera.position.set(sp.x, P.eye || 1.6, sp.z);
+      P.camera.rotation.set(0, sp.yaw || 0, 0);
+      P.camera.updateMatrixWorld(true);
+      try {
+        if (this.renderer.compileAsync) await this.renderer.compileAsync(this.scene, P.camera);
+        else this.renderer.compile(this.scene, P.camera);
+      } catch (e) { /* 舊瀏覽器 */ }
+      if (F.index !== 0) { this.post.render(0); await nextFrame(); }
+    }
+    this.visited = visited;
+    this.setFloor(0);
+    this.player.applyCamera(0, 0);
     this.post.render(0);
     // 先建好拍照用的目標與色調映射著色器，第一次按快門才不會頓
     this.post.snapshot(this.scene, this.player.camera, 256, 192).catch(() => {});
@@ -1580,7 +1595,7 @@ export class Game {
       r.pos.z += (r.tz - r.pos.z) * k;
       r.yaw = lerpAng(r.yaw, r.ty, k);
       r.pitch += (r.tp - r.pitch) * k;
-      const eye = r.crouching ? 1.0 : 1.6;
+      const eye = r.downed ? 0.42 : r.crouching ? 1.0 : 1.6;
       r.pos.y = eye;
       r.camera.position.set(r.pos.x, eye, r.pos.z);
       // 不在同一層的人：人物、手電筒、腳步聲都不出現（燈還留在場景裡，只是不亮）
@@ -1590,7 +1605,7 @@ export class Game {
       this.mpSetBody(r, present && this.spectate !== r.slot);
       root.position.set(r.pos.x, 0, r.pos.z);
       root.rotation.y = r.yaw + Math.PI;
-      if (present) r.av.update(dt, { speed: r.speed, crouch: r.crouching, running: r.speed > 4, dead: !!r.downed, pitch: r.pitch });
+      if (present) r.av.update(dt, { speed: r.speed, crouch: r.crouching && !r.downed, running: r.speed > 4, crawl: !!r.downed, pitch: r.pitch });
       // 手電筒
       const on = r.flashOn && present;
       r.light.intensity = on ? 22 : 0;
@@ -1771,6 +1786,70 @@ export class Game {
     const d = F && Number.isInteger(i) ? F.lv.doors[i] : null;
     if (!d || !(d.lock >= 0) || !Number.isInteger(by)) return;
     this.applyUnlock(F, d, by);
+  }
+
+  // 房主：現在的世界狀態（給晚到的人）。只列出跟開局不一樣的東西
+  mpSnapshot() {
+    const u = [], tk = [], d = [], sh = [];
+    for (const F of this.floors) {
+      const lv = F.lv;
+      for (const door of lv.doors) {
+        if (door.lock >= 0 && door.unlocked) u.push([F.index, door.id]);
+        if (Math.abs(door.target) > 0.05) d.push([F.index, door.id, +door.target.toFixed(2)]);
+      }
+      lv.items.forEach((it, i) => { if (it.taken) tk.push([F.index, i]); });
+      for (const q of lv.shutters || []) sh.push([F.index, q.id, q.target > 0.5 ? 1 : 0, q.jammed ? 1 : 0]);
+    }
+    return { t: 'snap', u, tk, d, sh, fz: this.fusesInserted, r: [...this.relicsPlaced], rd: this.ritualDone || !!this.ritual ? 1 : 0, b: this.ghost && this.ghost.banished ? 1 : 0 };
+  }
+  // 玩家：套用房主的世界狀態（不可信任的輸入：每一項的樓層、索引、範圍都核對；只往「前進」的方向套用，不會把已經發生的事倒回去）
+  mpApplySnapshot(m) {
+    if (!m || this.mp.isHost) return;
+    const list = (a, n) => (Array.isArray(a) ? a.slice(0, n).filter((e) => Array.isArray(e)) : []);
+    const floorOf = (f) => this.mpFloor(f);
+    this.mpApplying = true;
+    try {
+      for (const [f, i] of list(m.u, 64)) {
+        const F = floorOf(f), door = F && Number.isInteger(i) ? F.lv.doors[i] : null;
+        if (!door || !(door.lock >= 0) || door.unlocked) continue;
+        F.world.unlockDoor(door);
+        F.ghostNav.setBlock('d' + door.id, null, false);
+        // 剛拿到的那張卡已經被別人用掉了
+        const k = this.player.keys.indexOf(door.lock);
+        if (k >= 0) this.player.keys.splice(k, 1);
+      }
+      for (const [f, i, tg] of list(m.d, 2048)) {
+        const F = floorOf(f), door = F && Number.isInteger(i) ? F.lv.doors[i] : null;
+        if (!door || !Number.isFinite(tg) || (door.lock >= 0 && !door.unlocked)) continue;
+        F.world.setDoor(door, Math.max(-1.7, Math.min(1.7, tg)), 6);
+      }
+      for (const [f, i] of list(m.tk, 4096)) {
+        const F = floorOf(f), it = F && Number.isInteger(i) ? F.lv.items[i] : null;
+        if (it && !it.taken) F.world.removeItem(it);
+      }
+      for (const [f, i, o, j] of list(m.sh, 16)) this.mpApplyShutter(f, i, o, j);
+    } finally { this.mpApplying = false; }
+    // 保險絲：照順序插上（燈、大門、逃亡都跟著套用）
+    const fz = Number.isInteger(m.fz) ? Math.max(0, Math.min(3, m.fz)) : 0;
+    while (this.fusesInserted < fz) this.applyFuse(this.fusesInserted++);
+    // 遺物：放回搖籃（第三件 = 儀式已經完成：她不會再出現，不用再演一次）
+    const AF = this.altarFloor;
+    const rel = Array.isArray(m.r) ? [...new Set(m.r.slice(0, 3).filter((r) => Number.isInteger(r) && r >= 0 && r <= 2))] : [];
+    if (AF) {
+      for (const r of rel) {
+        if (this.relicsPlaced.has(r)) continue;
+        this.relicsPlaced.add(r);
+        const k = this.player.relics.indexOf(r);
+        if (k >= 0) this.player.relics.splice(k, 1);
+        AF.world.placeRelic(r);
+      }
+      this.updateAggression();
+    }
+    if ((m.b === 1 || (m.rd === 1 && this.relicsPlaced.size >= 3)) && !this.ghost.banished) {
+      this.ritualDone = true;
+      this.ghost.banish();
+    }
+    this.ui.updateHud();
   }
 
   // 房主決定的世界事件（牆上的字、熄燈、屍體換姿勢）
