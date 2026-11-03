@@ -52,6 +52,18 @@
 |---|---|---|
 | `pno*`、`pnof*`（直立鋼琴）、`vc*`、`vct*`（大提琴長音與顫弓）、`cb*`（低音提琴）、`vnt*`（小提琴顫弓）、`glk*`（鐘琴，當成音樂盒） | [VS Chamber Orchestra: Community Edition](https://github.com/sgossner/VSCO-2-CE) — Versilian Studios（Sam Gossner、Simon Dalzell 錄音，Elan Hickler / Soundemote 剪輯；直立鋼琴由 Ivy Audio 的 Simon Dalzell 取樣） | CC0（`assets/music/LICENSE-VSCO.md`） |
 
+## 字型（`assets/fonts/`）
+
+紙條、遺物說明、牆上的血字與察覺提示用的毛筆字。三套都是 [SIL Open Font License 1.1](https://openfontlicense.org)，授權全文與版權聲明在 `assets/fonts/OFL.txt`（單一檔案版本放在 HTML 結尾的註解裡）。都沒有保留字型名稱（Reserved Font Name）。
+
+| 檔案 | 字型 | 版權 | 修改 |
+|---|---|---|---|
+| `brush-boku.woff2` | [Yuji Boku](https://fonts.google.com/specimen/Yuji+Boku) | Copyright 2021 The Yuji Project Authors（<https://github.com/Kinutafontfactory/Yuji>） | 只留下遊戲用到的字（約 475 字）、去掉 hinting，轉成 WOFF2（`tools/fonts/subset.py`） |
+| `brush-msz.woff2` | [Ma Shan Zheng](https://fonts.google.com/specimen/Ma+Shan+Zheng) | Copyright 2018 The MaShanZheng Project Authors（<https://github.com/googlefonts/mashanzheng>） | 只留下 Yuji Boku 沒有的字與數字（22 字），同上 |
+| `brush-wk.woff2` | [LXGW WenKai TC](https://fonts.google.com/specimen/LXGW+WenKai+TC) Bold | Copyright 2024 The LXGW WenKai Project Authors（<https://github.com/lxgw/LxgwWenkaiTC>） | 只留下前兩套都沒有的繁體字（9 字），同上 |
+
+紙張、血跡、手印、指紋都是程式即時畫的（`src/paper.js`），沒有使用任何圖片素材。
+
 ## 程式庫
 
 | 名稱 | 授權 |

@@ -176,6 +176,26 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   assert(nt && nt.includes('閱讀'), 'note target ' + nt);
   await sim(page, 0.05, { actions: ['interact'] });
   assert(await page.evaluate(() => !document.getElementById('note').hidden), 'note open');
+  // 紙條用毛筆字（SWBrush 三個子集都載入了、內文每個字都有對應的字型檔）、有血字與畫好的紙張
+  const nf = await page.evaluate(async () => {
+    await document.fonts.ready;
+    const body = document.getElementById('noteBody'), title = document.getElementById('noteTitle');
+    const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, '') === 'SWBrush');
+    const text = title.textContent + body.textContent;
+    const c = document.querySelector('#note canvas.paper-bg');
+    return {
+      family: getComputedStyle(body).fontFamily, tfamily: getComputedStyle(title).fontFamily,
+      faces: faces.length, loaded: faces.filter((f) => f.status === 'loaded').length,
+      check: document.fonts.check('18px SWBrush', text),
+      blood: body.querySelectorAll('.blood-ink').length, bloodColor: body.querySelector('.blood-ink') && getComputedStyle(body.querySelector('.blood-ink')).color,
+      canvas: c ? [c.width, c.height] : null, len: text.length,
+    };
+  });
+  log('note font', JSON.stringify(nf));
+  assert(/^"?SWBrush"?,/.test(nf.family) && /^"?SWBrush"?,/.test(nf.tfamily), 'note uses the brush font ' + nf.family);
+  assert(nf.faces === 3 && nf.loaded === 3 && nf.check, 'brush font faces loaded and cover the note text');
+  assert(nf.blood > 0 && /rgb\((9\d|1[01]\d), \d, \d\)/.test(nf.bloodColor), 'key phrases written in blood ' + nf.bloodColor);
+  assert(nf.canvas && nf.canvas[0] > 200 && nf.canvas[1] > 200, 'paper canvas painted');
   await shot(page, 'd5-note');
   await sim(page, 0.05, { actions: ['interact'] });
   assert(await page.evaluate(() => document.getElementById('note').hidden), 'note closed');
@@ -479,6 +499,39 @@ await run('detect', { viewport: { width: 960, height: 540 } }, { quality: 'low',
   await page.evaluate(() => { window.__SW.settings.detectCues = true; });
   r = await step(0.1);
   assert(r.ui.shown || r.trace.at(-1).aw === 0, 'setting on shows it again');
+  // 5. 她身邊的血紅光暈：她不在時是 0；越近越亮；畫面邊緣的紅光（uEdge）跟著變濃；
+  //    光暈亮起來不會多編譯任何著色器（紅色點光源從載入時就在場景裡，只改強度）
+  const auraNow = () => page.evaluate(() => { const g = window.__SW.game, gh = g.ghost, u = g.post.u; return { k: gh.auraK, light: gh.auraLight.intensity, op: gh.auraMat.opacity, sprite: gh.aura.visible, edge: u.uEdge.value, dirK: u.uEdgeDirK.value, inScene: gh.auraLight.parent === g.scene && gh.auraLight.visible }; });
+  await page.evaluate(() => { const gh = window.__SW.game.ghost; gh.setState('dormant'); gh.aware.clear(); gh.dormantUntil = 1e9; });
+  await step(2.5);
+  const a0 = await auraNow();
+  await render(page);
+  const prog0 = (await render(page)).programs;
+  log('aura dormant', JSON.stringify(a0), 'programs', prog0);
+  assert(a0.k === 0 && a0.light === 0 && !a0.sprite && a0.inScene, 'aura is 0 while she is dormant (light stays in the scene)');
+  assert(a0.edge < 0.05, 'edge glow fades out while she is gone');
+  await place(11, false);
+  await step(0.6);
+  const a1 = await auraNow();
+  await place(3.5, false);
+  await step(0.6);
+  const a2 = await auraNow();
+  const prog1 = (await render(page)).programs;
+  log('aura 11 m', JSON.stringify(a1), '3.5 m', JSON.stringify(a2), 'programs', prog1);
+  assert(a1.k > 0 && a2.k > a1.k * 1.5 && a2.light > a1.light && a2.sprite, 'aura grows as she gets closer');
+  assert(a2.edge > a1.edge && a2.edge > 0.15, 'edge glow responds to proximity');
+  assert(prog1 === prog0, `aura does not compile new shaders (${prog0} → ${prog1})`);
+  await shot(page, 'detect-aura');
+  // 察覺提示關掉：畫面邊緣不紅，她身上的光暈照樣有
+  await page.evaluate(() => { window.__SW.settings.detectCues = false; });
+  await step(0.2);
+  const a3 = await auraNow();
+  log('cues off', JSON.stringify(a3));
+  assert(a3.edge < 0.02 && a3.k > 0, 'detect cues off: no edge glow, aura stays');
+  await page.evaluate(() => { window.__SW.settings.detectCues = true; const gh = window.__SW.game.ghost; gh.setState('dormant'); gh.dormantUntil = 1e9; });
+  await step(0.1);
+  const a4 = await auraNow();
+  assert(a4.k === 0 && a4.light === 0, 'aura off as soon as she vanishes');
 });
 
 // 她的聲音：哼歌的發聲點跟著她走、隔牆變小變悶、設定「她的聲音提示」會改變音量與距離

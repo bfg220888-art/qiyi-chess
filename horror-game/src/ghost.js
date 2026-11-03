@@ -255,6 +255,74 @@ export class Ghost {
     this.travelLink = null;
     model.root.visible = false;
     game.scene.add(model.root);
+    this.makeAura();
+  }
+
+  // 她靠近時身邊的血紅光暈：身後一張加法混色的光暈貼片 + 一盞照在附近牆面地板上的紅色點光源。
+  // 點光源從載入時就一直在場景裡（不掛在她的模型下面、永遠 visible），平常強度 0，只改強度：
+  // 燈的數量一變，所有材質的著色器都要重新編譯，會卡住。
+  makeAura() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const x = c.getContext('2d');
+    const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,255,1)');
+    gr.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+    gr.addColorStop(0.6, 'rgba(255,255,255,0.14)');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = gr;
+    x.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.auraMat = new THREE.SpriteMaterial({ map: tex, color: 0xff1a0c, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.aura = new THREE.Sprite(this.auraMat);
+    this.aura.scale.set(2.3, 3.3, 1);
+    this.aura.position.set(0, 1.05, 0);
+    this.aura.renderOrder = 3;
+    this.aura.visible = false;
+    this.model.root.add(this.aura);
+    this.auraLight = new THREE.PointLight(0xff2010, 0, 7.5, 2);
+    this.auraLight.castShadow = false;
+    this.game.scene.add(this.auraLight);
+    this.auraK = 0;     // 0..1：光暈現在的強度（平滑過的）
+    this.auraProx = 0;  // 0..1：跟看畫面的人有多近（12 公尺 → 0、2 公尺內 → 1）
+  }
+  // 每一格更新光暈（房主與其他玩家都跑；其他玩家用房主同步來的狀態與位置）
+  updateAura(dt) {
+    const g = this.game, L = this.auraLight;
+    if (!L) return;
+    const st = this.state;
+    const active = !this.banished && st !== 'dormant' && this.near && this.model.root.visible;
+    const d = Number.isFinite(g.ghostDist) ? g.ghostDist : 99;
+    const prox = active ? Math.min(1, Math.max(0, 1 - (d - 2) / 10)) : 0;
+    this.auraProx = prox;
+    const chase = st === 'chase';
+    // 追人的時候比較亮；被閃光定住時幾乎熄掉；抓到人的跳嚇鏡頭裡馬上熄掉（不要把她的臉照成一片平平的紅）
+    const kill = st === 'kill' || !!g.dying;
+    const want = kill ? 0 : chase ? prox : Math.pow(prox, 0.7) * (st === 'stunned' ? 0.15 : 0.72);
+    if (!active) this.auraK = 0;
+    else this.auraK += (want - this.auraK) * Math.min(1, dt * (kill ? 10 : want > this.auraK ? 3 : 1.6));
+    if (this.auraK < 0.004) {
+      this.auraK = 0;
+      L.intensity = 0;
+      this.auraMat.opacity = 0;
+      this.aura.visible = false;
+      return;
+    }
+    // 脈動：平常像呼吸一樣慢慢明暗，追人時跟著急促的心跳用力閃
+    const t = g.time || 0;
+    const pulse = chase ? 0.72 + 0.28 * Math.pow(0.5 + 0.5 * Math.sin(t * 8.4), 2.2) * 1.9 : 0.86 + 0.14 * Math.sin(t * 2.3);
+    const k = this.auraK * pulse;
+    L.intensity = k * 11;
+    // 燈放在她頭頂稍微靠近鏡頭的地方：照亮她的臉、肩膀、腳邊的地板與兩旁的牆（放在身體裡面會從裡面透出來）
+    const cam = g.post && g.post.renderPass.camera;
+    let ox = 0, oz = 0;
+    if (cam) { const dx = cam.position.x - this.pos.x, dz = cam.position.z - this.pos.z, dl = Math.hypot(dx, dz) || 1; ox = dx / dl * 0.45; oz = dz / dl * 0.45; }
+    L.position.set(this.pos.x + ox, 1.75, this.pos.z + oz);
+    this.aura.visible = true;
+    this.auraMat.opacity = Math.min(0.9, k * 1.05);
+    const sc = 1 + 0.1 * (pulse - 0.86);
+    this.aura.scale.set(2.3 * sc, 3.3 * sc, 1);
   }
 
   get diff() { return this.game.diff; }
@@ -330,6 +398,7 @@ export class Ghost {
     this.path = null;
     this.model.root.visible = false;
     this.stopHum();
+    this.updateAura(0);
   }
 
   setState(s) {
@@ -490,6 +559,11 @@ export class Ghost {
   }
 
   update(dt) {
+    this.think(dt);
+    this.updateAura(dt);
+  }
+
+  think(dt) {
     const g = this.game, lv = this.lv;
     // 多人連線：只有房主跑 AI，其他人照房主送來的狀態播放
     if (g.mp && !g.mp.isHost) { this.netUpdate(dt); return; }

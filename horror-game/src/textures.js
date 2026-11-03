@@ -1464,7 +1464,8 @@ export class TextureFactory {
       texts.forEach((t, i) => {
         const y0 = i * rowH;
         const fs = Math.min(190, (W * 0.9) / Math.max(1, t.length));
-        g.font = `900 ${fs}px "Noto Serif TC","Songti TC","PMingLiU",serif`;
+        // 毛筆字（SWBrush，開局前已載入；沒載入就退回明體）
+        g.font = `900 ${fs}px "SWBrush","Noto Serif TC","Songti TC","PMingLiU",serif`;
         g.textAlign = 'center';
         g.textBaseline = 'middle';
         // 粗糙筆觸：疊幾層抖動

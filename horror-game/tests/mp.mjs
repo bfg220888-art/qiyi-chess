@@ -383,6 +383,15 @@ try {
   const gp = await Promise.all(pages.map((p) => p.evaluate(() => { const gh = window.__SW.game.ghost; return [gh.pos.x, gh.pos.z, gh.state]; })));
   log('ghost', JSON.stringify(gp.map((g) => [g[0].toFixed(1), g[1].toFixed(1), g[2]])));
   check(gp.every((g) => Math.hypot(g[0] - gp[0][0], g[1] - gp[0][1]) < 1.5), 'ghost position sync');
+  // 她身邊的血紅光暈：玩家 2 用房主同步來的位置與狀態自己算（靠近就亮、紅色點光源一直在場景裡）
+  await host.evaluate((t) => { const g = window.__SW.game, gh = g.ghost, nav = g.floors[gh.floor].ghostNav; const k = nav.nearestFree(t.x + 3, t.z); const c = k >= 0 ? nav.center(k) : { x: t.x + 1.5, z: t.z }; gh.pos.set(c.x, 0, c.z); gh.path = null; }, target);
+  let clientAura = null;
+  try {
+    await until(clients[0], () => { const g = window.__SW.game, gh = g.ghost; return gh.auraK > 0.05 && gh.auraLight.intensity > 0 && g.ghostDist < 12; }, undefined, 60000);
+    clientAura = await clients[0].evaluate(() => { const g = window.__SW.game, gh = g.ghost; return { k: +gh.auraK.toFixed(2), light: +gh.auraLight.intensity.toFixed(2), d: +g.ghostDist.toFixed(1), st: gh.state, inScene: gh.auraLight.parent === g.scene, sprite: gh.aura.visible }; });
+  } catch (e) { /* 下面的 check 會記錄失敗 */ }
+  log('client aura', JSON.stringify(clientAura));
+  check(clientAura && clientAura.k > 0.05 && clientAura.inScene && clientAura.sprite, 'client sees her red aura from host-synced ghost');
   // 察覺提示：房主送出她目前目標的察覺值（取到 0.05）與目標編號；每個人只看針對自己的那一份，亂七八糟的值不理
   check(await host.evaluate(() => { const m = window.__SW.game.ghost.netState(); return typeof m.aw === 'number' && m.aw >= 0 && m.aw <= 1 && Number.isInteger(m.tg); }), 'host ghost state carries awareness + target slot');
   const cs = slots[1];

@@ -1,4 +1,4 @@
-// 後製：泛光 + 恐怖濾鏡（抗鋸齒、色調映射、底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、調色）
+// 後製：泛光 + 恐怖濾鏡（抗鋸齒、色調映射、底片顆粒、暗角、色差、理智扭曲、雜訊、受傷紅光、她靠近時的畫面邊緣紅光、調色）
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -22,6 +22,12 @@ const HorrorShader = {
     uFlash: { value: 0 },
     uPulse: { value: 0 },
     uGamma: { value: 1 }, // 設定裡的「畫面亮度」（伽瑪）：1 = 原樣，大於 1 暗部變亮
+    // 她靠近時畫面邊緣的血紅色壓迫感：uEdge 強度 0..1、uEdgeDir 她在畫面的哪一側（x 右、y 上 = 前方）、
+    // uEdgeDirK 方向性 0..1（0 = 四周一樣紅，1 = 只有她那一側）、uEdgeFine = 0 省電模式（不算雜訊紋理）
+    uEdge: { value: 0 },
+    uEdgeDir: { value: new THREE.Vector2(0, 1) },
+    uEdgeDirK: { value: 0 },
+    uEdgeFine: { value: 1 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -29,7 +35,8 @@ const HorrorShader = {
   fragmentShader: `
     uniform sampler2D tDiffuse;
     uniform float uTime, uGrain, uVignette, uAberr, uDistort, uStatic, uRed, uDesat, uFade, uFlash, uPulse, uGamma;
-    uniform vec2 uRes;
+    uniform float uEdge, uEdgeDirK, uEdgeFine;
+    uniform vec2 uRes, uEdgeDir;
     varying vec2 vUv;
     float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
     // 柔和的顆粒：在比像素稍大的格子上做平滑插值，不會變成一粒一粒刺眼的白點
@@ -103,6 +110,21 @@ const HorrorShader = {
       // 暗角（心跳時收縮）
       float vig = smoothstep(0.85 - uPulse * 0.12, 0.25, d);
       col *= mix(1.0, vig, uVignette);
+      // 她靠近：畫面邊緣滲進血紅色，她那一側比較濃，跟著心跳一縮一放（中央永遠是乾淨的）
+      if (uEdge > 0.002) {
+        // 圓角方框的距離（畫面四邊都是 1）：直式、橫式螢幕的四個邊一樣會紅
+        vec2 ed = abs(dir) * 2.0, ed2 = ed * ed;
+        float el = sqrt(sqrt(ed2.x * ed2.x + ed2.y * ed2.y));
+        vec2 sd = dir * vec2(uRes.x / uRes.y, 1.0);
+        float side = 0.5 + 0.5 * dot(sd / max(length(sd), 1e-4), uEdgeDir);
+        float w = mix(1.0, side * side * 1.7, uEdgeDirK);
+        // 邊緣不是一條平滑的圓：慢慢流動的低頻雜訊讓它像血滲進來
+        float n = uEdgeFine > 0.5 ? grainNoise(dir * 9.0 + vec2(uTime * 0.11, -uTime * 0.07)) * 0.6 + grainNoise(dir * 21.0 - uTime * 0.05) * 0.4 : 0.5;
+        float reach = 0.74 - uEdge * 0.18 - uPulse * 0.06 + (n - 0.5) * 0.12;
+        float k = smoothstep(reach, reach + 0.38, el) * w * uEdge;
+        k = clamp(k * (0.85 + uPulse * 0.5), 0.0, 0.66);
+        col = mix(col, col * vec3(0.55, 0.08, 0.06) + vec3(0.30, 0.012, 0.008), k);
+      }
       // 底片顆粒（暗部比較明顯）：顆粒大小跟著解析度走（720p 約 1.4 像素），一秒換 24 次，不會滿畫面閃爍
       vec2 gp = uv * uRes / max(1.0, uRes.y / 720.0 * 1.4) + floor(mod(uTime * 24.0, 97.0)) * vec2(17.3, 41.9);
       float g = grainNoise(gp) - 0.5;

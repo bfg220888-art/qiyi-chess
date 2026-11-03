@@ -2,8 +2,44 @@
 import { drawFloorPlan } from './materials.js';
 import { CELL } from './config.js';
 import { KEY_COLORS } from './level.js';
+import { paintPaper } from './paper.js';
 
 const $ = (id) => document.getElementById(id);
+// 紙條裡「用血寫的」字：人名、病歷號、房號、警告。每張紙條最後一段（括號附註除外）也整段用血寫
+const BLOOD_WORDS = ['不要回頭', '快跑', '0713', '707', '林○蓮', '老陳', '「她」', '被困在裡面了', '千萬別讓她看到你躲進去', '嬰兒於入院當天死亡', '再也沒有出來過', '蓮的寶寶', '我在這裡呀', '為什麼她看不到我？'];
+const BLOOD_RE = new RegExp(BLOOD_WORDS.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+function bloodSpan(text, line) {
+  const s = document.createElement('span');
+  s.className = line ? 'blood-ink blood-line' : 'blood-ink';
+  s.textContent = text;
+  return s;
+}
+// 把紙條內文拆成文字與「血字」（只用 textContent，不碰 innerHTML）
+export function noteFragment(body) {
+  const frag = document.createDocumentFragment();
+  const paras = String(body).split('\n\n');
+  let last = -1;
+  for (let i = paras.length - 1; i >= 0; i--) if (paras[i].trim() && !/^[（(]/.test(paras[i].trim())) { last = i; break; }
+  paras.forEach((p, i) => {
+    if (i) frag.appendChild(document.createTextNode('\n\n'));
+    if (i === last) {
+      // 「背面寫著：」這種引言照一般的字寫，冒號後面才是血字
+      const k = p.indexOf('：\n');
+      if (k >= 0) frag.appendChild(document.createTextNode(p.slice(0, k + 2)));
+      frag.appendChild(bloodSpan(k >= 0 ? p.slice(k + 2) : p, true));
+      return;
+    }
+    let at = 0;
+    for (const m of p.matchAll(BLOOD_RE)) {
+      if (m.index > at) frag.appendChild(document.createTextNode(p.slice(at, m.index)));
+      frag.appendChild(bloodSpan(m[0], false));
+      at = m.index + m[0].length;
+    }
+    if (at < p.length) frag.appendChild(document.createTextNode(p.slice(at)));
+  });
+  return frag;
+}
+
 const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * Math.min(1, Math.max(0, t)));
 
 export class UI {
@@ -152,7 +188,7 @@ export class UI {
     const eye = ear ? lvl > 0.3 || d.chase : lvl > 0.01 || d.chase || !!msg;
     const show = eye || ear || !!msg;
     // 顏色：骨白 → 琥珀 → 紅
-    const c = d.chase ? [227, 41, 28] : ear && lvl < 0.5 ? [236, 162, 46] : lvl < 0.5 ? mix([230, 224, 211], [236, 162, 46], lvl / 0.5) : mix([236, 162, 46], [227, 41, 28], (lvl - 0.5) / 0.5);
+    const c = d.chase ? [226, 22, 14] : ear && lvl < 0.5 ? [236, 162, 46] : lvl < 0.5 ? mix([230, 224, 211], [236, 162, 46], lvl / 0.5) : mix([236, 162, 46], [214, 28, 18], (lvl - 0.5) / 0.5);
     const col = `rgb(${c.map((v) => Math.round(v)).join(',')})`;
     const open = d.chase ? 1 : msg && msg.kind === 'lost' && lvl < 0.15 ? 0.15 : 0.12 + lvl * 0.88;
     const key = show ? `${eye ? 1 : 0}${ear ? 1 : 0}|${open.toFixed(2)}|${col}|${msg ? msg.text : ''}|${d.chase ? 1 : 0}` : '';
@@ -168,6 +204,8 @@ export class UI {
         E.detect.classList.toggle('chase', !!d.chase);
         E.detect.classList.toggle('alert', !!msg && msg.kind === 'alert');
         E.detect.dataset.level = lvl.toFixed(2);
+        // 紅光與血絲：察覺值過半才開始出現，追你時全滿
+        E.detect.style.setProperty('--dl', (d.chase ? 1 : Math.max(0, (lvl - 0.45) / 0.55)).toFixed(2));
       }
     }
     this.lastDet = 'on';
@@ -287,10 +325,27 @@ export class UI {
   }
 
   showNote(note) {
-    this.el.noteTitle.textContent = note.title;
-    this.el.noteBody.textContent = note.body;
-    this.el.note.hidden = false;
-    this.el.note.scrollTop = 0;
+    const E = this.el;
+    E.noteTitle.textContent = note.title;
+    E.noteBody.replaceChildren(noteFragment(note.body));
+    E.note.hidden = false;
+    E.note.scrollTop = 0;
+    const paper = E.noteTitle.parentNode;
+    paper.scrollTop = 0;
+    this.noteKey = note.title;
+    this.paintNote();
+    // 毛筆字型如果剛好還在載入，載好之後字的位置會變：再畫一次（血字底下的滴痕要對準）
+    if (document.fonts && document.fonts.status !== 'loaded') document.fonts.ready.then(() => this.paintNote());
+    if (!this.noteResize) {
+      this.noteResize = () => { if (!E.note.hidden) this.paintNote(); };
+      addEventListener('resize', this.noteResize);
+    }
+  }
+  // 紙張與血跡（src/paper.js）：照紙張目前的大小重畫
+  paintNote() {
+    const E = this.el, paper = E.noteTitle.parentNode, c = paper.querySelector('canvas.paper-bg');
+    if (!c || E.note.hidden) return;
+    try { paintPaper(paper, c, this.noteKey || '', [...E.noteBody.querySelectorAll('.blood-ink')]); } catch (e) { /* 畫不出來就只剩 CSS 的紙色 */ }
   }
   closeNote() { this.el.note.hidden = true; }
   get noteOpen() { return !this.el.note.hidden; }

@@ -9,6 +9,7 @@ import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
 import { loadCorpses, prefetchCorpses } from './corpses.js';
 import { MP, SLOT_CSS, MAX_PLAYERS } from './mp.js';
+import { loadBrushFont } from './fonts.js';
 import { normalizeCode } from './net.js';
 import { THEMES, RANDOM_THEME, resolveTheme, themeTitle } from './themes.js';
 
@@ -149,6 +150,8 @@ class App {
         b.addEventListener('chargingchange', upd);
       }).catch(() => {});
     } catch (e) { /* 不支援 */ }
+    // 紙條與察覺提示的毛筆字型（約 220 KB）：馬上開始載入
+    loadBrushFont();
     setTimeout(() => this.prefetchAssets(), 400);
   }
 

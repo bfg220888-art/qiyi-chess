@@ -15,6 +15,7 @@ import { fmtTime } from './ui.js';
 import { makeFallbackAvatar, SLOT_CSS } from './mp.js';
 import { loadPlayerAssets, makePlayerModel } from './player-model.js';
 import { THEMES, resolveTheme, themeTitle } from './themes.js';
+import { loadBrushFont } from './fonts.js';
 
 // 分頁在背景時 requestAnimationFrame 不會觸發：改用計時器，多人時房主切到背景也能載入完
 const nextFrame = () => new Promise((r) => (document.hidden ? setTimeout(r, 0) : requestAnimationFrame(() => r())));
@@ -116,6 +117,8 @@ export class Game {
     const corpseP = this.app.corpseAssets();
     progress(0.18, '正在下載照片材質……');
     const photos = await this.app.photoAssets();
+    // 牆上的血字用毛筆字型畫：最多等 3 秒（通常早就載好了），沒好就用明體
+    await Promise.race([loadBrushFont(), new Promise((r) => setTimeout(r, 3000))]);
     this.tf = new TextureFactory(this.renderer, this.quality, this.seed, photos);
     // 只畫用得到的牆面與地板貼圖（每一層的主題都要）
     const wallTex = { paint: 'wall', tileWall: 'tileWall', wallpaper: 'wallpaper', padded: 'padded', charred: 'charredWall' };
@@ -174,6 +177,7 @@ export class Game {
     await nextFrame();
     // 預先編譯所有材質，避免第一次看到時卡頓
     this.ghost.model.root.visible = true;
+    this.ghost.aura.visible = true; // 她身邊的紅色光暈（平常藏起來，第一次出現時才不會卡）
     this.director.apparition.visible = true;
     this.player.flash.intensity = 1;
     // 多層樓：每一層的燈數不一樣（著色器也不一樣），所以每一層都要在「只有那一層看得到」的狀態下各編譯一次，
@@ -199,6 +203,7 @@ export class Game {
     // 先建好拍照用的目標與色調映射著色器，第一次按快門才不會頓
     this.post.snapshot(this.scene, this.player.camera, 256, 192).catch(() => {});
     this.ghost.model.root.visible = false;
+    this.ghost.aura.visible = false;
     this.director.apparition.visible = false;
     progress(1, '');
     this.markExplored(true);
@@ -500,6 +505,7 @@ export class Game {
     const hbPhase = (this.time * (62 + this.fear * 85) / 60) % 1;
     u.uPulse.value = Math.max(0, this.fear - 0.3) * Math.exp(-hbPhase * 6);
     u.uFlash.value = Math.max(0, u.uFlash.value - dt * 2.2);
+    this.updateEdgeGlow(dt);
     this.ui.damage(Math.min(0.85, this.damage));
     // 雨聲：靠近窗戶比較大聲
     this.rainT = (this.rainT || 0) - dt;
@@ -509,6 +515,36 @@ export class Game {
       for (const w of this.lv.windows) dmin = Math.min(dmin, Math.hypot(w.x - P.pos.x, w.z - P.pos.z));
       A.setRain(0.05 + Math.max(0, 1 - dmin / 9) * 0.18);
     }
+  }
+
+  // 她靠近時畫面邊緣的血紅色（post.js 的 uEdge）：越近、她越注意你越濃，追你時最濃；
+  // 她在哪一側那一側比較紅（很近時四周一起紅）。設定「察覺提示」關掉時不顯示（她身上的紅光照樣有）
+  updateEdgeGlow(dt) {
+    const gh = this.ghost, u = this.post.u;
+    if (!u.uEdge) return;
+    const on = this.settings.detectCues !== false;
+    const same = gh.state !== 'dormant' && !gh.banished && gh.floor === this.floorIdx;
+    const prox = same ? Math.min(1, Math.max(0, 1 - (this.ghostDist - 2) / 10)) : 0;
+    const chase = same && gh.state === 'chase' && this.detectView().targetMe ? 1 : same && gh.state === 'chase' ? 0.55 : 0;
+    const want = on && same && !this.downed ? Math.min(0.75, Math.max(prox * 0.5 + (this.detAware || 0) * 0.35, chase * (0.45 + prox * 0.3))) : 0;
+    this.edgeK = (this.edgeK || 0) + (want - (this.edgeK || 0)) * Math.min(1, dt * (want > (this.edgeK || 0) ? 2.2 : 1.2));
+    if (this.edgeK < 0.003 || !on) this.edgeK = 0;
+    u.uEdge.value = this.edgeK;
+    // 她相對鏡頭的方向（畫面座標：x 右、y 上 = 前方、下 = 背後）
+    const cam = this.post.renderPass.camera, v = this.edgeV || (this.edgeV = new THREE.Vector3());
+    if (same && cam) {
+      cam.getWorldDirection(v);
+      const fl = Math.hypot(v.x, v.z) || 1, fx = v.x / fl, fz = v.z / fl;
+      const dx = gh.pos.x - cam.position.x, dz = gh.pos.z - cam.position.z, dl = Math.hypot(dx, dz) || 1;
+      const right = (dx * -fz + dz * fx) / dl, fwd = (dx * fx + dz * fz) / dl;
+      const d = u.uEdgeDir.value, k = Math.min(1, dt * 4);
+      d.x += (right - d.x) * k; d.y += (fwd - d.y) * k;
+      const n = Math.hypot(d.x, d.y) || 1;
+      d.x /= n; d.y /= n;
+    }
+    // 很近（3 公尺內）時四周一起紅；遠一點才分得出方向
+    u.uEdgeDirK.value = Math.min(0.85, Math.max(0, (this.ghostDist - 2.5) / 4));
+    u.uEdgeFine.value = this.app && this.app.powerSaving && this.app.powerSaving() ? 0 : 1;
   }
 
   // ---------------------------------------------------------------------
@@ -1993,6 +2029,8 @@ export class Game {
     this.post.u.uFade.value = 0;
     this.post.u.uRed.value = 0;
     this.post.u.uDistort.value = 0;
+    this.post.u.uEdge.value = 0;
+    this.edgeK = 0;
     this.damage = 0;
     this.ghost.model.revealFace(0);
     if (!this.mp.isHost) this.ghost.model.root.visible = false;

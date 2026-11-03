@@ -11,6 +11,8 @@
   --paper-ink: #2a2218;
   --display: "Noto Serif TC", "Songti TC", "PMingLiU", "MingLiU", serif;
   --body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", sans-serif;
+  /* 毛筆字（紙條、察覺提示）：src/fonts.js 載入的子集；子集沒有的字（玩家名字等）逐字退回明體 */
+  --brush: "SWBrush", "Noto Serif TC", "Songti TC", "PMingLiU", "MingLiU", serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -152,20 +154,38 @@ html, body {
     radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(0, 0, 0, 0.9) 75%),
     repeating-linear-gradient(180deg, rgba(4, 5, 4, 0.97) 0 26px, rgba(0, 0, 0, 0) 26px 40px, rgba(25, 28, 24, 0.9) 40px 43px);
 }
-/* 察覺提示：上方中央一個小眼睛（或耳朵）+ 一行短字，跟 REC 一樣的取景器風格 */
+/* 察覺提示：上方中央一隻眼睛（或耳朵）+ 一行毛筆血字。越接近被發現越紅、外圈的紅光越大；追你時整個在發抖 */
 #detect {
-  position: absolute; left: 50%; top: calc(max(14px, env(safe-area-inset-top)) + 12px); transform: translateX(-50%);
-  display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 8px; color: var(--dc, var(--ink));
-  font-family: var(--body); font-size: calc(14px * var(--sub-scale, 1)); letter-spacing: 0.08em; white-space: nowrap;
-  text-shadow: 0 1px 2px #000, 0 0 6px #000;
+  position: absolute; left: 50%; top: calc(max(14px, env(safe-area-inset-top)) + 10px); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; padding: 4px 14px 4px 10px; color: var(--dc, var(--ink));
+  font-family: var(--brush); font-size: calc(19px * var(--sub-scale, 1)); letter-spacing: 0.1em; white-space: nowrap;
+  text-shadow: 0 1px 2px #000, 0 0 8px #000, 0 0 calc(var(--dl, 0) * 14px) rgba(200, 0, 0, calc(var(--dl, 0) * 0.9));
 }
-#detect .det-ico { width: 34px; height: auto; overflow: visible; filter: drop-shadow(0 1px 1px #000) drop-shadow(0 0 4px rgba(0, 0, 0, 0.8)); }
-#detect .det-ico.ear { width: 22px; }
+#detect .det-ico { width: 40px; height: auto; overflow: visible; filter: drop-shadow(0 1px 1px #000) drop-shadow(0 0 calc(2px + var(--dl, 0) * 9px) rgba(210, 10, 0, calc(0.15 + var(--dl, 0) * 0.75))); }
+#detect .det-ico.ear { width: 24px; }
 #detEye { transform-box: fill-box; transform-origin: center; transition: transform 0.12s; }
+#detEye .veins { opacity: var(--dl, 0); transition: opacity 0.3s; }
+#detText { filter: url(#bloodRough); }
 #detText:empty { display: none; }
-#detect.chase .det-ico { animation: detBeat 0.5s ease-in-out infinite alternate; filter: drop-shadow(0 0 6px rgba(227, 41, 28, 0.85)); }
-#detect.alert #detText { font-weight: 700; font-size: 1.12em; letter-spacing: 0.14em; }
-@keyframes detBeat { from { transform: scale(1); } to { transform: scale(1.12); } }
+#detect.chase { animation: detShake 0.18s steps(2, jump-none) infinite; }
+#detect.chase .det-ico { animation: detBeat 0.42s ease-in-out infinite alternate; }
+/* 「她發現你了！」：大一號的毛筆血字，底下一抹血痕 */
+#detect.alert #detText {
+  font-size: 1.45em; letter-spacing: 0.16em; color: #e01a10; padding: 0 10px 2px;
+  text-shadow: 0 0 2px #2a0000, 0 2px 3px #000, 0 0 18px rgba(230, 0, 0, 0.8);
+  background: radial-gradient(ellipse 60% 42% at 50% 62%, rgba(110, 0, 0, 0.75), rgba(70, 0, 0, 0.35) 60%, transparent 72%);
+}
+/* 直式手機：上面已經擠滿 REC、電池、按鈕與目標，眼睛移到目標下面、提示上面，字小一點 */
+@media (max-aspect-ratio: 4/5) {
+  #detect { top: calc(max(14px, env(safe-area-inset-top)) + 204px); font-size: calc(16px * var(--sub-scale, 1)); }
+  #detect.alert #detText { font-size: 1.25em; }
+}
+@keyframes detBeat { from { transform: scale(1); } to { transform: scale(1.16); } }
+@keyframes detShake {
+  0% { transform: translate(calc(-50% + 1.5px), -1px) rotate(-0.6deg); }
+  50% { transform: translate(calc(-50% - 1.5px), 1px) rotate(0.5deg); }
+  100% { transform: translate(calc(-50% + 1px), 0.5px) rotate(0deg); }
+}
 /* 方向箭頭：以準心為圓心、在半徑上的一小段弧 */
 #detArrow { position: absolute; left: 50%; top: 50%; width: 0; height: 0; color: var(--dc, var(--ink)); transition: opacity 0.25s; }
 #detArrow svg { position: absolute; left: -30px; top: calc(-1 * min(19vmin, 130px) - 11px); width: 60px; height: 22px; filter: drop-shadow(0 0 3px #000) drop-shadow(0 1px 1px #000); }
@@ -286,14 +306,20 @@ dt { font-family: var(--mono); color: var(--ink); white-space: nowrap; }
 dd { margin: 0; color: #c5bfb2; }
 ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #c5bfb2; }
 
-#note { background: rgba(0, 0, 0, 0.7); cursor: pointer; }
+/* 紙條：沾滿血的醫院表單。紙張、污漬、噴濺、手印、血字底下的滴痕都畫在 .paper-bg（src/paper.js） */
+#note { background: radial-gradient(ellipse at 50% 50%, rgba(40, 0, 0, 0.55), rgba(0, 0, 0, 0.88) 75%); cursor: pointer; }
 .paper {
-  width: min(520px, 100%); max-height: 100%; overflow-y: auto; background: var(--paper); color: var(--paper-ink);
-  padding: 30px 30px 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8); transform: rotate(-0.8deg);
-  background-image: radial-gradient(ellipse at 20% 10%, rgba(120, 90, 40, 0.2), transparent 50%), radial-gradient(ellipse at 90% 80%, rgba(90, 20, 10, 0.18), transparent 40%), repeating-linear-gradient(180deg, transparent 0 31px, rgba(60, 70, 110, 0.18) 31px 32px);
+  position: relative; isolation: isolate;
+  width: min(540px, 100%); max-height: 100%; overflow-x: hidden; overflow-y: auto; background: #dcd1b4; color: #22160e;
+  padding: 40px 28px 18px 40px; transform: rotate(-0.8deg);
+  box-shadow: 0 0 0 1px rgba(70, 40, 15, 0.3), 0 24px 70px rgba(0, 0, 0, 0.85), 0 0 140px rgba(110, 0, 0, 0.32);
 }
-.paper h2 { margin: 0 0 14px; font-family: var(--display); font-size: 22px; letter-spacing: 0.08em; }
-#noteBody { font-family: var(--display); font-weight: 700; font-size: 16px; line-height: 2; white-space: pre-line; }
+.paper-bg { position: absolute; left: 0; top: 0; z-index: -1; pointer-events: none; }
+.paper h2 { margin: 0 0 12px; font-family: var(--brush); font-weight: 400; font-size: calc(27px * var(--sub-scale, 1)); line-height: 1.35; letter-spacing: 0.06em; }
+#noteBody { font-family: var(--brush); font-weight: 400; font-size: calc(18px * var(--sub-scale, 1)); line-height: 1.85; letter-spacing: 0.02em; white-space: pre-line; overflow-wrap: anywhere; }
+/* 用血寫的字：乾掉的暗紅色、筆畫邊緣有點毛（#bloodRough）、微微暈開 */
+.blood-ink { color: #620904; text-shadow: 0 0 1px rgba(125, 10, 5, 0.6), 1px 1px 2px rgba(95, 5, 2, 0.35), -1px 0 3px rgba(130, 15, 8, 0.18); filter: url(#bloodRough); }
+.blood-line { display: inline-block; font-size: 1.1em; letter-spacing: 0.05em; transform: rotate(-1deg); transform-origin: 0 50%; }
 .paper-foot { margin: 18px 0 0; font-family: var(--body); font-size: 12px; color: #6d6252; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .note-close { font: 700 14px var(--body); color: var(--paper); background: var(--paper-ink); border: 0; padding: 8px 16px; cursor: pointer; min-height: 36px; }
 .note-close:focus-visible { outline: 2px solid var(--blood); }
@@ -326,7 +352,7 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
   .objective { font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .title, .title::after, #menu::before, #loading::before, #intro::before, .rotate-ico, #detect.chase .det-ico { animation: none; }
+  .title, .title::after, #menu::before, #loading::before, #intro::before, .rotate-ico, #detect.chase, #detect.chase .det-ico { animation: none; }
 }
 
 /* 多人連線大廳 */

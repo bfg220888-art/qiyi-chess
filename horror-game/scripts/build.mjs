@@ -40,7 +40,7 @@ async function assemble(js) {
   return out.length;
 }
 
-const MIME = { '.glb': 'model/gltf-binary', '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.mp3': 'audio/mpeg' };
+const MIME = { '.glb': 'model/gltf-binary', '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.mp3': 'audio/mpeg', '.woff2': 'font/woff2' };
 async function embedAssets() {
   const dir = path.join(root, 'assets');
   if (!existsSync(dir)) return '';
@@ -58,10 +58,10 @@ async function embedAssets() {
   return `<script>window.__SW_ASSETS=${JSON.stringify(map).replace(/</g, '\\u003c')};</script>\n`;
 }
 
-// 單一檔案版本沒有附帶授權檔，把 MIT 授權全文放進 HTML 註解
+// 單一檔案版本沒有附帶授權檔，把 MIT 授權與字型的 OFL 授權全文放進 HTML 註解
 async function licenseNotices() {
   const parts = [];
-  for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼、屍體與其他玩家的模型）', 'assets/ghost/LICENSE-Rocketbox.md']]) {
+  for (const [name, file] of [['three.js', 'node_modules/three/LICENSE'], ['Microsoft Rocketbox（女鬼、屍體與其他玩家的模型）', 'assets/ghost/LICENSE-Rocketbox.md'], ['毛筆字型（紙條與察覺提示）', 'assets/fonts/OFL.txt']]) {
     const f = path.join(root, file);
     if (existsSync(f)) parts.push(`${name}\n\n${(await readFile(f, 'utf8')).replace(/-(?=-)/g, '- ')}`);
   }

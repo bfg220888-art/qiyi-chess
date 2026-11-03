@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build.mjs --serve",
-    "test": "node tests/level.test.mjs 200 && node tests/smoke.mjs"
+    "test": "node tests/level.test.mjs 200 && node tests/font.test.mjs && node tests/smoke.mjs"
   },
   "dependencies": {
     "peerjs": "^1.5.4",
