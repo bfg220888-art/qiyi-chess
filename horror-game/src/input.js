@@ -366,7 +366,10 @@ export function installTouchGuards() {
   let lastEnd = 0;
   document.addEventListener('touchend', (e) => {
     const now = e.timeStamp;
-    if (now - lastEnd < 320 && !field(e.target) && e.cancelable) e.preventDefault();
+    // 按鈕、選項不擋：連續快速點兩個不同的按鈕（例如「左手」再「大」）時，第二下不能被吃掉。
+    // 按鈕上的連點放大已經由 CSS 的 touch-action: manipulation 關掉
+    const ctl = e.target && e.target.closest && e.target.closest('button, a, label, [role="button"], [data-action]');
+    if (now - lastEnd < 320 && !field(e.target) && !ctl && e.cancelable) e.preventDefault();
     lastEnd = now;
   }, { passive: false });
   document.addEventListener('touchmove', (e) => {

@@ -385,3 +385,6 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 #downed .down-text { margin: 6px 0 10px; font-size: 15px; color: var(--ink); }
 #downed .down-bar { width: 220px; height: 4px; margin: 0 auto; background: rgba(255, 255, 255, 0.15); }
 #downed .down-bar span { display: block; height: 100%; width: 100%; background: #c8302a; }
+
+/* 關掉連點兩下放大（按鈕連續點也不會延遲或被吃掉） */
+button, a, label { touch-action: manipulation; }
