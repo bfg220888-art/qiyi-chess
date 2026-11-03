@@ -246,7 +246,7 @@ export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   };
   if (count === 1) {
     const counts = np > 1 ? Object.fromEntries(ITEM_KINDS.map(([kind, def]) => [kind, totalOf(kind, def, 1)])) : null;
-    return planExtras([{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts }], seed, opts);
+    return planExtras([{ index: 0, count: 1, theme: t0, level: THEMES[t0].level, ord: 0, entry: 'lobby', generator: true, fuses: 3, notes: all, stairs: [], counts }], seed, opts, diff);
   }
   const rng = new RNG((seed ^ 0x3c6ef372) >>> 0);
   const keys = [t0, ...rng.shuffle(THEME_KEYS.filter((k) => k !== t0)).slice(0, count - 1)];
@@ -281,7 +281,7 @@ export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
     const total = totalOf(kind, def, 1 + 0.5 * (count - 1));
     for (const f of floors) f.counts[kind] = Math.floor(total / count) + (f.index < total % count ? 1 : 0);
   }
-  return planExtras(floors, seed, opts);
+  return planExtras(floors, seed, opts, diff);
 }
 
 // 門禁卡與上鎖的房間（另一個亂數來源：不影響樓層主題、樓梯、保險絲與紙條的分配）
@@ -298,13 +298,16 @@ export const KEY_COLORS = [
   { name: '紫色', css: '#a868e8', hex: 0x9050d8 },
   { name: '橘色', css: '#f08a30', hex: 0xe87a20 },
 ];
-function planExtras(floors, seed, opts = {}) {
+function planExtras(floors, seed, opts = {}, diff = null) {
+  const MP = (diff && diff.map) || {};
   const rng = new RNG((seed ^ 0x6a09e667) >>> 0);
   let color = 0;
   for (const f of floors) {
     f.locks = [];
     f.keys = [];
-    const n = rng.chance(0.45) ? 2 : 1;
+    // 上鎖的房間數：簡單每層一間、惡夢每層兩間、普通隨機
+    const roll = rng.chance(0.45) ? 2 : 1;
+    const n = MP.locks || roll;
     for (let k = 0; k < n && color < KEY_COLORS.length; k++) f.locks.push(color++);
     f.fuseLocked = f.fuses > 0 && rng.chance(0.4);
   }
@@ -381,8 +384,11 @@ function segmentLengths(rng, L, pref = { p3: 0.3, p1: 0.12 }) {
 // 走廊拓樸：在 nC × nR 條走廊格線上決定哪幾段走廊存在。
 // hs[j][i] = 第 j 列橫走廊在第 i、i+1 條直走廊之間那一段；vs[i][j] = 第 i 條直走廊在第 j、j+1 列之間那一段。
 // lobbyK = 大廳接的那一條直走廊（-1 = 只有兩欄，大廳在最下面一排走廊的中間）
-function corridorPlan(rng, LY, nC, nR, lobbyK) {
-  let topo = rng.weighted(LY.topo || [['grid', 1]]);
+function corridorPlan(rng, LY, nC, nR, lobbyK, simple = 0) {
+  // 難度調整拓樸權重：簡單少走殘缺棋盤／魚骨（死路多、容易迷路），惡夢反過來
+  const hard = { broken: 1, spine: 1, H: 0.5 }, easyT = { grid: 1, ring: 1, atrium: 1 };
+  const weights = (LY.topo || [['grid', 1]]).map(([k, w]) => [k, w * (simple > 0 ? (hard[k] ? 0.2 : easyT[k] ? 1.5 : 1) : simple < 0 ? (hard[k] ? 1 + hard[k] : easyT[k] ? 0.6 : 1) : 1)]);
+  let topo = rng.weighted(weights);
   if ((topo === 'ring' || topo === 'atrium') && nC < 3 && nR < 3) topo = 'grid';
   if (topo === 'H' && (nC < 3 || nR < 3)) topo = 'spine';
   const hs = Array.from({ length: nR }, () => new Array(nC - 1).fill(true));
@@ -524,18 +530,28 @@ function fillRooms(lv, rng, LY, eligible, addRoom) {
 function buildLevel(seed, diff, themeKey = 'ward', plan = null, attempt = 0) {
   const T = THEMES[themeKey], LY = T.layout;
   // 單層樓：大廳、大門、發電機房、三個保險絲、七張紙條都在這一層
-  const P0 = plan || planHospital(seed, themeKey, 1)[0];
+  const P0 = plan || planHospital(seed, themeKey, 1, diff)[0];
+  const MP = (diff && diff.map) || {};
   const isLobby = P0.entry !== 'landing';
   const rng = new RNG(seed);
   const M = LY.margin;
   // --- 走廊格線：欄 / 列數、寬度（寬走廊 = 2 格）與街區大小都依主題變化
-  const nC = rng.int(LY.cols[0], LY.cols[1]), nR = rng.int(LY.rows[0], LY.rows[1]);
+  // 難度決定樓層大小：簡單用主題範圍裡最小的格線與街區，惡夢用最大的（還可能多一條走廊）
+  const pick = (a, b) => { const v = rng.int(a, b); return MP.size < 0 ? a : MP.size > 0 ? b : v; };
+  let nC = pick(LY.cols[0], LY.cols[1]), nR = pick(LY.rows[0], LY.rows[1]);
+  // 普通不會兩個方向都抽到最小的格線（那是簡單的大小），樓層一定比簡單大
+  if (!MP.size && nC === LY.cols[0] && nR === LY.rows[0]) { if (LY.rows[1] > nR) nR++; else if (LY.cols[1] > nC) nC++; }
+  // 主題的格線固定（例如 3×3）時，簡單模式少一排走廊，樓層才會真的比較小
+  if (MP.size < 0 && LY.rows[0] === LY.rows[1] && nR > 2) nR--;
+  if (MP.size > 0 && rng.chance(0.35)) { if (rng.chance(0.5)) nC++; else nR++; }
   const colW = new Array(nC).fill(1), rowW = new Array(nR).fill(1);
   if (rng.chance(LY.wideRow)) rowW[rng.int(0, nR - 1)] = 2;
   if (rng.chance(LY.wideCol)) colW[rng.int(0, nC - 1)] = 2;
   const c = [M], r = [M];
-  for (let i = 0; i < nC - 1; i++) c.push(c[i] + colW[i] + rng.int(LY.blockW[0], LY.blockW[1]));
-  for (let j = 0; j < nR - 1; j++) r.push(r[j] + rowW[j] + rng.int(LY.blockH[0], LY.blockH[1]));
+  // 街區大小：簡單偏小、惡夢偏大
+  const blk = (a, b) => { const v = rng.int(a, b); return MP.size < 0 ? Math.min(v, Math.floor((a + b) / 2)) : MP.size > 0 ? b : Math.min(v, Math.ceil((a + b) / 2)); };
+  for (let i = 0; i < nC - 1; i++) c.push(c[i] + colW[i] + blk(LY.blockW[0], LY.blockW[1]));
+  for (let j = 0; j < nR - 1; j++) r.push(r[j] + rowW[j] + blk(LY.blockH[0], LY.blockH[1]));
   const cEnd = c[nC - 1] + colW[nC - 1] - 1, rEnd = r[nR - 1] + rowW[nR - 1] - 1;
   const W = cEnd + 1 + M, H = rEnd + 1 + M;
   const lv = new Level(seed, W, H);
@@ -556,7 +572,7 @@ function buildLevel(seed, diff, themeKey = 'ward', plan = null, attempt = 0) {
   const lobbyX = lobbyK >= 0 ? c[lobbyK] + (colW[lobbyK] === 2 ? rng.int(0, 1) : 0) : Math.round((c[0] + cEnd) / 2);
 
   // --- 走廊拓樸：棋盤格 / 拆掉一部分的棋盤格 / 環狀 / 天井 / H 形 / 魚骨形（見 themes.js）
-  const cplan = corridorPlan(rng, LY, nC, nR, lobbyK);
+  const cplan = corridorPlan(rng, LY, nC, nR, lobbyK, MP.simple || 0);
   const { hs, vs } = cplan;
   lv.topo = cplan.topo;
 

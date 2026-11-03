@@ -36,13 +36,18 @@ export const DIFFICULTY = {
   easy: {
     label: '簡單', desc: '鬼魂較慢、資源較多，可以被抓到一次。',
     lives: 2, ghostSpeed: 0.8, sight: 0.7, notice: 0.72, giveUp: 2.4, search: 11, hearing: 0.75, drain: 0.7, batteries: 8, film: 4, pills: 4, bottles: 6, grace: 90, startFilm: 3, downed: 40,
+    // 地圖：小一點、走廊單純（少死路、少殘缺棋盤）、每層只鎖一間
+    map: { size: -1, locks: 1, simple: 1 },
   },
   normal: {
     label: '普通', desc: '標準的恐怖體驗。',
     lives: 1, ghostSpeed: 1.0, sight: 0.88, notice: 1.1, giveUp: 2.8, search: 14, hearing: 1.0, drain: 1.0, batteries: 6, film: 2, pills: 3, bottles: 5, grace: 50, startFilm: 2, downed: 30,
+    map: { size: 0, locks: 0, simple: 0 },
   },
   nightmare: {
     label: '惡夢', desc: '她更快、更敏銳。電池稀少，沒有地圖。',
     lives: 1, ghostSpeed: 1.15, sight: 1.25, notice: 2.0, giveUp: 3.2, search: 16, hearing: 1.3, drain: 1.35, batteries: 4, film: 1, pills: 2, bottles: 4, grace: 30, startFilm: 1, downed: 25, noMap: true,
+    // 地圖：大一點、走廊複雜（多死路、拆掉的棋盤格、魚骨形）、每層鎖兩間
+    map: { size: 1, locks: 2, simple: -1 },
   },
 };

@@ -68,7 +68,14 @@ async function moveNear(page, f, i) {
     const A = window.__SW, g = A.game, P = g.player, it = g.floors[f].lv.items[i];
     g.pickBack = { f: g.floorIdx, x: P.pos.x, z: P.pos.z };
     if (g.floorIdx !== f) g.setFloor(f);
-    P.pos.x = it.x; P.pos.z = it.z; g.mp.sendT = 0;
+    // 站到道具旁邊沒有東西擋、也沒隔著牆的位置（道具常在家具上，不能直接站在它的位置）
+    let best = { x: it.x, z: it.z }, bd = 1e9;
+    for (let a = 0; a < 24; a++) for (const r of [0.55, 0.8, 1.05]) {
+      const x = it.x + Math.cos(a / 24 * Math.PI * 2) * r, z = it.z + Math.sin(a / 24 * Math.PI * 2) * r;
+      if (g.collision.overlapsAny(x, z, 0.32) || !g.sight(x, z, it.x, it.z)) continue;
+      if (r < bd) { bd = r; best = { x, z }; }
+    }
+    P.pos.x = best.x; P.pos.z = best.z; g.mp.sendT = 0;
     g.mp.tick(0.016);
     return g.mp.mySlot;
   }, [f, i]);
@@ -384,7 +391,7 @@ try {
   log('ghost', JSON.stringify(gp.map((g) => [g[0].toFixed(1), g[1].toFixed(1), g[2]])));
   check(gp.every((g) => Math.hypot(g[0] - gp[0][0], g[1] - gp[0][1]) < 1.5), 'ghost position sync');
   // 她身邊的血紅光暈：玩家 2 用房主同步來的位置與狀態自己算（靠近就亮、紅色點光源一直在場景裡）
-  await host.evaluate((t) => { const g = window.__SW.game, gh = g.ghost, nav = g.floors[gh.floor].ghostNav; const k = nav.nearestFree(t.x + 3, t.z); const c = k >= 0 ? nav.center(k) : { x: t.x + 1.5, z: t.z }; gh.pos.set(c.x, 0, c.z); gh.path = null; }, target);
+  await host.evaluate((t) => { const g = window.__SW.game, gh = g.ghost, nav = g.floors[gh.floor].ghostNav; const k = nav.nearestFree(t.x + 3, t.z); const c = k >= 0 ? nav.center(k) : { x: t.x + 1.5, z: t.z }; gh.pos.set(c.x, 0, c.z); gh.path = null; gh.__upd = gh.update; gh.update = () => {}; }, target); // 先凍住她的 AI：站著不動，免得把玩家 2 抓走
   let clientAura = null;
   try {
     await until(clients[0], () => { const g = window.__SW.game, gh = g.ghost; return gh.auraK > 0.05 && gh.auraLight.intensity > 0 && g.ghostDist < 12; }, undefined, 60000);
@@ -392,6 +399,7 @@ try {
   } catch (e) { /* 下面的 check 會記錄失敗 */ }
   log('client aura', JSON.stringify(clientAura));
   check(clientAura && clientAura.k > 0.05 && clientAura.inScene && clientAura.sprite, 'client sees her red aura from host-synced ghost');
+  await host.evaluate(() => { const gh = window.__SW.game.ghost; if (gh.__upd) { gh.update = gh.__upd; delete gh.__upd; } });
   // 察覺提示：房主送出她目前目標的察覺值（取到 0.05）與目標編號；每個人只看針對自己的那一份，亂七八糟的值不理
   check(await host.evaluate(() => { const m = window.__SW.game.ghost.netState(); return typeof m.aw === 'number' && m.aw >= 0 && m.aw <= 1 && Number.isInteger(m.tg); }), 'host ghost state carries awareness + target slot');
   const cs = slots[1];
@@ -416,6 +424,10 @@ try {
   log('junk', JSON.stringify(junkAw), JSON.stringify(junkTg));
   check(junkAw.aw === 0.55 && junkAw.v === 0.55 && junkTg.tg === -1 && junkTg.v.aware === 0 && !junkTg.v.targetMe, 'junk awareness / target values are ignored');
   await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.netState = gh.__ns; delete gh.__ns; });
+  // 前面的光暈檢查讓她在玩家 2 旁邊追逐：先讓她消失，免得接下來的步驟被她抓到
+  await host.evaluate(() => { const gh = window.__SW.game.ghost; gh.setState('dormant'); gh.model.root.visible = false; gh.dormantUntil = 1e9; });
+  await until(clients[0], () => window.__SW.game.ghost.state === 'dormant');
+  check(await clients[0].evaluate(() => window.__SW.game.mpStatus === 0 && !window.__SW.game.downed && !window.__SW.game.dying), 'player 2 still standing after the aura checks');
 
   // 玩家 2 撿起一個保險絲，等一下被抓走時它要回到原處
   const fuseI = await findFuse();
