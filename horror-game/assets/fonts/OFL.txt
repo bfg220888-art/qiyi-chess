@@ -3,6 +3,8 @@ Fonts in this folder (subsets made by tools/fonts/subset.py; no Reserved Font Na
 brush-boku.woff2  Yuji Boku            Copyright 2021 The Yuji Project Authors (https://github.com/Kinutafontfactory/Yuji)
 brush-msz.woff2   Ma Shan Zheng        Copyright 2018 The MaShanZheng Project Authors (https://github.com/googlefonts/mashanzheng)
 brush-wk.woff2    LXGW WenKai TC Bold  Copyright 2024 The LXGW WenKai Project Authors (https://github.com/lxgw/LxgwWenkaiTC)
+pen-iansui.woff2  Iansui               Copyright 2022 The Iansui Project Authors (https://github.com/ButTaiwan/iansui)
+print-serif.woff2 Noto Serif TC        Copyright 2012 Google Inc. All Rights Reserved. (https://github.com/notofonts/noto-cjk)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at: https://openfontlicense.org

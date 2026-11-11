@@ -3,6 +3,7 @@ import { drawFloorPlan } from './materials.js';
 import { CELL } from './config.js';
 import { KEY_COLORS } from './level.js';
 import { paintPaper } from './paper.js';
+import { DOCS, DOC_LINES, DOC_TYPES, docTree } from './docs.js';
 
 const $ = (id) => document.getElementById(id);
 // 紙條裡「用血寫的」字：人名、病歷號、房號、警告。每張紙條最後一段（括號附註除外）也整段用血寫
@@ -40,7 +41,47 @@ export function noteFragment(body) {
   return frag;
 }
 
+// 文件的虛擬節點樹（src/docs.js 的 docTree）→ DOM（只用 textContent / createElement，不碰 innerHTML）
+export function buildDocNode(n) {
+  const el = document.createElement(n.t || 'div');
+  if (n.c) el.className = n.c;
+  if (n.f) el.classList.add('f-' + n.f);
+  if (n.d) for (const [k, v] of Object.entries(n.d)) { if (k === 'w') el.style.setProperty('--w', v); else el.dataset[k] = v; }
+  const kid = el.classList.contains('kid');
+  let i = 0;
+  for (const k of n.k) {
+    if (k == null) continue;
+    if (typeof k !== 'string') { el.appendChild(buildDocNode(k)); continue; }
+    if (!kid) { el.appendChild(document.createTextNode(k)); continue; }
+    // 小孩寫的字：每個字大小、角度、高低都不太一樣
+    for (const ch of k) {
+      if (ch === '\n') { el.appendChild(document.createElement('br')); continue; }
+      const s = document.createElement('span');
+      s.className = 'kc'; s.textContent = ch; i++;
+      s.style.transform = `translateY(${((i * 7) % 5) - 2}px) rotate(${((i * 37) % 17) - 8}deg) scale(${0.9 + ((i * 13) % 5) * 0.06})`;
+      el.appendChild(s);
+    }
+  }
+  return el;
+}
+
+// 文件顯示在一張 .paper 上：類型決定紙張的 class（寬度、字型、墨水顏色）與 canvas 畫的紙
+function fillPaper(paper, titleEl, bodyEl, doc, opts = {}) {
+  paper.className = 'paper doc-paper p-' + doc.type;
+  titleEl.textContent = doc.title;
+  titleEl.hidden = true;
+  paper.setAttribute('aria-label', doc.title);
+  bodyEl.replaceChildren(buildDocNode(docTree(doc, opts)));
+}
+
 const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * Math.min(1, Math.max(0, t)));
+
+function paintInto(paper, c, spec, body) {
+  if (!c) return;
+  let ok = false;
+  try { ok = paintPaper(paper, c, spec, [...body.querySelectorAll('.blood-ink')]); } catch (e) { /* 畫不出來就只剩 CSS 的紙色 */ }
+  paper.classList.toggle('painted', !!ok);
+}
 
 export class UI {
   constructor() {
@@ -57,6 +98,14 @@ export class UI {
     this.detMsg = null;      // 目前顯示的察覺訊息 { text, kind, pri, until }
     this.detShown = new Map(); // 每一種訊息上一次出現的時間（防洗版）
     this.detLevel = 0;
+    // 暫停選單裡的「檔案」按鈕（用程式加在「操作說明」後面）
+    const help = $('btnPauseHelp');
+    if (help && !$('btnPauseJournal')) {
+      const b = document.createElement('button');
+      b.id = 'btnPauseJournal'; b.type = 'button'; b.className = 'btn ghost'; b.textContent = '檔案';
+      b.addEventListener('click', () => { if (this.game) this.game.openJournal(true); });
+      help.after(b);
+    }
     this.hintT = 0;
     this.subT = 0;
     this.game = null;
@@ -324,15 +373,31 @@ export class UI {
     if (this.el.polaroid) this.el.polaroid.classList.remove('show');
   }
 
+  // 一份文件（src/docs.js 的 DOCS[i]）。opts.rep：改寫文字；opts.burned：在燒毀的舊院區撿到的（紙的角燒掉了）
+  showDoc(i, opts = {}) {
+    const E = this.el, doc = DOCS[i];
+    if (!doc) return;
+    const paper = E.noteTitle.parentNode;
+    fillPaper(paper, E.noteTitle, E.noteBody, doc, opts);
+    this.openPaper({ key: doc.id, type: doc.type, burned: !!opts.burned });
+  }
   showNote(note) {
     const E = this.el;
+    E.noteTitle.parentNode.className = 'paper p-relic';
+    E.noteTitle.hidden = false;
+    E.noteTitle.parentNode.removeAttribute('aria-label');
     E.noteTitle.textContent = note.title;
     E.noteBody.replaceChildren(noteFragment(note.body));
     E.note.hidden = false;
     E.note.scrollTop = 0;
     const paper = E.noteTitle.parentNode;
     paper.scrollTop = 0;
-    this.noteKey = note.title;
+    this.openPaper({ key: note.title, type: 'relic' }, true);
+  }
+  openPaper(spec, shown = false) {
+    const E = this.el, paper = E.noteTitle.parentNode;
+    if (!shown) { E.note.hidden = false; E.note.scrollTop = 0; paper.scrollTop = 0; }
+    this.noteSpec = spec;
     this.paintNote();
     // 毛筆字型如果剛好還在載入，載好之後字的位置會變：再畫一次（血字底下的滴痕要對準）
     if (document.fonts && document.fonts.status !== 'loaded') document.fonts.ready.then(() => this.paintNote());
@@ -345,8 +410,87 @@ export class UI {
   paintNote() {
     const E = this.el, paper = E.noteTitle.parentNode, c = paper.querySelector('canvas.paper-bg');
     if (!c || E.note.hidden) return;
-    try { paintPaper(paper, c, this.noteKey || '', [...E.noteBody.querySelectorAll('.blood-ink')]); } catch (e) { /* 畫不出來就只剩 CSS 的紙色 */ }
+    paintInto(paper, c, this.noteSpec || { key: '', type: 'relic' }, E.noteBody);
   }
+
+  // ---- 檔案（找到的文件，依故事線分組）。data = { run: 這一局的文件 index, found: Set, collected: Set（跨局，文件 id） }
+  // 在檔案裡點一份文件，就在同一個畫面裡重讀（不經過遊戲的輸入迴圈，暫停中也能用）
+  openJournal(data, onClose) {
+    const J = $('journal');
+    if (!J) return;
+    this.journalClose = onClose || null;
+    this.journalData = data;
+    const list = $('journalList');
+    const runN = data.run.length, foundN = data.run.filter((i) => data.found.has(i)).length;
+    $('journalCount').textContent = `這一局 ${foundN}/${runN}・已收集 ${data.collected.size}/${DOCS.length}`;
+    list.replaceChildren();
+    for (const line of DOC_LINES) {
+      const ids = DOCS.map((d, i) => i).filter((i) => DOCS[i].line === line.key);
+      const sec = document.createElement('section');
+      sec.className = 'j-line';
+      const h = document.createElement('h3');
+      const got = ids.filter((i) => data.collected.has(DOCS[i].id) || data.found.has(i)).length;
+      h.textContent = `${line.name}`;
+      const cnt = document.createElement('span'); cnt.className = 'j-n'; cnt.textContent = `${got}/${ids.length}`;
+      h.appendChild(cnt);
+      sec.appendChild(h);
+      for (const i of ids) {
+        const d = DOCS[i], inRun = data.run.includes(i), found = data.found.has(i), old = !found && data.collected.has(d.id);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'j-item' + (found ? ' found' : old ? ' old' : inRun ? ' missing' : ' absent');
+        const t = document.createElement('span'); t.className = 'j-t';
+        t.textContent = found || old ? d.title : '？？？';
+        const k = document.createElement('span'); k.className = 'j-k';
+        k.textContent = found ? DOC_TYPES[d.type].name : old ? '之前找到的' : inRun ? '還在這棟醫院裡' : '這一局沒有';
+        b.append(t, k);
+        if (found || old) b.addEventListener('click', () => this.journalRead(i)); else b.disabled = true;
+        sec.appendChild(b);
+      }
+      list.appendChild(sec);
+    }
+    $('journalReader').hidden = true;
+    $('journalIndex').hidden = false;
+    J.hidden = false;
+    if (!this.journalBound) {
+      this.journalBound = true;
+      $('journalClose').addEventListener('click', () => this.closeJournal());
+      $('journalBack').addEventListener('click', () => { $('journalReader').hidden = true; $('journalIndex').hidden = false; });
+      J.addEventListener('pointerdown', (e) => { if (e.target === J) this.closeJournal(); });
+      addEventListener('resize', () => { if (!J.hidden && !$('journalReader').hidden) this.paintJournal(); });
+      // J / Esc / E 關掉檔案（重讀文件時先回到清單）；在捕獲階段攔下來，不讓遊戲或暫停選單也收到這個按鍵
+      addEventListener('keydown', (e) => {
+        if (J.hidden || e.repeat || !['KeyJ', 'Escape', 'KeyE', 'KeyP', 'Tab'].includes(e.code)) return;
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (!$('journalReader').hidden && e.code !== 'KeyJ') { $('journalReader').hidden = true; $('journalIndex').hidden = false; } else this.closeJournal();
+      }, true);
+    }
+  }
+  journalRead(i) {
+    const doc = DOCS[i], paper = $('journalPaper');
+    if (!doc || !paper) return;
+    fillPaper(paper, paper.querySelector('h2'), $('journalBody'), doc, (this.journalData && this.journalData.opts && this.journalData.opts(i)) || {});
+    this.journalSpec = { key: doc.id, type: doc.type };
+    $('journalIndex').hidden = true;
+    $('journalReader').hidden = false;
+    paper.scrollTop = 0;
+    this.paintJournal();
+    if (document.fonts && document.fonts.status !== 'loaded') document.fonts.ready.then(() => this.paintJournal());
+  }
+  paintJournal() {
+    const paper = $('journalPaper');
+    if (paper) paintInto(paper, paper.querySelector('canvas.paper-bg'), this.journalSpec, $('journalBody'));
+  }
+  // silent：遊戲結束時直接關掉，不呼叫關閉後的回呼
+  closeJournal(silent = false) {
+    const J = $('journal');
+    if (!J || J.hidden) return;
+    J.hidden = true;
+    const f = this.journalClose;
+    this.journalClose = null;
+    if (f && !silent) f();
+  }
+  get journalOpen() { const J = $('journal'); return !!J && !J.hidden; }
   closeNote() { this.el.note.hidden = true; }
   get noteOpen() { return !this.el.note.hidden; }
 

@@ -54,15 +54,17 @@
 
 ## 字型（`assets/fonts/`）
 
-紙條、遺物說明、牆上的血字與察覺提示用的毛筆字。三套都是 [SIL Open Font License 1.1](https://openfontlicense.org)，授權全文與版權聲明在 `assets/fonts/OFL.txt`（單一檔案版本放在 HTML 結尾的註解裡）。都沒有保留字型名稱（Reserved Font Name）。
+文件（紙條）、遺物說明、牆上的血字與察覺提示用的字：毛筆（SWBrush）、手寫（SWPen）、鉛字（SWPrint）。五個檔案都是 [SIL Open Font License 1.1](https://openfontlicense.org)，授權全文與版權聲明在 `assets/fonts/OFL.txt`（單一檔案版本放在 HTML 結尾的註解裡）。都沒有保留字型名稱（Reserved Font Name）。
 
 | 檔案 | 字型 | 版權 | 修改 |
 |---|---|---|---|
-| `brush-boku.woff2` | [Yuji Boku](https://fonts.google.com/specimen/Yuji+Boku) | Copyright 2021 The Yuji Project Authors（<https://github.com/Kinutafontfactory/Yuji>） | 只留下遊戲用到的字（約 475 字）、去掉 hinting，轉成 WOFF2（`tools/fonts/subset.py`） |
-| `brush-msz.woff2` | [Ma Shan Zheng](https://fonts.google.com/specimen/Ma+Shan+Zheng) | Copyright 2018 The MaShanZheng Project Authors（<https://github.com/googlefonts/mashanzheng>） | 只留下 Yuji Boku 沒有的字與數字（22 字），同上 |
-| `brush-wk.woff2` | [LXGW WenKai TC](https://fonts.google.com/specimen/LXGW+WenKai+TC) Bold | Copyright 2024 The LXGW WenKai Project Authors（<https://github.com/lxgw/LxgwWenkaiTC>） | 只留下前兩套都沒有的繁體字（9 字），同上 |
+| `brush-boku.woff2` | [Yuji Boku](https://fonts.google.com/specimen/Yuji+Boku) | Copyright 2021 The Yuji Project Authors（<https://github.com/Kinutafontfactory/Yuji>） | 只留下遊戲用到的字（約 310 字）、去掉 hinting，轉成 WOFF2（`tools/fonts/subset.py`） |
+| `brush-msz.woff2` | [Ma Shan Zheng](https://fonts.google.com/specimen/Ma+Shan+Zheng) | Copyright 2018 The MaShanZheng Project Authors（<https://github.com/googlefonts/mashanzheng>） | 只留下 Yuji Boku 沒有的字與數字，同上 |
+| `brush-wk.woff2` | [LXGW WenKai TC](https://fonts.google.com/specimen/LXGW+WenKai+TC) Bold | Copyright 2024 The LXGW WenKai Project Authors（<https://github.com/lxgw/LxgwWenkaiTC>） | 只留下前兩套都沒有的繁體字，同上 |
+| `pen-iansui.woff2` | [Iansui 芫荽](https://fonts.google.com/specimen/Iansui) | Copyright 2022 The Iansui Project Authors（<https://github.com/ButTaiwan/iansui>） | 文件裡手寫的部分：只留下用到的字（約 590 字），同上 |
+| `print-serif.woff2` | [Noto Serif TC](https://fonts.google.com/noto/specimen/Noto+Serif+TC) | Copyright 2012 Google Inc.（<https://github.com/notofonts/noto-cjk>） | 文件裡印刷的部分與印章：只留下用到的字（約 490 字），可變字型固定在字重 600，同上 |
 
-紙張、血跡、手印、指紋都是程式即時畫的（`src/paper.js`），沒有使用任何圖片素材。
+每一種文件的紙張（紙色、泛黃、打孔、撕邊、鋸齒切口、摺痕、膠帶、迴紋針、釘書針、咖啡杯印、水漬、燒焦的角）、印章、網點照片、蠟筆畫、血跡、手印、指紋都是程式即時畫的（`src/paper.js`），沒有使用任何圖片素材。
 
 ## 程式庫
 
