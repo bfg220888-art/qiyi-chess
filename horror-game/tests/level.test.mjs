@@ -5,6 +5,22 @@ import { generateLevel, generateHospital, E, VOID, FURN } from '../src/level.js'
 import { validateLevel, NavGrid, Collision, sightClear, lockedDoorBox } from '../src/nav.js';
 import { DIFFICULTY, GHOST_R, CELL, COOP_ITEMS } from '../src/config.js';
 import { THEME_KEYS, THEMES, resolveTheme } from '../src/themes.js';
+import { DOCS, DOC_LINES, DOC_TYPES, MAIN_DOCS, LOBBY_DOC, GEN_DOC, pickDocs, sideDocCount, docTree, sanitizeCollection } from '../src/docs.js';
+
+// 文件（紙條）：這一局出現的就是 pickDocs(種子, 樓層數) 那幾份，各一份；主線七份一定都在；
+// 交班紀錄在大廳、錄音逐字稿在發電機房
+const docSeen = new Map();
+function checkDocs(fl, seed, assert) {
+  const want = pickDocs(seed, fl.length);
+  const notes = fl.flatMap((l) => l.items.filter((i) => i.kind === 'note').map((it) => ({ l, it })));
+  assert(notes.map((x) => x.it.note).sort((a, b) => a - b).join() === want.join(), 'documents = pickDocs: ' + notes.map((x) => x.it.note).join());
+  assert(MAIN_DOCS.every((n) => want.includes(n)), 'full main line');
+  assert(want.length === MAIN_DOCS.length + sideDocCount(fl.length), 'document count ' + want.length);
+  const lob = notes.find((x) => x.it.note === LOBBY_DOC), gen = notes.find((x) => x.it.note === GEN_DOC);
+  assert(lob && lob.l === fl[0] && lob.l.roomAtWorld(lob.it.x, lob.it.z) === fl[0].lobby, 'handover log in the lobby');
+  assert(gen && gen.l.generatorRoom && gen.l.roomAtWorld(gen.it.x, gen.it.z) === gen.l.generatorRoom, 'transcript in the generator room');
+  for (const n of want) docSeen.set(n, (docSeen.get(n) || 0) + 1);
+}
 
 const N = Number(process.argv[2] || 300);
 
@@ -76,7 +92,8 @@ for (let s = 1; s <= N; s++) {
   const fuses = lv.items.filter((i) => i.kind === 'fuse');
   const notes = lv.items.filter((i) => i.kind === 'note');
   assert(fuses.length === 3, 'fuse count');
-  assert(notes.length === 7, 'note count');
+  assert(notes.length === 11, 'note count');
+  checkDocs([lv], lv.seed, assert); // 沒有給 plan 時，文件由實際生成的那個種子決定
   assert(lv.items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'battery count');
   checkLocks([lv], assert);
   checkRelics([lv], assert, altarThemes);
@@ -163,8 +180,7 @@ for (let s = 1; s <= MF; s++) {
   const items = fl.flatMap((l) => l.items);
   assert(items.filter((i) => i.kind === 'fuse').length === 3, 'fuse total');
   if (count > 1) assert(fl.every((l) => l.items.some((i) => i.kind === 'fuse')), 'a fuse on every floor');
-  const notes = items.filter((i) => i.kind === 'note').map((i) => i.note).sort();
-  assert(notes.join() === '0,1,2,3,4,5,6', 'notes 0..6 once each, got ' + notes.join());
+  checkDocs(fl, seed, assert);
   if (count === 1) assert(fl[0].items.filter((i) => i.kind === 'battery' && !i.loot).length === diff.batteries, 'single floor batteries');
   checkLocks(fl, assert);
   checkRelics(fl, assert);
@@ -262,6 +278,27 @@ if (noShutter > Math.ceil(MS * 0.08)) { fails++; console.error(`too many hospita
 console.log(`shutter hospitals: ${MS}, shutters ${shTotal} (${shGated} gating a dead end, ${noShutter} without any)`);
 // 每一種樓層的劇情房間（707 病房、0713 冷藏室、嬰兒室、0713 隔離室、第 7 手術室、313 病房）都放得下搖籃
 if (!onlyTheme && N >= 6) for (const k of THEME_KEYS) if (!altarThemes.has(k)) { fails++; console.error(`no altar generated for theme ${k}`); }
+// 文件資料本身：id 不重複、每一份的類型都不一樣、主線是 0～6、挑選只看種子（重算一次要一樣）、每一份都會在某些種子出現
+{
+  const assert = (c, m) => { if (!c) { fails++; console.error('docs:', m); } };
+  assert(new Set(DOCS.map((d) => d.id)).size === DOCS.length, 'doc ids unique');
+  assert(new Set(DOCS.map((d) => d.type)).size === DOCS.length, 'every document has its own type');
+  assert(DOCS.every((d) => DOC_TYPES[d.type] && DOC_LINES.some((l) => l.key === d.line) && d.title && docTree(d).k.length > 0), 'doc type / line / title / content');
+  assert(MAIN_DOCS.join() === '0,1,2,3,4,5,6' && DOCS[LOBBY_DOC].place === 'lobby' && DOCS[GEN_DOC].place === 'gen', 'main line = 0..6 with anchors');
+  const mixes = new Set();
+  for (let s = 1; s <= 400; s++) {
+    for (const c of [1, 2, 3]) {
+      const a = pickDocs(s * 2654435761 >>> 0, c);
+      assert(a.join() === pickDocs(s * 2654435761 >>> 0, c).join(), 'pickDocs deterministic');
+      assert(new Set(a).size === a.length && a.every((n) => n >= 0 && n < DOCS.length), 'pickDocs valid');
+      if (c === 1) { mixes.add(a.join()); for (const n of a) docSeen.set(n, (docSeen.get(n) || 0) + 1); }
+    }
+  }
+  assert(mixes.size >= 8, 'single-floor runs get different side-line mixes: ' + mixes.size);
+  assert(DOCS.every((d, i) => docSeen.get(i) > 0), 'every document appears in some run');
+  assert(sanitizeCollection(['handover', 'nope', 'handover', 3, 'receipt']).join() === 'handover,receipt' && sanitizeCollection('x').length === 0, 'collection validation');
+  console.log(`documents: ${DOCS.length} (${MAIN_DOCS.length} main), ${mixes.size} single-floor mixes`);
+}
 const dt = Date.now() - t0;
 console.log(`levels: ${N}, failures: ${fails}, regenerated: ${retries}, avg ${(dt / N).toFixed(1)} ms/level`);
 for (const [k, st] of Object.entries(stats)) {

@@ -13,6 +13,9 @@
   --body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", sans-serif;
   /* 毛筆字（紙條、察覺提示）：src/fonts.js 載入的子集；子集沒有的字（玩家名字等）逐字退回明體 */
   --brush: "SWBrush", "Noto Serif TC", "Songti TC", "PMingLiU", "MingLiU", serif;
+  /* 文件的手寫（芫荽）與鉛字（思源宋體）子集；手寫字型沒有的字在 SWPrint 裡，最後才退回系統字型 */
+  --pen: "SWPen", "SWPrint", "Noto Serif TC", "Songti TC", "PMingLiU", serif;
+  --print: "SWPrint", "Noto Serif TC", "Songti TC", "PMingLiU", "MingLiU", serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -306,24 +309,223 @@ dt { font-family: var(--mono); color: var(--ink); white-space: nowrap; }
 dd { margin: 0; color: #c5bfb2; }
 ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #c5bfb2; }
 
-/* 紙條：沾滿血的醫院表單。紙張、污漬、噴濺、手印、血字底下的滴痕都畫在 .paper-bg（src/paper.js） */
+/* 紙條（文件）：每一種文件類型有自己的紙（src/paper.js 畫在 .paper-bg）、版面、字型與墨水顏色。
+   字是 DOM：手寫 SWPen（芫荽）、鉛字 SWPrint（思源宋體）、血字 SWBrush（毛筆）；字的大小跟著「字幕大小」 */
 #note { background: radial-gradient(ellipse at 50% 50%, rgba(40, 0, 0, 0.55), rgba(0, 0, 0, 0.88) 75%); cursor: pointer; }
 .paper {
+  --rot: -0.8deg; --pen-ink: #1f2c74; --form-ink: #2b2b2b; --rule: rgba(40, 40, 40, 0.55);
   position: relative; isolation: isolate;
-  width: min(540px, 100%); max-height: 100%; overflow-x: hidden; overflow-y: auto; background: #dcd1b4; color: #22160e;
-  padding: 40px 28px 18px 40px; transform: rotate(-0.8deg);
+  width: min(560px, 100%); max-height: 100%; overflow-x: hidden; overflow-y: auto; background: #dcd1b4; color: #22160e;
+  padding: 40px 28px 18px 40px; transform: rotate(var(--rot));
   box-shadow: 0 0 0 1px rgba(70, 40, 15, 0.3), 0 24px 70px rgba(0, 0, 0, 0.85), 0 0 140px rgba(110, 0, 0, 0.32);
+  touch-action: pan-y; overscroll-behavior: contain;
 }
+/* 畫好紙之後：紙的外形（打孔、撕邊、鋸齒）由 canvas 決定，外框與陰影改成跟著紙的形狀 */
+.paper.painted { background: transparent; box-shadow: none; }
+.paper.painted .paper-bg { filter: drop-shadow(0 16px 30px rgba(0, 0, 0, 0.75)); }
+.paper.painted .paper-foot { color: #a59c8c; }
 .paper-bg { position: absolute; left: 0; top: 0; z-index: -1; pointer-events: none; }
 .paper h2 { margin: 0 0 12px; font-family: var(--brush); font-weight: 400; font-size: calc(27px * var(--sub-scale, 1)); line-height: 1.35; letter-spacing: 0.06em; }
-#noteBody { font-family: var(--brush); font-weight: 400; font-size: calc(18px * var(--sub-scale, 1)); line-height: 1.85; letter-spacing: 0.02em; white-space: pre-line; overflow-wrap: anywhere; }
+.p-relic #noteBody { font-family: var(--brush); font-weight: 400; font-size: calc(18px * var(--sub-scale, 1)); line-height: 1.85; letter-spacing: 0.02em; white-space: pre-line; overflow-wrap: anywhere; }
 /* 用血寫的字：乾掉的暗紅色、筆畫邊緣有點毛（#bloodRough）、微微暈開 */
 .blood-ink { color: #620904; text-shadow: 0 0 1px rgba(125, 10, 5, 0.6), 1px 1px 2px rgba(95, 5, 2, 0.35), -1px 0 3px rgba(130, 15, 8, 0.18); filter: url(#bloodRough); }
 .blood-line { display: inline-block; font-size: 1.1em; letter-spacing: 0.05em; transform: rotate(-1deg); transform-origin: 0 50%; }
 .paper-foot { margin: 18px 0 0; font-family: var(--body); font-size: 12px; color: #6d6252; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .note-close { font: 700 14px var(--body); color: var(--paper); background: var(--paper-ink); border: 0; padding: 8px 16px; cursor: pointer; min-height: 36px; }
 .note-close:focus-visible { outline: 2px solid var(--blood); }
-.paper { touch-action: pan-y; }
+
+/* ---- 文件的共同版面 */
+.doc-paper { padding: 34px 26px 16px 32px; }
+.doc { position: relative; font-size: calc(16px * var(--sub-scale, 1)); line-height: 1.7; white-space: pre-line; overflow-wrap: anywhere; color: var(--form-ink); }
+.f-pen { font-family: var(--pen); font-weight: 400; color: var(--pen-ink); }
+.f-print { font-family: var(--print); font-weight: 600; color: var(--form-ink); }
+.f-sys { font-family: var(--body); color: #1b1b1b; }
+.f-brush { font-family: var(--brush); font-weight: 400; }
+.doc .f-pen { font-size: 1.08em; }
+.doc .f-pen .f-pen, .doc .f-pen.d-p .d-ins, .d-tbl.f-pen .d-td { font-size: inherit; }
+.d-p { margin: 0 0 0.55em; }
+.d-hand { margin: 0.4em 0 0.6em; }
+.d-hand.r { text-align: right; }
+.d-hand.lead { font-size: 1.14em; margin-bottom: 0.3em; }
+.d-hand.late { color: #3b3b3b; transform: rotate(-2.2deg); transform-origin: 0 0; margin-top: 0.9em; }
+.d-hand.big { font-size: 1.5em; text-align: right; transform: rotate(-4deg); }
+.d-hand.marker { font-size: 1.7em; font-weight: 700; color: #111; text-align: center; letter-spacing: 0.1em; transform: rotate(-3deg); margin-top: 0.4em; }
+.ink-red, .d-hand.ink-red { color: #b4231b; }
+.d-print { font-size: 0.86em; }
+.d-x { opacity: 0.9; }
+.paper:not(.painted) .d-x { text-decoration: line-through; }
+.d-ins { color: var(--pen-ink); }
+.d-em { color: inherit; }
+.d-h { font-size: 0.82em; letter-spacing: 0.12em; margin: 0.8em 0 0.2em; padding-bottom: 2px; border-bottom: 1px solid var(--rule); }
+/* 表頭 */
+.d-hd { text-align: center; margin: 0 0 0.9em; padding-bottom: 0.5em; border-bottom: 3px double var(--rule); }
+.d-org { font-size: 0.78em; letter-spacing: 0.18em; }
+.d-title { font-size: 1.42em; letter-spacing: 0.32em; line-height: 1.4; }
+.d-no { font-size: 0.72em; text-align: right; letter-spacing: 0.06em; margin-top: -0.2em; }
+/* 欄位（標籤 + 手寫的值），寬度用 --w（百分比） */
+.d-kv { display: flex; flex-wrap: wrap; gap: 0.25em 14px; margin: 0 0 0.6em; }
+.d-kv .d-f { flex: 1 1 calc(var(--w, 100) * 1% - 14px); min-width: 7.5em; display: flex; align-items: baseline; gap: 6px; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+.d-l { flex: none; font-size: 0.74em; letter-spacing: 0.08em; white-space: nowrap; }
+.d-v { flex: 1; min-width: 0; }
+.d-box { display: inline-block; width: 0.8em; height: 0.8em; border: 1.3px solid var(--form-ink); margin: 0 2px 0 4px; vertical-align: -0.05em; position: relative; }
+.d-box.on::after { content: ''; position: absolute; left: 0.16em; top: -0.32em; width: 0.38em; height: 0.85em; border: solid var(--pen-ink); border-width: 0 0.16em 0.16em 0; transform: rotate(38deg); }
+/* 簽名欄 */
+.d-sig { display: flex; flex-wrap: wrap; gap: 6px 24px; justify-content: flex-end; margin: 0.9em 0 0.4em; }
+.d-sig .d-f { display: flex; align-items: baseline; gap: 6px; min-width: 9.5em; border-bottom: 1px solid var(--rule); }
+.d-sign { font-size: 1.25em; transform: rotate(-4deg); display: inline-block; letter-spacing: -0.02em; }
+/* 表格（div 排成 table，手機上也不會撐破） */
+.d-tbl { display: table; width: 100%; border-collapse: collapse; margin: 0.2em 0 0.7em; table-layout: fixed; }
+.d-tr { display: table-row; }
+.d-td { display: table-cell; border: 1px solid var(--rule); padding: 3px 6px; vertical-align: top; }
+.d-th .d-td { font-size: 0.74em; letter-spacing: 0.1em; text-align: center; background: rgba(0, 0, 0, 0.04); }
+.d-tbl.c2 .d-td:first-child { width: 3.6em; text-align: center; }
+.d-tbl.c3 .d-td:first-child { width: 3.6em; text-align: center; font-variant-numeric: tabular-nums; }
+.d-tbl.c3 .d-td:last-child { width: 2.4em; text-align: center; }
+.d-tbl.c4 .d-td:nth-child(1) { width: 3.4em; }
+.d-tbl.c4 .d-td:nth-child(2) { width: 3.9em; }
+.d-tbl.c4 .d-td:nth-child(3) { width: 4.6em; }
+.d-tbl.c4 .d-td:nth-child(-n+2) { white-space: nowrap; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.d-tbl.tc .d-td { border: 0; padding: 2px 0; }
+.d-tbl.tc .d-td:first-child { width: 3.6em; color: #555; font-variant-numeric: tabular-nums; }
+/* 條列 */
+.d-list { margin: 0.2em 0 0.7em; padding: 0; counter-reset: li; }
+.d-li { position: relative; padding-left: 2.2em; margin: 0 0 0.35em; counter-increment: li; }
+.d-li::before { content: counter(li, cjk-decimal) "、"; position: absolute; left: 0; top: 0; }
+/* 印章：字是透明的，只用來量大小；印章本身畫在 canvas 上 */
+.d-stamp { display: block; width: fit-content; color: transparent !important; font-size: 1.35em; line-height: 1.2; padding: 4px 12px; letter-spacing: 0.15em; pointer-events: none; white-space: pre; user-select: none; }
+.d-stamp[data-stamp^="seal"] { font-size: 0.95em; letter-spacing: 0; padding: 4px; line-height: 1.05; }
+.doc-paper .doc { min-height: 4em; }
+.d-stamp { position: absolute; right: 0.4em; }
+.d-stamp.at-sig { bottom: 3.4em; }
+.d-stamp.at-right { bottom: 2.2em; right: 0.8em; }
+.d-stamp.at-mid { top: 40%; left: 30%; right: auto; }
+.d-stamp.at-top { top: 2.6em; right: 0.2em; }
+/* 病歷號的貼紙：條碼 */
+.d-label { float: right; margin: -0.4em 0 0.4em 10px; padding: 4px 8px 22px; background: #f8f6ef; border: 1px solid rgba(0, 0, 0, 0.25); box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2); font-size: 0.66em; line-height: 1.35; position: relative; transform: rotate(1.2deg); }
+.d-label::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 4px; height: 14px; background: repeating-linear-gradient(90deg, #222 0 1px, transparent 1px 3px, #222 3px 5px, transparent 5px 6px, #222 6px 7px, transparent 7px 10px); }
+.d-ll:first-child { font-size: 1.5em; font-weight: 700; letter-spacing: 0.08em; }
+/* 照片（網點）與蠟筆畫的位置：內容畫在 canvas 上 */
+.d-photo { position: relative; padding-top: 150px; margin: 0.3em 0 0.6em; break-inside: avoid; }
+.d-cap { font-size: 0.74em; line-height: 1.45; margin-top: 4px; }
+.d-draw { height: clamp(210px, 52vw, 290px); margin: 0 0 0.4em; }
+/* 透過日曆紙看到的正面：反過來的大紅字 */
+.d-ghost { position: absolute; inset: -1em 0 auto 0; text-align: center; color: rgba(190, 30, 30, 0.13); transform: scaleX(-1); pointer-events: none; line-height: 1.1; z-index: -1; white-space: normal; }
+.d-ghost .g-day { font-size: 9em; font-weight: 900; letter-spacing: -0.04em; color: rgba(190, 30, 30, 0.12); }
+.d-ghost .g-year, .d-ghost .g-month, .d-ghost .g-week { font-size: 1.1em; letter-spacing: 0.3em; }
+/* 名單（相片背面） */
+.d-names { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.15em 14px; margin: 0.4em 0 0.6em; }
+.d-nm { display: flex; gap: 8px; align-items: baseline; }
+.d-nm.gone .d-n { text-decoration: line-through; text-decoration-color: rgba(176, 30, 24, 0.85); text-decoration-thickness: 2px; }
+.d-date { font-size: 0.85em; }
+/* 剪報的欄 */
+.d-cols { column-count: 2; column-gap: 18px; column-rule: 1px solid rgba(40, 30, 20, 0.35); text-align: justify; font-size: 0.9em; line-height: 1.62; }
+.d-cols .d-p { text-indent: 2em; }
+/* 尋人啟事：手機截圖印出來的對話 */
+.d-chat { margin: 0.5em 0 0.8em; padding: 10px 10px 4px; background: rgba(225, 230, 238, 0.55); border: 1px solid rgba(0, 0, 0, 0.18); font-size: 0.9em; }
+.d-msg { display: flex; flex-direction: column; align-items: flex-start; margin-bottom: 6px; }
+.d-msg.me { align-items: flex-end; }
+.d-bub { background: #fdfdfd; border-radius: 14px 14px 14px 4px; padding: 4px 11px; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.15); max-width: 85%; }
+.d-msg.me .d-bub { background: #bfe0a8; border-radius: 14px 14px 4px 14px; }
+.d-time { font-size: 0.66em; color: #6b6b6b; margin: 1px 6px 0; }
+/* 收據 */
+.d-rc { font-family: var(--mono), var(--body); font-size: 0.86em; line-height: 1.5; color: #5c5a58; margin: 0.4em 0 1em; padding-bottom: 0.5em; border-bottom: 1px dashed rgba(0, 0, 0, 0.4); }
+.rc-c { text-align: center; }
+.rc-c:first-child { font-size: 1.25em; font-weight: 700; letter-spacing: 0.1em; color: #444; }
+.rc-r { display: flex; justify-content: space-between; gap: 12px; }
+.rc-t { border-top: 1px dashed rgba(0, 0, 0, 0.4); margin-top: 4px; padding-top: 2px; font-weight: 700; }
+/* 小孩的字 */
+.d-hand.kid { font-size: 1.5em; line-height: 1.55; color: #b8352a; margin: 0.2em 0 0.6em 0.4em; }
+.kc { display: inline-block; }
+.d-hand.adult { font-size: 0.82em; color: #555; text-align: right; }
+
+/* ---- 每一種文件 */
+.p-handover { --rot: -0.6deg; --form-ink: #2f5d46; --rule: rgba(47, 93, 70, 0.55); --pen-ink: #1d2c7a; }
+.p-memo { --rot: 1.6deg; --pen-ink: #20232f; width: min(430px, 100%); }
+.p-memo .doc { font-size: calc(17px * var(--sub-scale, 1)); line-height: 1.9; }
+.p-memo .d-p { margin: 0; }
+.p-memo .pad-foot { text-align: center; font-size: 0.7em; color: #5d6aa0; margin-top: 0.6em; letter-spacing: 0.3em; }
+.p-calendar { --rot: -1.4deg; --pen-ink: #1a1a1a; width: min(470px, 100%); }
+.p-calendar .doc { padding-top: 0.6em; }
+.p-calendar .d-li { padding-left: 2.6em; }
+.p-ect { --rot: 0.5deg; --pen-ink: #22305e; --form-ink: #222; }
+.p-chart { --rot: -0.4deg; --form-ink: #5a3b1e; --rule: rgba(90, 59, 30, 0.5); --pen-ink: #1b2e86; }
+.p-crayon { --rot: 1.1deg; width: min(580px, 100%); }
+.p-transcript { --rot: -0.7deg; --form-ink: #1c1c1c; }
+.p-transcript .doc { font-size: calc(15px * var(--sub-scale, 1)); }
+.p-nursing { --rot: 0.8deg; --form-ink: #8b2e3b; --rule: rgba(139, 46, 59, 0.5); --pen-ink: #141414; }
+.p-nursing .d-tbl .d-td { font-size: 0.95em; }
+.p-cribcard { --rot: -2deg; --form-ink: #7a2740; --rule: rgba(122, 39, 64, 0.45); --pen-ink: #2a2d7c; width: min(460px, 100%); }
+.p-cribcard.doc-paper { padding: 44px 34px 16px; }
+.p-cribcard .d-title { font-size: 1.9em; letter-spacing: 0.4em; }
+.p-cribcard .mom { color: #9b2f7f; font-size: 1.15em; }
+.p-letter { --rot: 0.4deg; --pen-ink: #1c3a8a; --form-ink: #a32a2a; }
+.p-letter .doc { line-height: 2; font-size: calc(17px * var(--sub-scale, 1)); }
+.p-letter .d-p { margin: 0; text-indent: 2em; }
+.p-letter .d-p:nth-child(2) { text-indent: 0; }
+.p-letter .lh { text-align: center; letter-spacing: 0.5em; font-size: 0.8em; text-indent: 0; margin-bottom: 0.4em; }
+.p-patrol { --rot: -0.3deg; --form-ink: #3c2d1a; --rule: rgba(60, 45, 26, 0.55); --pen-ink: #191919; }
+.p-patrol .d-tbl { font-size: 0.94em; }
+.p-medbag { --rot: 1.8deg; --form-ink: #b02626; --rule: rgba(176, 38, 38, 0.45); --pen-ink: #3a3a40; width: min(450px, 100%); }
+.p-medbag.doc-paper { padding: 38px 32px 18px; }
+.p-medbag .d-p { transform: rotate(-1deg); margin-bottom: 0.25em; }
+.p-medbag .d-p:nth-of-type(odd) { transform: rotate(0.8deg) translateX(6px); }
+.p-medbag .warn { font-size: 0.72em; text-align: center; color: #b02626; transform: none; margin-bottom: 0.8em; }
+.p-photoback { --rot: -1.3deg; --pen-ink: #22337c; width: min(480px, 100%); }
+.p-photoback .cap { font-size: 1.2em; }
+.p-official { --rot: 0.3deg; --form-ink: #1a1a1a; }
+.p-official .d-hd { border-bottom: 0; }
+.p-official .d-title { letter-spacing: 0.5em; font-size: 1.6em; }
+.p-official .d-kv .d-f { border-bottom: 0; }
+.p-official .d-kv .d-v { font-family: var(--print); font-weight: 600; color: #1a1a1a; font-size: 0.92em; }
+.p-official .d-list .d-li::before { content: counter(li, cjk-decimal) "、"; }
+.p-incident { --rot: -0.9deg; --form-ink: #273b6b; --rule: rgba(39, 59, 107, 0.5); --pen-ink: #3d3a9e; }
+.p-incident .f-pen { text-shadow: 0 0 1.5px rgba(61, 58, 158, 0.6); }
+.p-incident .d-hand.ink-red { text-shadow: none; }
+.p-workorder { --rot: 0.9deg; --form-ink: #4a3410; --rule: rgba(74, 52, 16, 0.5); --pen-ink: #181818; }
+.p-clipping { --rot: -1.6deg; --form-ink: #262119; width: min(560px, 100%); }
+.p-clipping.doc-paper { padding: 26px 22px 14px; }
+.p-clipping .folio { font-size: 0.66em; letter-spacing: 0.05em; border-bottom: 2px solid #262119; padding-bottom: 2px; }
+.p-clipping .headline { font-size: 2.05em; font-weight: 900; line-height: 1.2; letter-spacing: 0.04em; margin: 0.2em 0 0.1em; }
+.p-clipping .deck { font-size: 1.08em; margin-bottom: 0.6em; }
+.p-clipping .margin { color: #233d8f; transform: rotate(-5deg); margin-top: 0.6em; text-align: right; }
+.p-flyer { --rot: 0.6deg; width: min(520px, 100%); }
+.p-flyer .d-p.headline { font-family: var(--body); font-weight: 900; font-size: 3em; letter-spacing: 0.4em; text-align: center; color: #111; margin: 0; line-height: 1.2; }
+.p-flyer .d-photo { width: 150px; padding-top: 180px; margin: 0.2em auto 0.6em; }
+.p-flyer .d-p { font-size: 0.96em; }
+.p-notebook { --rot: -1deg; --pen-ink: #3f4148; }
+.p-notebook.doc-paper { padding-left: 36px; }
+.p-notebook .d-li { padding-left: 1.2em; }
+.p-notebook .d-li::before { content: '—'; }
+.p-receipt { --rot: 2deg; --pen-ink: #253a8a; width: min(330px, 100%); }
+.p-receipt.doc-paper { padding: 30px 20px 18px; }
+.p-receipt .d-p { font-size: 0.98em; margin-bottom: 0.35em; transform: rotate(-0.6deg); }
+
+@media (max-width: 480px) {
+  .doc-paper { padding: 28px 16px 14px 22px; }
+  .d-cols { column-count: 1; }
+  .d-names { grid-template-columns: minmax(0, 1fr); }
+  .d-hd .d-title { letter-spacing: 0.18em; }
+  .p-flyer .d-p.headline { font-size: 2.4em; }
+}
+
+/* ---- 檔案 */
+#journal { z-index: 35; background: rgba(0, 0, 0, 0.82); }
+.journal-card { background: var(--panel); border: 1px solid var(--faint); width: min(560px, 100%); max-height: 100%; display: flex; flex-direction: column; padding: 18px 18px 12px; }
+.j-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--faint); padding-bottom: 8px; }
+.j-head h2 { margin: 0; font-family: var(--display); letter-spacing: 0.3em; font-size: 22px; }
+#journalCount { font: 13px var(--mono); color: var(--dim); }
+#journalList { overflow-y: auto; flex: 1; min-height: 0; padding: 4px 2px; overscroll-behavior: contain; }
+.j-line h3 { margin: 14px 0 6px; font-size: 13px; letter-spacing: 0.12em; color: #c9a99a; display: flex; justify-content: space-between; font-weight: 700; }
+.j-n { font: 12px var(--mono); color: var(--dim); }
+.j-item { display: flex; width: 100%; justify-content: space-between; align-items: baseline; gap: 12px; text-align: left; background: transparent; color: var(--ink); border: 0; border-bottom: 1px dashed rgba(230, 224, 211, 0.12); padding: 8px 4px; min-height: 40px; font: calc(15px * var(--sub-scale, 1)) var(--body); cursor: pointer; }
+.j-item:hover:not(:disabled), .j-item:focus-visible { background: rgba(230, 224, 211, 0.06); outline: none; }
+.j-item:disabled { cursor: default; color: #6f6a62; }
+.j-item.absent { opacity: 0.45; }
+.j-item.old .j-t { color: #b9b2a4; }
+.j-k { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.j-item.found .j-k { color: #b88f7a; }
+.j-foot { margin: 10px 0 0; font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.journal-reader { width: 100%; max-height: 100%; display: flex; justify-content: center; }
 
 #mapView { background: rgba(0, 0, 0, 0.45); pointer-events: auto; }
 .map-card { background: #cfc6ad; padding: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8); max-width: 100%; max-height: 100%; display: flex; flex-direction: column; transform: rotate(0.6deg); }

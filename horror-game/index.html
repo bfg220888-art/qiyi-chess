@@ -227,6 +227,7 @@
     <button class="tb" data-action="breath" type="button" aria-label="屏住呼吸（按住）" id="tBreath" hidden>屏息</button>
   </div>
   <div class="ttop">
+    <button class="tb small" data-action="journal" type="button" aria-label="檔案（找到的文件）">檔</button>
     <button class="tb small" data-action="map" type="button" aria-label="地圖">圖</button>
     <button class="tb small" data-action="pause" type="button" aria-label="暫停">❚❚</button>
   </div>
@@ -238,8 +239,25 @@
     <canvas class="paper-bg" aria-hidden="true"></canvas>
     <h2 id="noteTitle"></h2>
     <div id="noteBody"></div>
-    <p class="paper-foot">閱讀時她不會停下來。按 E、點紙張外面，或<button id="noteClose" class="note-close" type="button">關閉</button></p>
+    <p class="paper-foot">閱讀時她不會停下來。按 E、點紙張外面，或<button id="noteClose" class="note-close" type="button">關閉</button><span>讀過的都收在「檔案」（J）</span></p>
   </article>
+</section>
+
+<!-- 檔案：這一局找到的文件（依故事線分組）與跨局收集；點一份就在這裡重讀 -->
+<section id="journal" class="overlay" hidden>
+  <div class="journal-card" id="journalIndex">
+    <header class="j-head"><h2>檔案</h2><span id="journalCount"></span></header>
+    <div id="journalList"></div>
+    <p class="j-foot">按 J 或<button id="journalClose" class="note-close" type="button">關閉</button></p>
+  </div>
+  <div class="journal-reader" id="journalReader" hidden>
+    <article class="paper" id="journalPaper">
+      <canvas class="paper-bg" aria-hidden="true"></canvas>
+      <h2></h2>
+      <div id="journalBody"></div>
+      <p class="paper-foot"><button id="journalBack" class="note-close" type="button">回到檔案</button></p>
+    </article>
+  </div>
 </section>
 
 <!-- 血字的毛邊（紙條上用血寫的字、察覺提示）：輕微的雜訊位移 -->

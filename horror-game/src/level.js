@@ -4,6 +4,7 @@ import { RNG } from './rng.js';
 import { CORPSE_POSES, corpseShift } from './corpse-poses.js';
 import { CELL, WALL_T, WALL_H, DOOR_W, DOOR_H, GATE_W, GATE_H, COOP_ITEMS } from './config.js';
 import { THEMES, THEME_KEYS, resolveTheme } from './themes.js';
+import { DOCS, pickDocs } from './docs.js';
 
 export const E = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, OPEN: 4, GATE: 5 };
 export const VOID = -1;
@@ -172,37 +173,7 @@ const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 // ---------------------------------------------------------------------------
 // 文字內容
-export const NOTES = [
-  {
-    title: '護理站交班紀錄',
-    body: '1999 年 8 月 13 日　夜班\n\n又停電了。備用發電機需要三個保險絲才能啟動，但維修的老陳把它們拆下來，說要「藏好」。\n\n大門的電子鎖沒電就打不開。我們被困在裡面了。\n\n707 號床的病人又在哼歌。院長說不要理她。',
-  },
-  {
-    title: '維修工老陳的紙條',
-    body: '保險絲我分開藏在三個房間裡了。\n不要讓「她」拿到。\n\n發電機房在這層樓最裡面。三個保險絲都插回配電箱，大門的電子鎖就會重新通電打開。\n\n有電的地方她比較不敢靠近……我希望是這樣。',
-  },
-  {
-    title: '警衛的筆記',
-    body: '規則：\n一、聽到哼歌聲，代表她在附近閒晃。\n二、哼歌聲突然停了——快跑。\n三、跑不掉就躲進鐵櫃，千萬別讓她看到你躲進去。\n四、手電筒的光會讓她更容易發現你，不必要時關掉。\n五、不要在黑暗裡待太久，你會開始看見不存在的東西。',
-  },
-  {
-    title: '主治醫師日誌',
-    body: '第 41 次「治療」。\n\n電擊之後，患者 0713 對強光產生劇烈反應。相機的閃光燈會讓她僵住好幾秒，像是被釘在原地。\n\n護理師說半夜看見她站在走廊盡頭，可是那時候她明明被綁在床上。\n\n我開始不確定我們在治療的是什麼。',
-  },
-  {
-    title: '病歷　編號 0713',
-    body: '姓名：林○蓮　性別：女　年齡：27\n職業：本院七樓護理師\n入院原因：產後精神失常\n\n患者堅稱她的孩子還在醫院裡，每晚穿著護理服在走廊上「巡房」、尋找。\n拒絕進食。整夜哼著同一首搖籃曲。\n\n備註：嬰兒於入院當天死亡。患者未被告知。',
-  },
-  {
-    title: '蠟筆畫',
-    body: '（一張孩子的蠟筆畫。一個長頭髮的白衣女人牽著一個小孩。）\n\n背面歪歪扭扭地寫著：\n「媽媽一直在找我。\n　我在這裡呀。\n　為什麼她看不到我？」',
-  },
-  {
-    title: '最後的錄音逐字稿',
-    body: '……如果有人找到這個……\n\n她不是要傷害我們。她只是在找她的孩子。可是只要被她抓到的人，就再也沒有出來過。\n\n發電機一啟動，她會發狂。全部的燈都亮的那一刻，往大門跑，不要回頭。\n\n不要——（錄音中斷）',
-  },
-];
-
+// 文件（紙條）的內容在 src/docs.js
 export const WALL_WRITINGS = ['救救我', '她在看你', '不要回頭', '707', '媽媽在哪裡', '快逃', '別出聲', '她聽得到'];
 
 // ---------------------------------------------------------------------------
@@ -237,7 +208,8 @@ const ITEM_KINDS = [['batteries', 6], ['bottles', 4], ['film', 3], ['pills', 3]]
 export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   count = Math.max(1, Math.min(MAX_FLOORS, Math.floor(Number(count)) || 1));
   const t0 = resolveTheme(theme, seed >>> 0);
-  const all = [0, 1, 2, 3, 4, 5, 6];
+  // 這一局出現的文件：主線七份 + 由種子挑的支線（src/docs.js 的 pickDocs）
+  const all = pickDocs(seed >>> 0, count);
   // 多人：每個人的手電筒各自耗電、底片各自用，道具卻只有一份 → 每多一個人多放幾成（COOP_ITEMS）
   const np = Math.max(1, Math.min(4, Math.floor(Number(opts.players)) || 1));
   const totalOf = (kind, def, floorsK) => {
@@ -275,6 +247,9 @@ export function planHospital(seed, theme, count = 1, diff = null, opts = {}) {
   floors[0].notes.push(0);
   gen.notes.push(6);
   rng.shuffle([1, 2, 3, 4, 5]).forEach((n, k) => floors[k % count].notes.push(n));
+  // 支線文件：另一個亂數來源（不影響上面的分配），平均分到每一層
+  const drng = new RNG((seed ^ 0x2f0b4c19) >>> 0);
+  drng.shuffle(all.filter((n) => n > 6)).forEach((n, k) => floors[k % count].notes.push(n));
   for (const f of floors) f.notes.sort((a, b) => a - b);
   // 電池、瓶子、底片、鎮定劑：總量比單層多一半左右，平均分到每一層
   for (const [kind, def] of ITEM_KINDS) {
@@ -1882,7 +1857,6 @@ function floorPoint(lv, rng, bounds, margin = 0.45) {
 }
 
 function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6], P0 = {}) {
-  const has = (n) => notes.includes(n);
   const usedRooms = new Map();
   const spotInRoom = (room, preferSurface = true) => {
     const furn = lv.furniture.filter((f) => f.room === room.id && FURN[f.kind].surf && f.kind !== 'locker');
@@ -1918,30 +1892,40 @@ function placeItems(lv, rng, diff, notes = [0, 1, 2, 3, 4, 5, 6], P0 = {}) {
 
   for (const room of lv.fuseRooms) add('fuse', () => spotInRoom(room), { room: room.id });
 
-  // 筆記（多層樓時只放分配到這一層的那幾張）
+  // 文件（多層樓時只放分配到這一層的那幾份）：照每一份的 place 找房間
+  //   lobby 大廳櫃檯、gen 發電機房、story 劇情房間、nurse 護理站、office 辦公室 / 手術室、corridor 走廊、
+  //   locker 有鐵櫃的房間、near 離大廳近的房間、far 離大廳遠的房間、any 任何房間
+  // 主線照編號由近到遠（能選的時候）；同一個房間盡量不放兩份
   const lobby = lv.lobby;
-  if (has(0)) {
-    const counter = lv.furniture.find((f) => f.room === lobby.id && f.kind === 'counter');
-    add('note', () => (counter ? surfacePoint(rng, counter) : spotInRoom(lobby)), { note: 0 });
-  }
   const others = lv.rooms.filter((rm) => rm.id > 0 && rm !== lobby);
-  if (has(1)) {
-    const nurse = lv.rooms.find((rm) => rm.type === 'nurse');
-    const nurseRoom = nurse || rng.pick(others);
-    add('note', () => spotInRoom(nurseRoom), { note: 1 });
+  const noteRooms = new Set();
+  const fresh = (list) => { const f = list.filter((rm) => !noteRooms.has(rm.id)); return f.length ? f : list; };
+  const byDist = (list, t) => { const srt = list.slice().sort((a, b) => (a.dist || 0) - (b.dist || 0) || a.id - b.id); return srt[Math.round(t * (srt.length - 1))]; };
+  const plain = others.filter((rm) => rm.type !== 'generator' && rm.type !== 'landing' && rm !== lv.room707 && rm.locked === undefined && !rm.gated);
+  const anyRoom = () => rng.pick(fresh(plain.length ? plain : others));
+  for (const n of notes) {
+    const D = DOCS[n];
+    if (!D) continue;
+    let room = null, pick = null;
+    switch (D.place) {
+      case 'lobby': {
+        const counter = lv.furniture.find((f) => f.room === lobby.id && f.kind === 'counter');
+        pick = () => (counter ? surfacePoint(rng, counter) : spotInRoom(lobby));
+        break;
+      }
+      case 'gen': room = lv.generatorRoom || anyRoom(); break;
+      case 'story': room = lv.room707 || anyRoom(); break;
+      case 'nurse': { const c = others.filter((rm) => rm.type === 'nurse'); room = c.length ? byDist(fresh(c), 0) : anyRoom(); break; }
+      case 'office': { const c = others.filter((rm) => rm.type === 'office' || rm.type === 'operating'); room = c.length ? rng.pick(fresh(c)) : anyRoom(); break; }
+      case 'locker': { const c = plain.filter((rm) => lv.lockers.some((l) => l.furn.room === rm.id)); room = c.length ? rng.pick(fresh(c)) : anyRoom(); break; }
+      case 'near': room = byDist(fresh(plain.length ? plain : others), rng.range(0, 0.25)); break;
+      case 'far': room = byDist(fresh(plain.length ? plain : others), rng.range(0.75, 1)); break;
+      case 'corridor': { const fb = anyRoom(); pick = () => spotInCorridor() || spotInRoom(fb); break; }
+      default: room = anyRoom();
+    }
+    if (room) { noteRooms.add(room.id); pick = () => spotInRoom(room); }
+    add('note', pick, { note: n });
   }
-  if (has(2)) {
-    const fallback = rng.pick(others);
-    add('note', () => spotInCorridor() || spotInRoom(fallback), { note: 2 });
-  }
-  if (has(3)) {
-    const office = rng.shuffle(others.filter((rm) => rm.type === 'office' || rm.type === 'operating'))[0] || rng.pick(others);
-    add('note', () => spotInRoom(office), { note: 3 });
-  }
-  const r707 = (has(4) || has(5)) ? lv.room707 || rng.pick(others) : null;
-  if (has(4)) add('note', () => spotInRoom(r707), { note: 4 });
-  if (has(5)) add('note', () => spotInRoom(r707), { note: 5 });
-  if (has(6) && lv.generatorRoom) add('note', () => spotInRoom(lv.generatorRoom), { note: 6 });
 
   // 門禁卡：放在不用開任何鎖就走得到的房間（不在上鎖的房間、不在大廳）
   const xr = new RNG((lv.seed ^ 0x1b873593) >>> 0);

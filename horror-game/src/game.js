@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CELL, GHOST_R, DIFFICULTY, WALL_H } from './config.js';
-import { generateHospital, NOTES, E, MAX_FLOORS, KEY_COLORS, RELICS } from './level.js';
+import { generateHospital, E, MAX_FLOORS, KEY_COLORS, RELICS } from './level.js';
+import { DOCS, loadCollection, addToCollection } from './docs.js';
 import { Collision, NavGrid, validateLevel, sightClear, wallsBetween, SHUTTER_PASS } from './nav.js';
 import { TextureFactory } from './textures.js';
 import { World } from './world.js';
@@ -54,7 +55,8 @@ export class Game {
     this.eventFlicker = 0;
     this.staticBoost = 0;
     this.damage = 0;
-    this.notesRead = new Set();
+    this.notesRead = new Set();   // 這一局讀過的文件（DOCS 的 index）；多人時各自的，不同步
+    this.docsRun = [];            // 這一局出現的文件（generateHospital 之後填入；只看種子與樓層數，每個人算出來都一樣）
     // 遺物與儀式：放回搖籃的遺物、儀式進行中（演出）、儀式完成（她安息了，不會再出現）
     this.relicsPlaced = new Set();
     this.ritual = null;
@@ -96,6 +98,7 @@ export class Game {
     // 開局的安全時間：樓層越多要走的路越遠，每多一層多 25%
     this.grace = this.diff.grace * (1 + 0.25 * (this.floorCount - 1));
     for (const F of this.floors) for (const it of F.lv.items) it.floor = F.index;
+    this.docsRun = [...new Set(this.floors.flatMap((F) => F.lv.items.filter((it) => it.kind === 'note').map((it) => it.note)))].sort((a, b) => a - b);
     this.ground = this.floors[0];
     this.genFloor = this.floors.find((F) => F.lv.generatorRoom) || this.ground;
     this.altarFloor = this.floors.find((F) => F.lv.altar) || null;
@@ -381,6 +384,9 @@ export class Game {
     // 動作
     inp.crouchToggle = false;
     for (const a of inp.actions) {
+      // 檔案打開時：關閉由 ui 自己處理（按鈕、J、Esc），這裡什麼都不做
+      if (this.ui.journalOpen) continue;
+      if (a === 'journal') { if (this.ui.noteOpen) this.ui.closeNote(); this.openJournal(); continue; }
       if (this.ui.noteOpen) {
         if (a === 'interact' || a === 'tap' || a === 'confirm' || a === 'pause') { this.ui.closeNote(); P.locked = false; this.input.requestLock(); }
         continue;
@@ -399,7 +405,7 @@ export class Game {
         case 'pause': this.app.pause(); return;
       }
     }
-    if (this.ui.noteOpen) P.locked = true;
+    if (this.ui.noteOpen || this.ui.journalOpen) P.locked = true;
     // 多人合作：倒地倒數、按住互動（轉鐵捲門的把手、扶起隊友）；轉把手的時候站著不動
     if (this.downed) this.updateDowned(dt);
     if (this.mp) this.updateHolds(dt, inp);
@@ -748,13 +754,14 @@ export class Game {
         break;
       case 'note': {
         A.play('paper');
+        const first = !this.notesRead.has(it.note);
         this.notesRead.add(it.note);
-        const note = NOTES[it.note];
-        // 多層樓：維修工的紙條寫的是發電機房在哪一層
-        if (it.note === 1 && this.floorCount > 1) this.ui.showNote({ ...note, body: note.body.replace('發電機房在這層樓最裡面', `發電機房在${this.genFloor.info.board}最裡面`) });
-        else this.ui.showNote(note);
+        const D = DOCS[it.note];
+        if (D) addToCollection(D.id);
+        this.ui.showDoc(it.note, this.docOpts(it.note, it.floor));
         this.input.exitLock();
         P.locked = true;
+        if (first) this.ui.hint(`讀過的紀錄 ${this.notesRead.size}/${this.docsRun.length}（J：檔案）`, 3);
         break;
       }
     }
@@ -1454,11 +1461,11 @@ export class Game {
     this.input.exitLock();
     this.ui.prompt('');
     this.ui.fade(1, 1.6);
-    const allNotes = this.notesRead.size === NOTES.length;
+    const allNotes = this.docsRun.length > 0 && this.docsRun.every((n) => this.notesRead.has(n));
     const text = this.ritualStarted
       ? '三件遺物回到了搖籃裡。你走出大門的時候，身後的燈一盞一盞熄滅，最後一盞底下，一個穿護理服的女人抱著孩子，輕輕哼著那首搖籃曲。她終於找到了，也終於可以休息了。'
       : allNotes
-      ? '你讀完了所有的紀錄。走出大門時，你聽見身後傳來孩子的笑聲，和一聲很輕的「謝謝」。她終於找到了。'
+      ? '你讀完了這裡所有的紀錄。走出大門時，你聽見身後傳來孩子的笑聲，和一聲很輕的「謝謝」。她終於找到了。'
       : '你逃出了醫院。回家重看錄影時，最後一格畫面裡，她就站在你身後。';
     const best = this.app.recordBest(this.diffKey, this.time);
     const rows = [...this.statRows(), ...(best ? [['新紀錄！', fmtTime(this.time)]] : [])];
@@ -1547,7 +1554,8 @@ export class Game {
       ['難度', this.diff.label],
       ['時間', fmtTime(this.time)],
       ['保險絲', `${this.fusesInserted}/3`],
-      ['讀過的紀錄', `${this.notesRead.size}/${NOTES.length}`],
+      ['讀過的紀錄', `${this.notesRead.size}/${this.docsRun.length}`],
+      ['已收集的檔案', `${loadCollection().size}/${DOCS.length}`],
       ['放回的遺物', `${this.relicsPlaced.size}/3`],
       ...(this.ritualStarted ? [['結局', '安息']] : []),
       ['用閃光定住她', `${this.stats.stuns} 次`],
@@ -2164,7 +2172,30 @@ export class Game {
     this.post.render(dt);
   }
 
+  // 文件顯示的選項：多層樓時老陳的紙條寫的是發電機房在哪一層；燒毀的舊院區撿到的紙角是燒過的
+  docOpts(n, floor = this.floorIdx) {
+    const D = DOCS[n], F = this.floors[floor] || this.F;
+    const opts = { burned: !!F && F.theme === 'burned' };
+    if (D && D.id === 'memo' && this.floorCount > 1 && this.genFloor) {
+      const board = this.genFloor.info.board;
+      opts.rep = (s) => s.replace('發電機房在這層樓最裡面', `發電機房在${board}最裡面`);
+    }
+    return opts;
+  }
+  // 檔案（J、手機的「檔」、暫停選單）：這一局找到的文件 + 跨局收集。閱讀時她不會停下來（暫停中打開的除外）
+  openJournal(fromPause = false) {
+    if (this.ui.journalOpen) return;
+    const floorOf = new Map();
+    for (const F of this.floors) for (const it of F.lv.items) if (it.kind === 'note') floorOf.set(it.note, F.index);
+    if (!fromPause) { this.input.exitLock(); this.player.locked = true; }
+    this.ui.openJournal({ run: this.docsRun, found: this.notesRead, collected: loadCollection(), opts: (n) => this.docOpts(n, floorOf.get(n)) }, () => {
+      if (fromPause || this.over || this.disposed) return;
+      if (!this.ui.noteOpen) { this.player.locked = false; this.input.requestLock(); }
+    });
+  }
+
   dispose() {
+    this.ui.closeJournal(true);
     this.over = true;
     document.getElementById('specBar').hidden = true;
     this.disposed = true;

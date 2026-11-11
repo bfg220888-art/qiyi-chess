@@ -112,7 +112,7 @@ class App {
     };
     if (this.input.touchMode) for (const ev of ['touchend', 'click']) addEventListener(ev, unlock, true);
     this.input.onLockChange = (locked) => {
-      if (!locked && this.game && !this.paused && !this.game.over && !this.game.dying && !this.ui.noteOpen && !this.input.touchMode && !this.input.lockFailed && !this.allowUnlock) this.pause();
+      if (!locked && this.game && !this.paused && !this.game.over && !this.game.dying && !this.ui.noteOpen && !this.ui.journalOpen && !this.input.touchMode && !this.input.lockFailed && !this.allowUnlock) this.pause();
     };
     this.game = null;
     this.paused = false;

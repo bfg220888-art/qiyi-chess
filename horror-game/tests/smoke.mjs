@@ -176,29 +176,47 @@ await run('desktop', { viewport: { width: 1280, height: 720 } }, { quality: 'hig
   assert(nt && nt.includes('閱讀'), 'note target ' + nt);
   await sim(page, 0.05, { actions: ['interact'] });
   assert(await page.evaluate(() => !document.getElementById('note').hidden), 'note open');
-  // 紙條用毛筆字（SWBrush 三個子集都載入了、內文每個字都有對應的字型檔）、有血字與畫好的紙張
+  // 文件：照類型排版（.doc）、手寫 / 鉛字 / 毛筆三套字型都載入了、文件裡每個字都有對應的字型檔、紙畫好了
   const nf = await page.evaluate(async () => {
     await document.fonts.ready;
-    const body = document.getElementById('noteBody'), title = document.getElementById('noteTitle');
-    const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, '') === 'SWBrush');
-    const text = title.textContent + body.textContent;
+    const g = window.__SW.game, body = document.getElementById('noteBody'), paper = body.parentNode;
+    const faces = (fam) => [...document.fonts].filter((f) => f.family.replace(/"/g, '') === fam);
+    const pens = [...body.querySelectorAll('.f-pen')], prints = [...body.querySelectorAll('.f-print')];
     const c = document.querySelector('#note canvas.paper-bg');
     return {
-      family: getComputedStyle(body).fontFamily, tfamily: getComputedStyle(title).fontFamily,
-      faces: faces.length, loaded: faces.filter((f) => f.status === 'loaded').length,
-      check: document.fonts.check('18px SWBrush', text),
-      blood: body.querySelectorAll('.blood-ink').length, bloodColor: body.querySelector('.blood-ink') && getComputedStyle(body.querySelector('.blood-ink')).color,
-      canvas: c ? [c.width, c.height] : null, len: text.length,
+      doc: !!body.querySelector('.doc'), cls: paper.className,
+      pen: pens.length ? getComputedStyle(pens[0]).fontFamily : '', print: prints.length ? getComputedStyle(prints[0]).fontFamily : '',
+      faces: ['SWBrush', 'SWPen', 'SWPrint'].map((f) => faces(f).filter((x) => x.status === 'loaded').length),
+      check: document.fonts.check('18px SWPen', pens.map((e) => e.textContent).join('')) && document.fonts.check('18px SWPrint', prints.map((e) => e.textContent).join('')),
+      canvas: c ? [c.width, c.height] : null, painted: paper.classList.contains('painted'),
+      read: g.notesRead.size, run: g.docsRun.length, row: g.statRows().find((r) => r[0] === '讀過的紀錄')[1],
     };
   });
-  log('note font', JSON.stringify(nf));
-  assert(/^"?SWBrush"?,/.test(nf.family) && /^"?SWBrush"?,/.test(nf.tfamily), 'note uses the brush font ' + nf.family);
-  assert(nf.faces === 3 && nf.loaded === 3 && nf.check, 'brush font faces loaded and cover the note text');
-  assert(nf.blood > 0 && /rgb\((9\d|1[01]\d), \d, \d\)/.test(nf.bloodColor), 'key phrases written in blood ' + nf.bloodColor);
-  assert(nf.canvas && nf.canvas[0] > 200 && nf.canvas[1] > 200, 'paper canvas painted');
+  log('note', JSON.stringify(nf));
+  assert(nf.doc && /p-\w+/.test(nf.cls), 'document laid out by type');
+  assert((!nf.pen || /^"?SWPen"?,/.test(nf.pen)) && (!nf.print || /^"?SWPrint"?,/.test(nf.print)), 'document fonts ' + nf.pen + ' / ' + nf.print);
+  assert(nf.faces[0] === 3 && nf.faces[1] === 1 && nf.faces[2] === 1 && nf.check, 'document font faces loaded and cover the text ' + nf.faces);
+  assert(nf.canvas && nf.canvas[0] > 200 && nf.canvas[1] > 100 && nf.painted, 'paper canvas painted');
+  assert(nf.read === 1 && nf.run === 11 && nf.row === '1/11', 'notes read count ' + nf.row);
   await shot(page, 'd5-note');
   await sim(page, 0.05, { actions: ['interact'] });
   assert(await page.evaluate(() => document.getElementById('note').hidden), 'note closed');
+  // 檔案（J）：列出讀過的那一份，點一下可以重讀，J 關掉
+  await sim(page, 0.05, { actions: ['journal'] });
+  const jr = await page.evaluate(async () => {
+    const found = [...document.querySelectorAll('#journal .j-item.found')];
+    const out = { open: !document.getElementById('journal').hidden, found: found.length, missing: document.querySelectorAll('#journal .j-item.missing').length, count: document.getElementById('journalCount').textContent };
+    found[0].click();
+    await new Promise((r) => setTimeout(r, 50));
+    out.reader = !document.getElementById('journalReader').hidden && !!document.querySelector('#journalBody .doc');
+    return out;
+  });
+  log('journal', JSON.stringify(jr));
+  assert(jr.open && jr.found === 1 && jr.missing === 10 && jr.reader && /1\/11/.test(jr.count), 'journal lists the found document');
+  await shot(page, 'd5b-journal');
+  await page.keyboard.press('KeyJ');
+  assert(await page.evaluate(() => document.getElementById('journal').hidden && !window.__SW.game.ui.journalOpen), 'journal closed with J');
+  await sim(page, 0.05, {});
   // 配電箱
   const fb = await faceThing(page, 'fusebox');
   log('fusebox target', fb);
