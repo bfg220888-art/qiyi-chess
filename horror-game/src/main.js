@@ -1,6 +1,6 @@
 // 進入點：選單、設定、主迴圈
 import * as THREE from 'three';
-import { QUALITY, DIFFICULTY, MP_FLOORS } from './config.js';
+import { QUALITY, DIFFICULTY } from './config.js';
 import { AudioEngine } from './audio.js';
 import { Input, installTouchGuards } from './input.js';
 import { UI, fmtTime } from './ui.js';
@@ -8,7 +8,7 @@ import { Game } from './game.js';
 import { loadGhostAssets, prefetchGhost } from './ghost-real.js';
 import { loadPhotos, prefetchPhotos } from './textures.js';
 import { loadCorpses, prefetchCorpses } from './corpses.js';
-import { MP, SLOT_CSS, MAX_PLAYERS } from './mp.js';
+import { MP, SLOT_CSS, MAX_PLAYERS, cleanRoom, roomFloors } from './mp.js';
 import { loadBrushFont } from './fonts.js';
 import { normalizeCode } from './net.js';
 import { THEMES, RANDOM_THEME, resolveTheme, themeTitle } from './themes.js';
@@ -421,11 +421,15 @@ class App {
       return n || '無名氏';
     };
     const busy = (b) => { for (const id of ['btnMpCreate', 'btnMpJoin']) $(id).disabled = b; };
+    // 房間設定：預設用上次開房的設定（沒有就用主選單選的難度與地圖）
+    const savedRoom = () => cleanRoom(store.get('mpRoom', {}), cleanRoom({ difficulty: this.settings.difficulty, theme: this.settings.theme }));
+    mp.room = savedRoom();
+    this.mpRound = 0; // 每次開始 / 回大廳加一：載入到一半被取消的那一局用它認出自己過期了
     $('btnMp').addEventListener('click', () => { $('mpPanel').hidden = false; this.renderLobby(); });
     $('btnMpBack').addEventListener('click', () => { $('mpPanel').hidden = true; });
     $('btnMpCreate').addEventListener('click', async () => {
       busy(true);
-      try { await mp.create(getName()); } catch (e) { /* 狀態列已顯示原因 */ }
+      try { await mp.create(getName()); mp.room = savedRoom(); } catch (e) { /* 狀態列已顯示原因 */ }
       busy(false);
       this.renderLobby();
     });
@@ -450,10 +454,69 @@ class App {
     $('loadCancel').addEventListener('click', () => { mp.leave(); this.busy = false; this.state = 'menu'; this.toMenu(); this.renderLobby(); });
     $('btnMpStart').addEventListener('click', () => {
       if (!mp.isHost || this.busy) return;
-      // np：開局時的人數（2 人以上才有雙人鐵捲門；每個人都用這個數字生成同一棟醫院）
-      mp.start({ difficulty: this.settings.difficulty, seed: (Math.random() * 2 ** 31) | 0, theme: this.settings.theme || null, np: mp.players.length });
+      mp.startRound();
     });
-    mp.onChange(() => this.renderLobby());
+    // 房間設定（房主才能改；其他人看到的是同一組按鈕，只是按不動）
+    const pick = (segId, attr, toPatch) => {
+      for (const b of $(segId).querySelectorAll('button')) b.addEventListener('click', () => {
+        if (!mp.isHost) return;
+        if (mp.setRoom(toPatch(b.dataset[attr]))) store.set('mpRoom', mp.room);
+      });
+    };
+    pick('mpDiffSeg', 'diff', (v) => ({ difficulty: v }));
+    pick('mpThemeSeg', 'theme', (v) => ({ theme: v }));
+    pick('mpFloorSeg', 'floors', (v) => ({ floors: Number(v) }));
+    pick('mpReviveSeg', 'revive', (v) => ({ revive: v === '1' }));
+    // 複製房間代碼 / 邀請連結（連結帶 ?room=代碼，打開後只會幫忙填好代碼，不會自動加入）
+    const copy = async (text, okMsg) => {
+      let ok = false;
+      try { await navigator.clipboard.writeText(text); ok = true; } catch (e) { /* 沒有權限或不支援：改用舊方法 */ }
+      if (!ok) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;left:-99px;top:0;opacity:0';
+          document.body.append(ta);
+          ta.select();
+          ok = document.execCommand('copy');
+          ta.remove();
+        } catch (e) { ok = false; }
+      }
+      const out = $('mpCopyMsg');
+      out.textContent = ok ? okMsg : `複製失敗，請手動複製：${text}`;
+      clearTimeout(this.copyTimer);
+      this.copyTimer = setTimeout(() => { out.textContent = ''; }, ok ? 2500 : 15000);
+    };
+    $('btnMpCopy').addEventListener('click', () => { if (mp.code) copy(mp.code, '已複製房間代碼。'); });
+    $('btnMpLink').addEventListener('click', () => { if (mp.code) copy(this.inviteLink(mp.code), '已複製邀請連結。'); });
+    // 暫停選單（房主）：把大家帶回大廳、重新開始這一局
+    $('btnPauseLobby').addEventListener('click', () => mp.backToLobby());
+    $('btnPauseRestart').addEventListener('click', () => { if (mp.isHost && !this.busy) mp.startRound(); });
+    mp.onChange(() => { this.renderLobby(); this.renderLoadPlayers(); if (this.paused) this.renderPause(); });
+    // 邀請連結：?room=代碼 → 打開多人面板並填好代碼（要自己按「加入」）
+    const invited = normalizeCode(new URLSearchParams(location.search).get('room'));
+    if (invited.length === 5) {
+      code.value = invited;
+      $('mpPanel').hidden = false;
+      mp.setStatus(`已填入房間代碼 ${invited}，輸入名字後按「加入」。`);
+    }
+  }
+
+  // 邀請連結：目前的網址加上 ?room=代碼（本機測試用的 ?peer= 也帶著，其他參數不帶）
+  inviteLink(code) {
+    const u = new URL(location.href);
+    const peer = u.searchParams.get('peer');
+    u.search = '';
+    u.hash = '';
+    if (peer) u.searchParams.set('peer', peer);
+    u.searchParams.set('room', normalizeCode(code));
+    return u.toString();
+  }
+
+  // 房間設定的一行摘要：「普通・2 層樓・地圖：隨機・倒地救援：開」
+  roomSummary(r = this.mp.room) {
+    return `${DIFFICULTY[r.difficulty].label}・${roomFloors(r)} 層樓・地圖：${r.theme === RANDOM_THEME ? '隨機' : themeTitle(r.theme)}・倒地救援：${r.revive ? '開' : '關'}`;
   }
 
   renderLobby() {
@@ -461,6 +524,7 @@ class App {
     const inRoom = mp.active && (mp.isHost || mp.players.length > 0);
     $('mpSetup').hidden = mp.active;
     $('mpRoom').hidden = !inRoom;
+    document.querySelector('.panel.mp').classList.toggle('in-room', inRoom);
     $('mpStatus').textContent = mp.status;
     $('btnMpBack').hidden = false;
     if (!inRoom) return;
@@ -474,27 +538,130 @@ class App {
       dot.style.background = SLOT_CSS[p.slot] || '#888';
       const nm = document.createElement('span');
       nm.textContent = p.name;
+      nm.className = 'nm';
       const tag = document.createElement('span');
       tag.className = 'tag';
       tag.textContent = (p.slot === 0 ? '房主' : '') + (p.slot === mp.mySlot ? '（你）' : '');
       li.append(dot, nm, tag);
+      // 房主可以把人移出房間
+      if (mp.isHost && p.slot !== mp.mySlot) {
+        const k = document.createElement('button');
+        k.type = 'button';
+        k.className = 'mp-kick';
+        k.textContent = '移出';
+        k.setAttribute('aria-label', `把 ${p.name} 移出房間`);
+        k.addEventListener('click', () => mp.kick(p.slot));
+        li.append(k);
+      }
       ul.append(li);
     }
     $('btnMpStart').hidden = !mp.isHost;
-    $('mpRoomInfo').textContent = mp.isHost
-      ? `${mp.players.length}/${MAX_PLAYERS} 人・難度：${DIFFICULTY[this.settings.difficulty].label}・樓層：${MP_FLOORS[this.settings.difficulty]} 層・地圖：${this.settings.theme === RANDOM_THEME ? '隨機' : themeTitle(this.settings.theme)}（在主選單切換）`
-      : '等待房主開始遊戲……';
+    // 房間設定
+    const r = mp.room;
+    const mark = (segId, attr, val) => {
+      for (const b of $(segId).querySelectorAll('button')) {
+        b.setAttribute('aria-checked', String(b.dataset[attr] === String(val)));
+        b.disabled = !mp.isHost;
+      }
+    };
+    mark('mpDiffSeg', 'diff', r.difficulty);
+    mark('mpThemeSeg', 'theme', r.theme);
+    mark('mpFloorSeg', 'floors', r.floors);
+    mark('mpReviveSeg', 'revive', r.revive ? 1 : 0);
+    $('mpSetHead').textContent = mp.isHost ? '房間設定（開始前隨時可以改）' : '房間設定（由房主決定）';
+    $('mpDiffDesc').textContent = `${DIFFICULTY[r.difficulty].label}・${roomFloors(r)} 層樓：${DIFFICULTY[r.difficulty].desc}`;
+    $('mpThemeDesc').textContent = r.theme === RANDOM_THEME ? '每一局隨機挑一層樓。' : `${themeTitle(r.theme)}：${THEMES[r.theme].desc}`;
+    $('mpRoomInfo').textContent = `${mp.players.length}/${MAX_PLAYERS} 人` + (mp.isHost ? (mp.players.length < 2 ? '・把代碼或邀請連結傳給朋友' : '') : '・等待房主開始遊戲……');
+    $('mpRoomInfo').title = this.roomSummary();
+  }
+
+  // 載入畫面上每個人的載入狀態（多人）：「載入中 62%」→「準備好了」
+  renderLoadPlayers() {
+    const mp = this.mp, ul = $('loadPlayers');
+    const show = mp.active && !!mp.startOpts && !mp.began && !$('loading').hidden && mp.players.length > 0;
+    ul.hidden = !show;
+    if (!show) return;
+    ul.textContent = '';
+    for (const p of mp.players) {
+      const li = document.createElement('li');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = SLOT_CSS[p.slot] || '#888';
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = p.name + (p.slot === mp.mySlot ? '（你）' : '');
+      const st = document.createElement('span');
+      st.className = 'tag' + (p.ready ? ' ok' : '');
+      st.textContent = p.ready ? '準備好了' : `載入中 ${Math.round(p.prog || 0)}%`;
+      li.append(dot, nm, st);
+      ul.append(li);
+    }
+  }
+
+  // 暫停選單：多人時顯示房主是誰、這一局的房間設定；房主多兩個按鈕
+  renderPause() {
+    const mp = this.mp, mpg = !!(this.game && this.game.mp && mp.active);
+    $('pauseRoom').hidden = !mpg;
+    $('btnPauseLobby').hidden = $('btnPauseRestart').hidden = !(mpg && mp.isHost);
+    $('btnQuit').textContent = mpg ? (mp.isHost ? '離開房間（房間會關閉）' : '離開房間') : '回主選單';
+    $('pauseTitle').textContent = mpg ? '選單' : '暫停';
+    if (mpg) $('pauseRoom').textContent = `房主：${mp.slotName(0)}${mp.isHost ? '（你）' : ''}\n${this.roomSummary().replace('・倒地救援', '\n倒地救援')}\n` + (mp.isHost ? '' : '只有房主能改設定或重新開始。') + '多人遊戲不會暫停。';
+  }
+
+  // 從網路收到（或房主自己組出）的開始訊息 → 這一局的設定。每一欄都不可信任：
+  // 難度、地圖、樓層數、倒地救援只接受允許的值；種子要是整數；開局人數只接受 1～4 的整數
+  mpRoundOpts(opts) {
+    const room = cleanRoom(opts);
+    return {
+      difficulty: room.difficulty,
+      theme: room.theme,
+      floors: roomFloors(room),
+      revive: room.revive,
+      seed: opts && Number.isInteger(opts.seed) ? opts.seed : 1,
+      players: opts && Number.isInteger(opts.np) && opts.np >= 1 && opts.np <= MAX_PLAYERS ? opts.np : 1,
+    };
   }
 
   // 房主按下開始（或收到房主的開始訊息）
   startMpGame(opts) {
-    const diff = Object.hasOwn(DIFFICULTY, opts.difficulty) ? opts.difficulty : 'normal';
-    const seed = Number.isInteger(opts.seed) ? opts.seed : 1;
+    this.mpRound++;
+    // 上一局還在載入（房主重新開始得很快）：等它載入完、發現自己過期之後再開始這一局
+    if (this.busy) { this.pendingMpStart = opts; return; }
+    this.pendingMpStart = null;
+    const o = this.mpRoundOpts(opts);
+    // 遊戲中被房主重新開始：先把這一局收乾淨
+    const midRound = this.state === 'playing' && !!this.game;
     if (this.state === 'playing' || this.state === 'intro' || this.state === 'over') this.disposeGame();
+    this.pendingBegin = null;
+    this.resetRoundUi();
+    if (midRound) this.state = 'intro';
     this.mpGo = false;
-    // 樓層數由難度決定（每個人自己算，不相信訊息裡的數字）；開局人數只接受 1～4 的整數
-    const np = Number.isInteger(opts.np) && opts.np >= 1 && opts.np <= MAX_PLAYERS ? opts.np : 1;
-    this.startGame(seed, true, typeof opts.theme === 'string' ? opts.theme : RANDOM_THEME, { difficulty: diff, floors: MP_FLOORS[diff], players: np });
+    this.startGame(o.seed, true, o.theme, { difficulty: o.difficulty, floors: o.floors, players: o.players, revive: o.revive, round: this.mpRound, tip: midRound && !this.mp.isHost ? '房主重新開始了這一局。' : '' });
+  }
+  // 一局中途結束（回大廳、重新開始）：把畫面上屬於那一局的東西都收掉
+  resetRoundUi() {
+    this.paused = false;
+    this.input.enabled = false;
+    ['pause', 'end', 'hud', 'touch', 'settings', 'help', 'note', 'mapView', 'hideOverlay', 'specBar'].forEach((id) => { $(id).hidden = true; });
+    const ui = this.ui;
+    ui.showDowned(false);
+    ui.setHold(0);
+    ui.prompt('');
+    ui.setDetect(null);
+    ui.hidePhoto();
+    ui.damage(0);
+    ui.setHiding(false);
+    ui.setFps(false);
+    ui.fade(0, 0.01);
+  }
+  // 房主把所有人帶回大廳（房主自己也走這裡）：這一局直接結束，不顯示結算，房間留著
+  mpBackToLobby(notice) {
+    this.mpRound++;
+    this.pendingMpStart = null;
+    if (notice) this.mp.status = notice;
+    // 還在載入：等載入完，startGame 會發現這一局過期了，自己收掉再回大廳
+    if (this.busy) { this.mp.endRound(); return; }
+    this.toMenu(true);
   }
   mpBegin() {
     this.mpGo = true;
@@ -541,13 +708,26 @@ class App {
     await this.audio.resume();
     this.disposeGame();
     if (!mpOpts && this.mp.active) this.mp.leave();
+    // 多人：載入期間房主又按了重新開始 / 回大廳 → 這一局過期了
+    const stale = () => !!mpOpts && mpOpts.round !== this.mpRound;
+    const dropStale = (game) => {
+      if (game) { game.dispose(); if (this.mp.game === game) { this.mp.game = null; this.mp.inGame = false; } }
+      this.busy = false;
+      $('loading').hidden = true;
+      const next = this.pendingMpStart;
+      this.pendingMpStart = null;
+      if (next && this.mp.active) this.startMpGame(next);
+      else this.toMenu(true);
+    };
     this.quality = this.qualityPreset();
     this.resScale = 1;
     ['menu', 'mpPanel', 'end', 'pause', 'help', 'settings', 'note', 'mapView', 'hideOverlay'].forEach((id) => { $(id).hidden = true; });
     this.ui.setHiding(false);
     this.ui.fade(0, 0.01);
     $('loading').hidden = false;
-    $('loadTip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+    $('loadTip').textContent = (mpOpts && mpOpts.tip) || TIPS[Math.floor(Math.random() * TIPS.length)];
+    $('loadPlayers').hidden = true;
+    if (mpOpts) this.renderLoadPlayers();
     seed = seed ?? (Math.random() * 2 ** 31) | 0;
     theme = resolveTheme(theme ?? this.settings.theme, seed >>> 0);
     // 樓層數：多人依難度；單人 1 層（網址加 ?floors=2 或 3 可以測試多層樓）
@@ -557,25 +737,31 @@ class App {
     if (touch) {
       await this.enterFullscreen();
     }
+    if (stale()) { dropStale(null); return; }
     const game = new Game(this, {
       difficulty: mpOpts ? mpOpts.difficulty : this.settings.difficulty,
       seed, theme, floors,
       players: mpOpts ? mpOpts.players : 1,
+      revive: mpOpts ? mpOpts.revive : true,
       mp: mpOpts ? this.mp : null,
     });
     try {
       await game.build((p, msg) => {
         $('loadBar').style.width = (p * 100).toFixed(0) + '%';
         if (msg) document.querySelector('.load-title').textContent = msg;
+        // 多人：把自己的載入進度告訴大家（留 1% 給「準備好了」）
+        if (mpOpts && !stale()) this.mp.localProgress(Math.min(0.99, p));
       });
     } catch (e) {
       console.error(e);
+      if (stale()) { dropStale(null); return; }
       this.busy = false;
       $('loading').hidden = true;
       if (mpOpts) this.mp.leave();
       this.fatal('生成醫院時發生錯誤：' + (e && e.message ? e.message : e));
       return;
     }
+    if (stale()) { dropStale(game); return; }
     this.game = game;
     this.applyView();
     this.applyPower();
@@ -613,6 +799,7 @@ class App {
         $('loadBar').style.width = '100%';
         document.querySelector('.load-title').textContent = '等待其他玩家載入……';
         this.mp.localReady();
+        this.renderLoadPlayers();
       }
       return;
     }
@@ -649,6 +836,7 @@ class App {
     this.input.exitLock();
     this.allowUnlock = false;
     if (!this.game.mp) this.audio.suspend();
+    this.renderPause();
     $('pause').hidden = false;
     this.input.enabled = false;
   }
@@ -670,18 +858,17 @@ class App {
       setTimeout(() => { if (this.state === 'playing' && !this.paused && !this.input.locked) this.ui.hint('點一下畫面恢復滑鼠視角', 3); }, 500);
     }
   }
-  toMenu() {
+  // keepRoom：房主把大家帶回大廳（遊戲還沒結束也留在房間裡）
+  toMenu(keepRoom = false) {
     // 遊戲還沒結束就離開 = 退出房間（房主離開則整局結束）
-    if (this.mp.active && this.game && this.game.mp && !this.game.over) this.mp.leave();
+    if (keepRoom !== true && this.mp.active && this.game && this.game.mp && !this.game.over) this.mp.leave();
+    const wasMp = !!(this.game && this.game.mp);
     this.disposeGame();
     this.pendingBegin = null;
+    if (wasMp) this.resetRoundUi();
     if (this.mp.active) {
       // 留在房間裡，回到大廳可以再玩一局
-      this.mp.inGame = false;
-      this.mp.game = null;
-      this.mp.began = false;
-      this.mp.startOpts = null;
-      for (const p of this.mp.players) p.ready = p.slot === this.mp.mySlot;
+      this.mp.endRound();
       $('mpPanel').hidden = false;
       this.renderLobby();
     }
@@ -708,7 +895,7 @@ class App {
     const mpg = !!(this.game && this.game.mp);
     $('btnRetry').hidden = mpg;
     $('btnNew').hidden = mpg;
-    $('btnMenu').textContent = mpg ? '回到大廳' : '主選單';
+    $('btnMenu').textContent = mpg && this.mp.active ? '回到大廳' : '主選單';
     this.input.enabled = false;
     $('touch').hidden = true;
     $('hud').hidden = true;

@@ -74,6 +74,8 @@ export class Game {
     // 多人合作：倒地（{ t: 剩下幾秒 }）、這一局被扶起來過了沒、正在扶誰、正在轉哪一道鐵捲門的把手
     this.downed = null;
     this.reviveUsed = false;
+    // 倒地救援（多人的房間設定）：關掉的話被抓到就直接被帶走
+    this.reviveOn = opts.revive !== false;
     this.reviving = null;
     this.cranking = null;
     this.mpRevives = new Map(); // 房主：誰正在被誰扶（{ by, start, last }）
@@ -1125,7 +1127,7 @@ export class Game {
       return;
     }
     // 多人：還有站著的隊友、這一局還沒被扶過 → 先倒地（依難度 40 / 30 / 25 秒），等人來扶
-    if (this.mp && !this.reviveUsed && this.mpTeammateUp()) { this.startDowned(); return; }
+    if (this.mp && this.reviveOn && !this.reviveUsed && this.mpTeammateUp()) { this.startDowned(); return; }
     this.startDying(fromLocker);
   }
 
@@ -2154,7 +2156,7 @@ export class Game {
     this.over = true;
     this.audio.stopAll();
     this.input.exitLock();
-    this.ui.showEnd(false, this.statRows(), '房主斷線了，這一局沒辦法繼續。');
+    this.ui.showEnd(false, this.statRows(), '房主離開或斷線了，這一局沒辦法繼續。房間已經關閉，請回主選單重新建立或加入房間。');
     this.app.onGameOver(false);
   }
 

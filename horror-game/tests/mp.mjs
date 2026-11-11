@@ -1,5 +1,6 @@
 // 多人連線測試：本機架一個 PeerJS 配對伺服器，開 3 個無頭瀏覽器分頁一起玩，
-// 檢查大廳、開始、位置、門、道具、保險絲、女鬼、被抓與結算是否同步。
+// 檢查大廳（房間設定、邀請連結、移出玩家）、開始、位置、門、道具、保險絲、女鬼、被抓與結算是否同步，
+// 以及房主在遊戲中「重新開始這一局」「回到大廳（所有人）」之後換設定再開一局。
 //   node tests/mp.mjs
 import { chromium } from 'playwright-core';
 import path from 'node:path';
@@ -119,11 +120,73 @@ try {
   const slots = await Promise.all(pages.map((p) => p.evaluate(() => window.__SW.mp.mySlot)));
   check(new Set(slots).size === N, `unique slots ${slots}`);
 
+  // 房間設定：房主在大廳裡改難度、地圖、樓層數、倒地救援 → 其他人的大廳馬上看到（唯讀）
+  const roomOf = (p) => p.evaluate(() => ({ ...window.__SW.mp.room, desc: document.getElementById('mpDiffDesc').textContent, theme2: document.querySelector('#mpThemeSeg [aria-checked="true"]').dataset.theme, dis: [...document.querySelectorAll('#mpRoom .seg button')].every((b) => b.disabled) }));
+  const setRoom = async (sel) => { for (const q of sel) await host.evaluate((q) => document.querySelector(q).click(), q); };
+  await setRoom(['#mpDiffSeg [data-diff="nightmare"]', '#mpThemeSeg [data-theme="burned"]', '#mpFloorSeg [data-floors="1"]', '#mpReviveSeg [data-revive="0"]']);
+  for (const c of clients) await until(c, () => { const r = window.__SW.mp.room; return r.difficulty === 'nightmare' && r.theme === 'burned' && r.floors === 1 && r.revive === false; });
+  const r1 = await roomOf(clients[0]);
+  check(/惡夢・1 層樓/.test(r1.desc) && r1.theme2 === 'burned' && r1.dis, `clients see host room settings read-only (${r1.desc.slice(0, 12)})`);
+  // 其他人按設定按鈕沒有作用；假冒房主送大廳 / 開始 / 回大廳 / 載入進度訊息，房主不理
+  await clients[0].evaluate(() => {
+    const b = document.querySelector('#mpDiffSeg [data-diff="easy"]'); b.disabled = false; b.click();
+    const A = window.__SW, n = A.mp.net;
+    A.mp.setRoom({ difficulty: 'easy' });
+    n.broadcast({ t: 'lobby', players: [], room: { difficulty: 'easy', theme: 'ward', floors: 3, revive: true } });
+    n.broadcast({ t: 'start', difficulty: 'easy', seed: 5, theme: 'ward', np: 1, rd: 1 });
+    n.broadcast({ t: 'back' });
+    n.broadcast({ t: 'prog', l: [[0, 100, 1]] });
+    n.broadcast({ t: 'prog', p: 'x' });
+  });
+  await host.waitForTimeout(500);
+  const hr = await host.evaluate(() => ({ r: window.__SW.mp.room, st: window.__SW.state, n: window.__SW.mp.players.length, so: !!window.__SW.mp.startOpts }));
+  check(hr.r.difficulty === 'nightmare' && hr.r.theme === 'burned' && hr.r.floors === 1 && hr.st === 'menu' && hr.n === N && !hr.so, 'host ignores settings / start / back messages from a player');
+  check((await roomOf(clients[0])).difficulty === 'nightmare', 'a player cannot change the room settings locally');
+  // 改回這份測試後面要用的設定：普通（自動 = 2 層）、手術樓層、倒地救援開
+  await setRoom(['#mpDiffSeg [data-diff="normal"]', '#mpThemeSeg [data-theme="surgery"]', '#mpFloorSeg [data-floors="0"]', '#mpReviveSeg [data-revive="1"]']);
+  for (const c of clients) await until(c, () => { const r = window.__SW.mp.room; return r.difficulty === 'normal' && r.theme === 'surgery' && r.floors === 0 && r.revive === true; });
+  check(/普通・2 層樓/.test((await roomOf(clients[0])).desc), 'settings update live (普通・2 層樓)');
+  // 壞掉的大廳訊息：不合法的欄位全部不理（難度、地圖、樓層數、倒地救援都維持原樣），名單照樣更新
+  const junkRoom = await clients[0].evaluate(() => {
+    const mp = window.__SW.mp, players = mp.players.map(({ slot, id, name }) => ({ slot, id, name }));
+    for (const room of [{ difficulty: '__proto__', theme: 'constructor', floors: 99, revive: 'no' }, { difficulty: 'toString', theme: 7, floors: '2', revive: 0 }, { difficulty: ['easy'], theme: null, floors: 1.5, revive: null }, 'easy', null, 5, [1, 2]]) mp.onMsg({ t: 'lobby', players, room }, mp.net.hostId);
+    const kept = { ...mp.room };
+    // 只有一欄合法：只改那一欄
+    mp.onMsg({ t: 'lobby', players, room: { difficulty: 'hasOwnProperty', floors: 3 } }, mp.net.hostId);
+    const one = { ...mp.room };
+    mp.onMsg({ t: 'lobby', players, room: { floors: 0 } }, mp.net.hostId);
+    return { kept, one, n: mp.players.length, proto: Object.getPrototypeOf(mp.room) === Object.prototype };
+  });
+  check(junkRoom.kept.difficulty === 'normal' && junkRoom.kept.theme === 'surgery' && junkRoom.kept.floors === 0 && junkRoom.kept.revive === true && junkRoom.one.difficulty === 'normal' && junkRoom.one.floors === 3 && junkRoom.n === N && junkRoom.proto, `junk room settings in a lobby message are ignored ${JSON.stringify(junkRoom.kept)}`);
+  // 壞掉的開始訊息：每一欄都退回預設值，不會讓遊戲用奇怪的設定開始
+  const junkStart = await clients[0].evaluate(() => {
+    const A = window.__SW;
+    return [A.mpRoundOpts({ difficulty: '__proto__', theme: 'constructor', floors: 9, revive: 'x', seed: 'abc', np: 99 }), A.mpRoundOpts({ difficulty: 'nightmare', theme: 'toString', floors: -1, revive: 1, seed: 1.5, np: 0 }), A.mpRoundOpts(null), A.mpRoundOpts({ difficulty: 'easy', theme: 'ward', floors: 3, revive: false, seed: 42, np: 3 })];
+  });
+  check(junkStart[0].difficulty === 'normal' && junkStart[0].theme === 'random' && junkStart[0].floors === 2 && junkStart[0].revive === true && junkStart[0].seed === 1 && junkStart[0].players === 1
+    && junkStart[1].difficulty === 'nightmare' && junkStart[1].theme === 'random' && junkStart[1].floors === 3 && junkStart[1].revive === true && junkStart[1].players === 1
+    && junkStart[2].difficulty === 'normal' && junkStart[2].floors === 2
+    && junkStart[3].difficulty === 'easy' && junkStart[3].theme === 'ward' && junkStart[3].floors === 3 && junkStart[3].revive === false && junkStart[3].seed === 42 && junkStart[3].players === 3, 'junk fields in a start message fall back to safe values');
+  // 複製代碼 / 邀請連結
+  await host.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+  await host.evaluate(() => document.getElementById('btnMpCopy').click());
+  await until(host, () => /已複製|複製失敗/.test(document.getElementById('mpCopyMsg').textContent));
+  const link = await host.evaluate(() => window.__SW.inviteLink(window.__SW.mp.code));
+  check(new URL(link).searchParams.get('room') === code && !/debug/.test(link), `invite link ${link.replace(/^.*\?/, '?')}`);
+
+  // 載入進度：記下載入畫面上出現過的狀態文字
+  for (const p of pages) await p.evaluate(() => { window.__prog = new Set(); window.__SW.mp.onChange(() => { for (const li of document.querySelectorAll('#loadPlayers:not([hidden]) li')) window.__prog.add(li.textContent.replace(/\d+/, 'N')); }); });
+
   // 開始
   await host.evaluate(() => document.getElementById('btnMpStart').click());
   for (const p of pages) await until(p, () => window.__SW.state === 'playing', null, 180000);
   check(true, `all playing (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
   for (const p of pages) await throttleRender(p);
+  const cfg = await Promise.all(pages.map((p) => p.evaluate(() => { const g = window.__SW.game; return `${g.diffKey}/${g.theme}/${g.floors.length}/${g.reviveOn}`; })));
+  check(cfg.every((c) => c === 'normal/surgery/2/true'), `round uses the lobby settings on every peer (${cfg[0]})`);
+  const prog = await Promise.all(pages.map((p) => p.evaluate(() => [...window.__prog])));
+  log('load states', JSON.stringify(prog[1]));
+  check(prog.every((l) => l.some((t) => /載入中 N%/.test(t)) && l.some((t) => /準備好了/.test(t))), 'loading screen shows each player loading % → ready');
   const seeds = await Promise.all(pages.map((p) => p.evaluate(() => window.__SW.game.seed)));
   check(new Set(seeds).size === 1, 'same seed');
   const sig = await Promise.all(pages.map((p) => p.evaluate(() => { const lv = window.__SW.game.lv; return `${lv.doors.length}/${lv.items.length}/${lv.lockers.length}`; })));
@@ -558,18 +621,86 @@ try {
   log('end', rows.slice(0, 80));
   check(/逃出去了/.test(rows) && /被帶走了/.test(rows), 'end screen lists results');
 
-  // 回大廳再開一局
+  // 回大廳
   await host.evaluate(() => document.getElementById('btnMenu').click());
   await until(host, () => !document.getElementById('mpPanel').hidden && !document.getElementById('btnMpStart').hidden);
   for (const c of clients) await c.evaluate(() => document.getElementById('btnMenu').click());
+
+  // 邀請連結：?room=代碼 只會填好代碼、打開多人面板，不會自動加入；按「加入」才進房間。房主可以把人移出房間
+  {
+    const ctx = await browser.newContext({ viewport: { width: 400, height: 240 } });
+    const extra = await ctx.newPage();
+    extra.on('pageerror', (e) => errors.push(`[extra] pageerror: ${e.message}`));
+    await extra.goto(`${base}&room=${encodeURIComponent(' ' + code.toLowerCase().split('').join('-') + '!!zz')}`);
+    await extra.waitForFunction(() => window.__SW);
+    await extra.waitForTimeout(1200);
+    const pre = await extra.evaluate(() => ({ v: document.getElementById('mpCode').value, panel: !document.getElementById('mpPanel').hidden, active: window.__SW.mp.active, st: document.getElementById('mpStatus').textContent }));
+    check(pre.v === code && pre.panel && !pre.active && pre.st.includes(code), `?room= pre-fills the code without joining (${pre.v})`);
+    if (N < 4) {
+      await extra.fill('#mpName', '路人');
+      await extra.click('#btnMpJoin');
+      for (const p of pages) await until(p, (n) => document.querySelectorAll('#mpList li').length === n, N + 1);
+      await until(extra, (n) => document.querySelectorAll('#mpList li').length === n, N + 1);
+      check(await extra.evaluate(() => window.__SW.mp.room.theme === 'surgery' && document.querySelectorAll('.mp-kick').length === 0), 'late joiner gets the room settings (and no kick buttons)');
+      // 玩家不能移出別人
+      await clients[0].evaluate(() => window.__SW.mp.kick(0));
+      await host.evaluate(() => { const b = document.querySelectorAll('#mpList .mp-kick'); b[b.length - 1].click(); });
+      await until(extra, () => !window.__SW.mp.active && /移出/.test(document.getElementById('mpStatus').textContent));
+      for (const p of pages) await until(p, (n) => document.querySelectorAll('#mpList li').length === n && window.__SW.mp.active, N);
+      check(await extra.evaluate(() => !document.getElementById('mpSetup').hidden && document.getElementById('mpRoom').hidden), 'host kicks a player from the lobby');
+    }
+    await ctx.close();
+  }
+
+  // 第二局：換一組設定（簡單、指定 1 層、病房、倒地救援關）
+  await setRoom(['#mpDiffSeg [data-diff="easy"]', '#mpThemeSeg [data-theme="ward"]', '#mpFloorSeg [data-floors="1"]', '#mpReviveSeg [data-revive="0"]']);
+  for (const c of clients) await until(c, () => { const r = window.__SW.mp.room; return r.difficulty === 'easy' && r.theme === 'ward' && r.floors === 1 && r.revive === false && /簡單・1 層樓/.test(document.getElementById('mpDiffDesc').textContent); });
+  const roundCfg = () => Promise.all(pages.map((p) => p.evaluate(() => { const A = window.__SW, g = A.game; return { c: `${g.diffKey}/${g.theme}/${g.floors.length}/${g.reviveOn}`, seed: g.seed, fz: g.fusesInserted, st: g.mpStatus, rem: g.remotes.size, carried: A.mp.carried.size, res: A.mp.results.size, ui: ['end', 'pause', 'specBar', 'downed'].filter((id) => document.getElementById(id) && !document.getElementById(id).hidden), paused: A.paused }; })));
+  const cleanRound = (l) => l.every((r) => r.seed === l[0].seed && r.fz === 0 && r.st === 0 && r.rem === N - 1 && r.carried === 0 && r.res === 0 && r.ui.length === 0 && !r.paused);
+  const playing = async () => { for (const p of pages) await until(p, () => { const A = window.__SW; return A.state === 'playing' && A.game && A.game.mpStatus === 0 && !A.game.over && !A.busy; }, null, 180000); for (const p of pages) await throttleRender(p); };
   await host.evaluate(() => document.getElementById('btnMpStart').click());
-  for (const p of pages) await until(p, () => window.__SW.state === 'playing' && window.__SW.game.mpStatus === 0 && !window.__SW.game.over, null, 180000);
-  check(true, 'second round started');
+  await playing();
+  const c2 = await roundCfg();
+  check(c2.every((r) => r.c === 'easy/ward/1/false') && cleanRound(c2), `second round started with the new settings (${c2[0].c})`);
+
+  // 房主在遊戲中按「重新開始這一局」：同樣的設定、新的種子，上一局的東西不會留下來
+  await host.evaluate(() => { const g = window.__SW.game; g.applyFuse(g.fusesInserted++); });
+  await clients[0].evaluate(() => window.__SW.pause());
+  const pz = await clients[0].evaluate(() => ({ t: document.getElementById('pauseRoom').textContent, host: !document.getElementById('btnPauseLobby').hidden || !document.getElementById('btnPauseRestart').hidden }));
+  check(/房主：房主/.test(pz.t) && /簡單・1 層樓/.test(pz.t) && /倒地救援：關/.test(pz.t) && !pz.host, 'player pause menu shows the host and the room settings (no host buttons)');
+  await host.evaluate(() => window.__SW.pause());
+  check(await host.evaluate(() => !document.getElementById('btnPauseLobby').hidden && !document.getElementById('btnPauseRestart').hidden && !document.getElementById('pauseRoom').hidden), 'host pause menu has restart / back-to-lobby');
+  await host.evaluate(() => document.getElementById('btnPauseRestart').click());
+  for (const p of pages) await until(p, (s) => { const A = window.__SW; return A.state === 'playing' && A.game && A.game.seed !== s && !A.busy; }, c2[0].seed, 180000);
+  await playing();
+  const c3 = await roundCfg();
+  check(c3.every((r) => r.c === 'easy/ward/1/false') && cleanRound(c3) && c3[0].seed !== c2[0].seed, 'host restarts the round mid-game (same settings, new seed, clean state)');
+
+  // 房主在遊戲中按「回到大廳（所有人）」：每個人都回到大廳、房間還在、沒有結算畫面
+  await host.evaluate(() => { const g = window.__SW.game; g.applyFuse(g.fusesInserted++); });
+  await host.evaluate(() => window.__SW.pause());
+  await host.evaluate(() => document.getElementById('btnPauseLobby').click());
+  for (const p of pages) await until(p, () => { const A = window.__SW; return A.state === 'menu' && !A.game && !document.getElementById('mpPanel').hidden; });
+  const lob = await Promise.all(pages.map((p) => p.evaluate(() => { const A = window.__SW; return { active: A.mp.active, n: A.mp.players.length, list: document.querySelectorAll('#mpList li').length, so: !!A.mp.startOpts, inGame: A.mp.inGame, shown: ['end', 'pause', 'hud', 'loading', 'specBar'].filter((id) => !document.getElementById(id).hidden), st: document.getElementById('mpStatus').textContent, start: !document.getElementById('btnMpStart').hidden }; })));
+  log('back to lobby', JSON.stringify(lob[1]));
+  check(lob.every((l) => l.active && l.n === N && l.list === N && !l.so && !l.inGame && l.shown.length === 0), 'host brings everyone back to the lobby mid-round (room intact, no results screen)');
+  check(lob[0].start && lob.slice(1).every((l) => /房主把大家帶回大廳了/.test(l.st) && !l.start), 'players see 「房主把大家帶回大廳了」');
+  // 換設定再開一局：普通、指定 1 層、精神科、倒地救援開
+  await setRoom(['#mpDiffSeg [data-diff="normal"]', '#mpThemeSeg [data-theme="psych"]', '#mpReviveSeg [data-revive="1"]']);
+  for (const c of clients) await until(c, () => { const r = window.__SW.mp.room; return r.difficulty === 'normal' && r.theme === 'psych' && r.floors === 1 && r.revive === true; });
+  await host.evaluate(() => document.getElementById('btnMpStart').click());
+  await playing();
+  const c4 = await roundCfg();
+  check(c4.every((r) => r.c === 'normal/psych/1/true') && cleanRound(c4), `a new round with different settings starts cleanly (${c4[0].c})`);
+  // 位置還是會同步（新的一局真的接上了）
+  const spot2 = await host.evaluate(() => { const g = window.__SW.game, P = g.player; P.pos.x += 0.4; g.mp.sendT = 0; return { x: P.pos.x, z: P.pos.z }; });
+  for (const c of clients) await until(c, (s) => { const r = window.__SW.game.remotes.get(0); return r && Math.abs(r.tx - s.x) < 0.1 && Math.abs(r.tz - s.z) < 0.1; }, spot2);
+  check(true, 'positions sync in the new round');
 
   // 房主離開 → 其他人收到通知
   await host.close();
   for (const c of clients) await until(c, () => window.__SW.game && window.__SW.game.over, null, 60000);
-  check(true, 'host leaving ends game for clients');
+  check(await clients[0].evaluate(() => /房間已經關閉/.test(document.getElementById('endText').textContent) && !window.__SW.mp.active && document.getElementById('btnMenu').textContent === '主選單'), 'host leaving ends game for clients (clear message)');
 } catch (e) {
   failed = true;
   console.log('  ✗', e.message.split('\n')[0]);

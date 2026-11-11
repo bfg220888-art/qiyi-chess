@@ -373,6 +373,45 @@ ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.7; color: #
 .mp-status { color: #e0645f; min-height: 1em; }
 .mp-status:empty { display: none; }
 .mp-note { opacity: 0.55; }
+/* 房間裡：左邊代碼與名單、右邊房間設定；窄螢幕上下排（面板本身可以捲動） */
+.panel.mp.in-room { width: min(780px, 100%); }
+.mp-room { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 14px 22px; align-items: start; }
+.mp-col { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.mp-copy { display: flex; gap: 8px; }
+.mp-copy .btn { flex: 1; }
+.btn.small { font-size: 13px; padding: 7px 8px; min-height: 36px; letter-spacing: 0.05em; }
+.mp-copy-msg { margin: 0; font-size: 12px; text-align: center; color: var(--dim); overflow-wrap: anywhere; user-select: text; }
+.mp-copy-msg:empty { display: none; }
+.mp-list .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-list .tag { white-space: nowrap; }
+.mp-list .tag.ok { color: #8fd08a; opacity: 1; }
+.mp-kick { flex: none; font: inherit; font-size: 12px; color: var(--dim); background: transparent; border: 1px solid var(--faint); padding: 4px 10px; min-height: 30px; cursor: pointer; border-radius: 2px; touch-action: manipulation; }
+.mp-kick:hover, .mp-kick:focus-visible { color: #e0645f; border-color: #e0645f; outline: none; }
+.mp-set-head { margin: 0; font-size: 12px; letter-spacing: 0.2em; color: var(--dim); }
+.mp-desc { margin: -3px 0 2px; font-size: 12.5px; line-height: 1.5; color: var(--dim); min-height: 1.5em; }
+.seg.mp-theme { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--faint); }
+.seg.mp-theme button { border: 0; background: var(--panel); min-height: 38px; padding: 8px 2px; }
+.seg.mp-theme button[aria-checked="true"] { background: #4a100c; }
+.seg.mp-theme button:first-child { grid-column: span 2; }
+.mp-opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+.mp-opt .seg.small button { padding: 7px 13px; white-space: nowrap; letter-spacing: 0.05em; }
+.seg button:disabled { cursor: default; opacity: 0.55; }
+.seg button:disabled[aria-checked="true"] { opacity: 1; }
+.load-players { margin: 16px auto 0; width: min(320px, 100%); font-size: 14px; text-align: left; }
+.load-players li { padding: 5px 10px; }
+.pause-room { margin: 0 0 4px; font-size: 13px; line-height: 1.6; text-align: center; color: var(--dim); white-space: pre-line; }
+@media (max-width: 640px) {
+  .mp-room { grid-template-columns: minmax(0, 1fr); }
+  .panel.mp { padding: 18px 16px; gap: 9px; }
+  .panel.mp h2 { font-size: 22px; margin: 0; }
+  .mp-code { font-size: 32px; }
+}
+@media (max-height: 520px) {
+  .panel.mp { padding: 12px 16px; gap: 7px; }
+  .panel.mp h2 { font-size: 18px; margin: 0; }
+  .mp-code { font-size: 26px; }
+  .mp-note { display: none; }
+}
 /* 筆電螢幕：選單項目變多了，省下標語的空間讓整個選單放得進一個畫面 */
 @media (max-height: 820px) {
   .pitch { display: none; }

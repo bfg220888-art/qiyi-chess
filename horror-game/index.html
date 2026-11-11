@@ -68,12 +68,52 @@
       </div>
     </div>
     <div id="mpRoom" class="mp-room" hidden>
-      <p class="mp-code-label">房間代碼（請告訴朋友）</p>
-      <p id="mpCodeShow" class="mp-code"></p>
-      <ul id="mpList" class="mp-list"></ul>
-      <p id="mpRoomInfo" class="mp-info"></p>
-      <button id="btnMpStart" class="btn primary" type="button">開始遊戲</button>
-      <button id="btnMpLeave" class="btn ghost" type="button">離開房間</button>
+      <div class="mp-col">
+        <p class="mp-code-label">房間代碼（請告訴朋友）</p>
+        <p id="mpCodeShow" class="mp-code"></p>
+        <div class="mp-copy">
+          <button id="btnMpCopy" class="btn ghost small" type="button">複製代碼</button>
+          <button id="btnMpLink" class="btn ghost small" type="button">複製邀請連結</button>
+        </div>
+        <p id="mpCopyMsg" class="mp-copy-msg" role="status"></p>
+        <ul id="mpList" class="mp-list"></ul>
+        <p id="mpRoomInfo" class="mp-info"></p>
+      </div>
+      <div class="mp-col mp-settings">
+        <p id="mpSetHead" class="mp-set-head">房間設定</p>
+        <div class="seg" role="radiogroup" aria-label="難度" id="mpDiffSeg">
+          <button type="button" role="radio" data-diff="easy">簡單</button>
+          <button type="button" role="radio" data-diff="normal">普通</button>
+          <button type="button" role="radio" data-diff="nightmare">惡夢</button>
+        </div>
+        <p id="mpDiffDesc" class="mp-desc"></p>
+        <div class="seg seg-map mp-theme" role="radiogroup" aria-label="地圖" id="mpThemeSeg">
+          <button type="button" role="radio" data-theme="random">隨機</button>
+          <button type="button" role="radio" data-theme="ward">病房</button>
+          <button type="button" role="radio" data-theme="morgue">太平間</button>
+          <button type="button" role="radio" data-theme="pediatric">兒童</button>
+          <button type="button" role="radio" data-theme="psych">精神科</button>
+          <button type="button" role="radio" data-theme="surgery">手術</button>
+          <button type="button" role="radio" data-theme="burned">舊院區</button>
+        </div>
+        <p id="mpThemeDesc" class="mp-desc"></p>
+        <div class="mp-opt"><span>樓層數</span>
+          <div class="seg small" role="radiogroup" aria-label="樓層數" id="mpFloorSeg">
+            <button type="button" role="radio" data-floors="0">自動</button>
+            <button type="button" role="radio" data-floors="1">1</button>
+            <button type="button" role="radio" data-floors="2">2</button>
+            <button type="button" role="radio" data-floors="3">3</button>
+          </div>
+        </div>
+        <div class="mp-opt"><span>倒地救援</span>
+          <div class="seg small" role="radiogroup" aria-label="倒地救援" id="mpReviveSeg">
+            <button type="button" role="radio" data-revive="1">開</button>
+            <button type="button" role="radio" data-revive="0">關</button>
+          </div>
+        </div>
+        <button id="btnMpStart" class="btn primary" type="button">開始遊戲</button>
+        <button id="btnMpLeave" class="btn ghost" type="button">離開房間</button>
+      </div>
     </div>
     <p id="mpStatus" class="mp-status" role="status"></p>
     <p class="mp-note">房主的分頁請保持在前景。網路防火牆太嚴格時可能連不上。</p>
@@ -87,6 +127,7 @@
     <p id="loadFloor" class="load-floor"></p>
     <p class="load-title">正在生成醫院……</p>
     <div class="bar"><span id="loadBar"></span></div>
+    <ul id="loadPlayers" class="mp-list load-players" hidden></ul>
     <p id="loadTip" class="load-tip"></p>
     <button id="loadCancel" class="btn ghost" type="button" hidden>離開房間</button>
   </div>
@@ -220,8 +261,11 @@
 <!-- 暫停 -->
 <section id="pause" class="overlay" hidden>
   <div class="panel">
-    <h2>暫停</h2>
+    <h2 id="pauseTitle">暫停</h2>
+    <p id="pauseRoom" class="pause-room" hidden></p>
     <button id="btnResume" class="btn primary" type="button">繼續</button>
+    <button id="btnPauseRestart" class="btn" type="button" hidden>重新開始這一局</button>
+    <button id="btnPauseLobby" class="btn" type="button" hidden>回到大廳（所有人）</button>
     <button id="btnPauseSettings" class="btn ghost" type="button">設定</button>
     <button id="btnPauseHelp" class="btn ghost" type="button">操作說明</button>
     <button id="btnQuit" class="btn ghost" type="button">回主選單</button>

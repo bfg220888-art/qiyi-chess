@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import { Net, normalizeCode, netErrorText } from './net.js';
 import { SLOT_COLORS } from './player-model.js';
+import { DIFFICULTY, MP_FLOORS } from './config.js';
+import { THEMES, RANDOM_THEME } from './themes.js';
 
 export const MAX_PLAYERS = 4;
 export { SLOT_COLORS } from './player-model.js';
@@ -26,13 +28,32 @@ function cleanState(m) {
     ck: Number.isInteger(m.ck) && m.ck >= 0 && m.ck < 16 ? m.ck : -1, // 正在轉哪一道鐵捲門的把手（那一層的索引）
   };
 }
+// 房間設定（房主在大廳裡隨時可以改，隨大廳訊息送給所有人；開始訊息也帶同一組）：
+//   difficulty 難度、theme 地圖（'random' 或樓層主題）、floors 樓層數（0 = 依難度自動，或 1～3）、revive 倒地救援
+export const ROOM_DEFAULT = Object.freeze({ difficulty: 'normal', theme: RANDOM_THEME, floors: 0, revive: true });
+// 從網路或存檔讀到的房間設定：每一欄都對照允許的值，不合法的那一欄保留 base 原本的值（不可信任的輸入）
+export function cleanRoom(o, base = ROOM_DEFAULT) {
+  const r = { difficulty: base.difficulty, theme: base.theme, floors: base.floors, revive: base.revive };
+  if (!o || typeof o !== 'object') return r;
+  if (typeof o.difficulty === 'string' && Object.hasOwn(DIFFICULTY, o.difficulty)) r.difficulty = o.difficulty;
+  if (o.theme === RANDOM_THEME || (typeof o.theme === 'string' && Object.hasOwn(THEMES, o.theme))) r.theme = o.theme;
+  if ([0, 1, 2, 3].includes(o.floors)) r.floors = o.floors;
+  if (typeof o.revive === 'boolean') r.revive = o.revive;
+  return r;
+}
+// 實際的樓層數：房主指定，或依難度（簡單 1、普通 2、惡夢 3）
+export const roomFloors = (r) => r.floors || MP_FLOORS[r.difficulty];
+const pct = (v) => (Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v))) : 0);
 const HOST_ACCEPTS = new Set(['st', 'door', 'pick', 'fuse', 'noise', 'stun', 'sfx', 'unlock', 'relic', 'rv', 'sync']);
 
 export class MP {
   constructor(app) {
     this.app = app;
     this.net = null;
-    this.players = []; // { slot, id, name, ready }
+    this.players = []; // { slot, id, name, ready, prog（載入進度 0～100） }
+    this.room = cleanRoom(null); // 房間設定（房主決定，其他人唯讀）
+    this.round = 0; // 第幾局（房主每次開始加一；「載入完成」要帶同一個號碼才算數）
+    this.kicked = new Set(); // 房主：被移出房間的連線 id（不再接受它的招呼）
     this.mySlot = 0;
     this.isHost = false;
     this.inGame = false;
@@ -64,7 +85,7 @@ export class MP {
       throw e;
     }
     this.mySlot = 0;
-    this.players = [{ slot: 0, id: this.net.peer.id, name, ready: true }];
+    this.players = [{ slot: 0, id: this.net.peer.id, name, ready: true, prog: 0 }];
     this.setStatus('');
   }
 
@@ -101,7 +122,25 @@ export class MP {
     this.carried = new Map();
     this.inGame = false;
     this.game = null;
+    this.startOpts = null;
+    this.began = false;
+    this.kicked = new Set();
+    clearTimeout(this.progTimer);
+    this.progTimer = null;
     if (!silent) this.setStatus('');
+  }
+
+  // 一局結束、回到大廳：清掉這一局的狀態，房間（名單、設定）留著
+  endRound() {
+    clearTimeout(this.readyTimer);
+    this.readyTimer = null;
+    this.inGame = false;
+    this.game = null;
+    this.began = false;
+    this.startOpts = null;
+    this.results = new Map();
+    this.carried = new Map();
+    for (const p of this.players) { p.ready = p.slot === this.mySlot; p.prog = 0; p.live = false; }
   }
 
   bindNet() {
@@ -121,8 +160,39 @@ export class MP {
     for (const p of this.players) if (p.slot !== this.mySlot && p.id !== except) this.net.send(p.id, m);
   }
 
-  lobbyMsg() { return { t: 'lobby', players: this.players.map(({ slot, id, name }) => ({ slot, id, name })), code: this.code }; }
+  lobbyMsg() { return { t: 'lobby', players: this.players.map(({ slot, id, name }) => ({ slot, id, name })), code: this.code, room: { ...this.room } }; }
   broadcastLobby() { this.bcast(this.lobbyMsg()); this.changed(); }
+
+  // 房主：在大廳裡改房間設定（一局進行中不能改），馬上送給所有人
+  setRoom(patch) {
+    if (!this.isHost || !this.net || this.startOpts) return false;
+    this.room = cleanRoom(patch, this.room);
+    this.broadcastLobby();
+    return true;
+  }
+  // 房主：把一個人移出房間（只在大廳裡）
+  kick(slot) {
+    if (!this.isHost || !this.net || this.startOpts) return;
+    const p = this.players.find((q) => q.slot === slot);
+    if (!p || p.slot === this.mySlot) return;
+    const id = p.id, net = this.net;
+    this.kicked.add(id);
+    net.send(id, { t: 'deny', reason: '你被房主移出房間了。' });
+    setTimeout(() => { if (this.net === net) net.kick(id); }, 300);
+    this.onLeave(id);
+  }
+  // 房主：用目前的房間設定開始一局（遊戲中呼叫 = 重新開始這一局，新的種子）
+  startRound() {
+    if (!this.isHost || !this.net) return;
+    // np：開局時的人數（2 人以上才有雙人鐵捲門；每個人都用這個數字生成同一棟醫院）；rd：第幾局
+    this.start({ ...this.room, seed: (Math.random() * 2 ** 31) | 0, np: this.players.length, rd: ++this.round });
+  }
+  // 房主：遊戲中把所有人帶回大廳（房間留著，可以改設定再開始）
+  backToLobby() {
+    if (!this.isHost || !this.net || !this.startOpts) return;
+    this.bcast({ t: 'back' });
+    this.app.mpBackToLobby('');
+  }
 
   // 房主：開始遊戲
   start(opts) {
@@ -131,7 +201,7 @@ export class MP {
     this.began = false;
     clearTimeout(this.readyTimer);
     this.readyTimer = null;
-    for (const p of this.players) { p.ready = false; p.live = false; }
+    for (const p of this.players) { p.ready = false; p.live = false; p.prog = 0; }
     this.results = new Map();
     this.carried = new Map();
     this.game = null;
@@ -142,10 +212,33 @@ export class MP {
 
   // 自己載入完成
   localReady() {
+    const me = this.players.find((p) => p.slot === this.mySlot);
+    if (me) { me.ready = true; me.prog = 100; }
     if (this.isHost) {
-      this.players[0].ready = true;
+      this.queueProgress();
       this.checkAllReady();
-    } else this.net.broadcast({ t: 'ready' });
+    } else this.net.broadcast({ t: 'ready', rd: this.round });
+    this.changed();
+  }
+  // 自己的載入進度（0～1）：每多 4% 才送一次，載入畫面上每個人都看得到「載入中 62%」
+  localProgress(p) {
+    if (!this.net) return;
+    const v = pct(p * 100), me = this.players.find((q) => q.slot === this.mySlot);
+    if (!me || me.ready || (v < 100 && v - (me.prog || 0) < 4)) return;
+    me.prog = v;
+    if (this.isHost) this.queueProgress();
+    else this.net.broadcast({ t: 'prog', p: v });
+    this.changed();
+  }
+  // 房主：把所有人的載入進度轉給大家（最多每 0.25 秒一次）
+  queueProgress() {
+    if (!this.isHost || this.progTimer) return;
+    this.progTimer = setTimeout(() => {
+      this.progTimer = null;
+      if (!this.net || !this.startOpts) return;
+      this.bcast({ t: 'prog', l: this.players.map((p) => [p.slot, p.ready ? 100 : pct(p.prog), p.ready ? 1 : 0]) });
+      this.changed();
+    }, 250);
   }
   checkAllReady() {
     if (!this.isHost || this.began || !this.startOpts) return;
@@ -179,7 +272,7 @@ export class MP {
     } else if (id === this.net.hostId) {
       const g = this.game;
       this.leave(true);
-      this.setStatus('房主已經離開，連線結束。');
+      this.setStatus('房主離開了，房間已經關閉。請重新建立或加入房間。');
       if (g && !g.over) g.mpHostLost();
     }
   }
@@ -193,19 +286,32 @@ export class MP {
       const slot = this.slotOf(from);
       switch (m.t) {
         case 'hello': {
+          if (this.kicked.has(from)) return;
           if (this.inGame || this.startOpts) { this.net.send(from, { t: 'deny', reason: '遊戲已經開始了。' }); setTimeout(() => this.net && this.net.kick(from), 300); return; }
           if (this.players.some((p) => p.id === from)) { this.broadcastLobby(); return; }
           if (this.players.length >= MAX_PLAYERS) { this.net.send(from, { t: 'deny', reason: '房間已滿（最多 4 人）。' }); setTimeout(() => this.net && this.net.kick(from), 300); return; }
           let s = 1;
           while (this.players.some((p) => p.slot === s)) s++;
-          this.players.push({ slot: s, id: from, name: String(m.name || '').slice(0, 12) || `玩家 ${s + 1}`, ready: false });
+          this.players.push({ slot: s, id: from, name: String(m.name || '').slice(0, 12) || `玩家 ${s + 1}`, ready: false, prog: 0 });
           this.players.sort((a, b) => a.slot - b.slot);
           this.broadcastLobby();
           return;
         }
+        case 'prog': {
+          // 玩家的載入進度（只在一局開始後、他還沒載入完時有意義）
+          const p = this.players.find((q) => q.id === from);
+          if (!p || !this.startOpts || p.ready || !Number.isFinite(m.p)) return;
+          p.prog = pct(m.p);
+          this.queueProgress();
+          return;
+        }
         case 'ready': {
           const p = this.players.find((q) => q.id === from);
-          if (p) p.ready = true;
+          // 上一局才送出的「載入完成」不算（房主剛按了重新開始）
+          if (!p || !this.startOpts || m.rd !== this.round) return;
+          p.ready = true;
+          p.prog = 100;
+          this.queueProgress();
           // 已經開始了才載入完：直接讓他開始，並送上現在的世界狀態（開了的鎖、拿走的道具、保險絲、遺物、門、鐵捲門……）
           if (p && this.began) {
             this.net.send(from, { t: 'go' });
@@ -222,20 +328,41 @@ export class MP {
         case 'lobby':
           if (!Array.isArray(m.players)) return;
           this.players = m.players.slice(0, MAX_PLAYERS).filter((p) => p && Number.isInteger(p.slot) && p.slot >= 0 && p.slot < MAX_PLAYERS)
-            .map((p) => ({ slot: p.slot, id: String(p.id), name: String(p.name || '').slice(0, 12) }));
+            .map((p) => { const old = this.players.find((q) => q.slot === p.slot && q.id === String(p.id)); return { slot: p.slot, id: String(p.id), name: String(p.name || '').slice(0, 12), ready: !!(old && old.ready), prog: old ? old.prog || 0 : 0 }; });
           this.mySlot = this.slotOf(this.net.peer.id);
+          // 房間設定：只接受允許的值，其餘欄位維持原樣
+          if (Object.hasOwn(m, 'room')) this.room = cleanRoom(m.room, this.room);
           this.setStatus('');
           return;
         case 'deny':
           this.leave(true);
-          this.setStatus(m.reason || '無法加入房間。');
+          this.setStatus(typeof m.reason === 'string' && m.reason ? m.reason.slice(0, 60) : '無法加入房間。');
           return;
         case 'start':
           this.startOpts = m;
           this.began = false;
           this.game = null;
           this.inGame = false;
+          this.round = Number.isInteger(m.rd) && m.rd >= 0 && m.rd < 1e9 ? m.rd : 0;
+          this.room = cleanRoom(m, this.room);
+          for (const p of this.players) { p.ready = false; p.prog = 0; }
           this.app.startMpGame(m);
+          return;
+        // 每個人的載入進度（[位置, 百分比, 是否載入完]）
+        case 'prog':
+          if (!Array.isArray(m.l)) return;
+          for (const e of m.l.slice(0, MAX_PLAYERS)) {
+            if (!Array.isArray(e) || !Number.isInteger(e[0])) continue;
+            const p = this.players.find((q) => q.slot === e[0]);
+            if (!p || p.slot === this.mySlot) continue;
+            p.prog = pct(e[1]);
+            p.ready = e[2] === 1;
+          }
+          this.changed();
+          return;
+        // 房主把所有人帶回大廳（房間還在）
+        case 'back':
+          if (this.startOpts) this.app.mpBackToLobby('房主把大家帶回大廳了。');
           return;
         case 'go':
           this.began = true;
